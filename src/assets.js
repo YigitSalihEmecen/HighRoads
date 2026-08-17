@@ -1,0 +1,531 @@
+/**
+ * assets.js — loading and conditioning of the external art.
+ *
+ * Two very different pipelines meet here:
+ *
+ *   FOLIAGE (Quaternius Ultimate Nature Pack, OBJ).  The pack ships 150 models
+ *   with an .mtl beside each one, but those .mtl files carry nothing except a
+ *   flat diffuse colour drawn from a palette of ~18 names. Fetching 150 of them
+ *   to recover 18 colours is pure latency, so the palette is inlined below and
+ *   a small dedicated OBJ parser bakes `usemtl` straight into a vertex-colour
+ *   attribute. One geometry, one material, no texture, ready to instance.
+ *
+ *   CARS (FBX).  Every model is one body mesh plus four tyres named
+ *   `*_FL_Tire` … `*_BR_Tire`, sharing a 512x512 palette atlas. The tyres are
+ *   detached so the vehicle controller can steer and spin them, and the
+ *   materials are rebuilt locally rather than trusting whatever the exporter
+ *   embedded.
+ */
+
+import * as THREE from 'three';
+
+const CAR_DIR = 'assets/car_models/Fbx';
+const CAR_TEXTURE = 'assets/car_models/Fbx/Texture/Color.png';
+const FOLIAGE_DIR = 'assets/Forest_Assets/Ultimate Nature Pack by Quaternius/OBJ';
+
+/**
+ * The pack's entire material vocabulary, lifted from the .mtl files and
+ * converted from linear Kd to sRGB hex. Blender's exporter appends `.001`-style
+ * suffixes to duplicate slots, so names are stripped before lookup.
+ */
+const PALETTE = {
+  Berry: 0xa42830,
+  Black: 0x3b3b3b,
+  Coconuts: 0x7c554e,
+  Cyan: 0x007a7c,
+  DarkGreen: 0x3a4c30,
+  Green: 0x4a613d,
+  Leaves: 0x61574c,
+  LightOrange: 0xb08c51,
+  LightWood: 0x7c554c,
+  Mushroom_Bottom: 0x957f77,
+  Mushroom_Top: 0x61534e,
+  Orange: 0xa96f44,
+  Pink: 0xa45481,
+  Rock: 0x7a7d87,
+  Snow: 0xaaa1ad,
+  White: 0xbfc3bb,
+  Wood: 0x62433d,
+  Yellow: 0xa19154,
+};
+
+const FALLBACK_COLOR = 0x8a8a8a;
+const _c = new THREE.Color();
+
+function paletteColor(name) {
+  const base = String(name || '').replace(/\.\d+$/, '');
+  return PALETTE[base] !== undefined ? PALETTE[base] : FALLBACK_COLOR;
+}
+
+/* --------------------------------------------------------------- OBJ ----- */
+
+/**
+ * Minimal OBJ reader, deliberately not three's OBJLoader: it produces a single
+ * non-indexed geometry with the material colour already baked per-vertex, so a
+ * whole tree is one draw call and one InstancedMesh regardless of how many
+ * material groups the artist used.
+ *
+ * Handles the subset the pack actually emits: v / vn / usemtl / f, with faces
+ * as `v`, `v/vt`, `v//vn` or `v/vt/vn`, triangles or quads.
+ */
+export function parseOBJ(text) {
+  const V = [];
+  const N = [];
+  const pos = [];
+  const nrm = [];
+  const col = [];
+  let color = { r: 0.5, g: 0.5, b: 0.5 };
+
+  const pushVertex = (token) => {
+    // OBJ indices are 1-based and may be negative (relative to the end).
+    const parts = token.split('/');
+    let vi = parseInt(parts[0], 10);
+    vi = vi < 0 ? V.length / 3 + vi : vi - 1;
+    pos.push(V[vi * 3], V[vi * 3 + 1], V[vi * 3 + 2]);
+
+    if (parts[2]) {
+      let ni = parseInt(parts[2], 10);
+      ni = ni < 0 ? N.length / 3 + ni : ni - 1;
+      nrm.push(N[ni * 3], N[ni * 3 + 1], N[ni * 3 + 2]);
+    } else {
+      nrm.push(0, 0, 0);
+    }
+    col.push(color.r, color.g, color.b);
+  };
+
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line[0] === '#') continue;
+    const sp = line.indexOf(' ');
+    if (sp < 0) continue;
+    const key = line.slice(0, sp);
+    const rest = line.slice(sp + 1).trim();
+
+    if (key === 'v') {
+      const p = rest.split(/\s+/);
+      V.push(+p[0], +p[1], +p[2]);
+    } else if (key === 'vn') {
+      const p = rest.split(/\s+/);
+      N.push(+p[0], +p[1], +p[2]);
+    } else if (key === 'usemtl') {
+      // Convert through THREE.Color so the value lands in the renderer's
+      // working colour space rather than being written as raw sRGB.
+      _c.setHex(paletteColor(rest), THREE.SRGBColorSpace);
+      color = { r: _c.r, g: _c.g, b: _c.b };
+    } else if (key === 'f') {
+      const tokens = rest.split(/\s+/);
+      // Fan-triangulate: the pack uses triangles and quads only.
+      for (let i = 2; i < tokens.length; i++) {
+        pushVertex(tokens[0]);
+        pushVertex(tokens[i - 1]);
+        pushVertex(tokens[i]);
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  if (N.length) geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  else geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Re-origins a prop so instancing is predictable: centred on X/Z, base sitting
+ * exactly on y = 0. Without this, models with an arbitrary pivot float above
+ * the terrain or sink into it.
+ */
+function groundGeometry(geo) {
+  geo.computeBoundingBox();
+  const b = geo.boundingBox;
+  geo.translate(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2);
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+/* ------------------------------------------------------------- loaders --- */
+
+async function fetchText(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${url}`);
+  return res.text();
+}
+
+/**
+ * Loads foliage models by name (no extension). Returns a Map of
+ * name -> { geometry, height, radius }.
+ *
+ * Failures are tolerated per-model: a missing prop should thin the forest, not
+ * stop the game from starting.
+ */
+export async function loadFoliage(names, onProgress) {
+  const out = new Map();
+  let done = 0;
+
+  await Promise.all(
+    names.map(async (name) => {
+      try {
+        const text = await fetchText(`${FOLIAGE_DIR}/${encodeURIComponent(name)}.obj`);
+        const geo = groundGeometry(parseOBJ(text));
+        const b = geo.boundingBox;
+        out.set(name, {
+          geometry: geo,
+          height: b.max.y - b.min.y,
+          radius: Math.max(b.max.x - b.min.x, b.max.z - b.min.z) / 2,
+        });
+      } catch (err) {
+        console.warn(`[fastroads] foliage "${name}" failed to load:`, err.message);
+      } finally {
+        if (onProgress) onProgress(++done, names.length);
+      }
+    })
+  );
+
+  return out;
+}
+
+/** The shared car atlas. Nearest filtering — it is a palette, not a picture. */
+export async function loadCarTexture() {
+  const tex = await new THREE.TextureLoader().loadAsync(CAR_TEXTURE);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  // The atlas packs flat colour swatches edge to edge. Any filtering blends
+  // neighbouring swatches and bleeds the wrong colour along every UV seam.
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.anisotropy = 1;
+  tex.flipY = false;
+  return tex;
+}
+
+/** Rear-lamp emissive strength when coasting, and under braking. */
+const TAIL_IDLE = 0.55;
+const TAIL_BRAKE = 6.0;
+/** Head-lamp emissive: off, on, and the brief overdrive of a flash. */
+const HEAD_OFF = 0.35;
+const HEAD_ON = 3.2;
+const HEAD_FLASH = 9.0;
+
+const WHEEL_RE = /_(FL|FR|BL|BR)_Tire$/i;
+
+/** Material slots the body mesh is re-grouped into. Order matters. */
+const SLOT_BODY = 0;   // textured trim, glass, bumpers — left alone
+const SLOT_PAINT = 1;  // the one palette swatch that is the car's colour
+const SLOT_HEAD = 2;   // forward-facing lamps
+const SLOT_TAIL = 3;   // rear lamps
+
+/** The atlas is a 16x16 grid of flat swatches; this is which cell a UV lands in. */
+function cellKey(u, v) {
+  return `${Math.floor(u * 16)},${Math.floor(v * 16)}`;
+}
+
+/** Per-triangle material index, from whatever groups the importer produced. */
+function triangleMaterials(geo, triCount) {
+  const out = new Int32Array(triCount);
+  for (const g of geo.groups) {
+    const start = Math.floor(g.start / 3);
+    const count = Math.floor(g.count / 3);
+    for (let t = start; t < start + count && t < triCount; t++) out[t] = g.materialIndex || 0;
+  }
+  return out;
+}
+
+/**
+ * Finds the palette cell carrying the car's paint: the one covering the most
+ * surface area across every non-emissive group. Because each cell is a single
+ * flat colour, those triangles can then be moved onto a plain material and
+ * recoloured by setting `.color` — no texture rewriting, and instant.
+ */
+function findPaintCell(meshes, bloomIndex) {
+  const area = new Map();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), cr = new THREE.Vector3();
+
+  for (const mesh of meshes) {
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+    const uv = geo.attributes.uv;
+    if (!uv) continue;
+    const idx = geo.index ? geo.index.array : null;
+    const triCount = (idx ? idx.length : pos.count) / 3;
+    const mats = triangleMaterials(geo, triCount);
+
+    for (let t = 0; t < triCount; t++) {
+      if (mats[t] === bloomIndex) continue;
+      const i0 = idx ? idx[t * 3] : t * 3;
+      const i1 = idx ? idx[t * 3 + 1] : t * 3 + 1;
+      const i2 = idx ? idx[t * 3 + 2] : t * 3 + 2;
+      a.fromBufferAttribute(pos, i0);
+      b.fromBufferAttribute(pos, i1);
+      c.fromBufferAttribute(pos, i2);
+      e1.subVectors(b, a);
+      e2.subVectors(c, a);
+      const size = cr.crossVectors(e1, e2).length() * 0.5;
+      const key = cellKey(
+        (uv.getX(i0) + uv.getX(i1) + uv.getX(i2)) / 3,
+        (uv.getY(i0) + uv.getY(i1) + uv.getY(i2)) / 3
+      );
+      area.set(key, (area.get(key) || 0) + size);
+    }
+  }
+
+  let best = null, bestArea = -1;
+  for (const [key, v] of area) if (v > bestArea) { bestArea = v; best = key; }
+  return best;
+}
+
+/**
+ * Rebuilds one body mesh's material groups into the four slots above.
+ *
+ * The importer hands us dozens of tiny groups alternating between two
+ * materials, and both lamps share one of them. Triangles are reclassified —
+ * emissive ones split front/rear by their z sign (the models face +Z, so
+ * positive is the front), the rest by whether they sit on the paint swatch —
+ * then an index buffer is written that orders them by slot, so each class is
+ * one contiguous group and therefore one draw call.
+ */
+function regroupBody(mesh, paintCell, bloomIndex, materials) {
+  const geo = mesh.geometry;
+  const pos = geo.attributes.position;
+  const uv = geo.attributes.uv;
+  const idx = geo.index ? geo.index.array : null;
+  const triCount = Math.floor((idx ? idx.length : pos.count) / 3);
+  const mats = triangleMaterials(geo, triCount);
+
+  const slot = new Int32Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const i0 = idx ? idx[t * 3] : t * 3;
+    const i1 = idx ? idx[t * 3 + 1] : t * 3 + 1;
+    const i2 = idx ? idx[t * 3 + 2] : t * 3 + 2;
+
+    if (mats[t] === bloomIndex) {
+      const z = (pos.getZ(i0) + pos.getZ(i1) + pos.getZ(i2)) / 3;
+      slot[t] = z > 0 ? SLOT_HEAD : SLOT_TAIL;
+    } else if (uv && paintCell) {
+      const key = cellKey(
+        (uv.getX(i0) + uv.getX(i1) + uv.getX(i2)) / 3,
+        (uv.getY(i0) + uv.getY(i1) + uv.getY(i2)) / 3
+      );
+      slot[t] = key === paintCell ? SLOT_PAINT : SLOT_BODY;
+    } else {
+      slot[t] = SLOT_BODY;
+    }
+  }
+
+  const order = [];
+  geo.clearGroups();
+  for (let s = 0; s <= SLOT_TAIL; s++) {
+    const start = order.length;
+    for (let t = 0; t < triCount; t++) {
+      if (slot[t] !== s) continue;
+      if (idx) order.push(idx[t * 3], idx[t * 3 + 1], idx[t * 3 + 2]);
+      else order.push(t * 3, t * 3 + 1, t * 3 + 2);
+    }
+    if (order.length > start) geo.addGroup(start, order.length - start, s);
+  }
+  geo.setIndex(order);
+  mesh.material = materials;
+}
+
+/**
+ * Loads one car FBX and takes it apart.
+ *
+ * The models face +Z, whereas everything in this project treats -Z as forward,
+ * so the body is yawed 180°. Wheel anchors are measured from the tyre meshes
+ * rather than guessed, which is what lets each vehicle get its own real
+ * wheelbase, track and rolling radius.
+ *
+ * Returns { body, wheels, metrics } in metres, with the origin at the ground
+ * contact plane — the same origin the physics body uses.
+ */
+export async function loadCarModel(file, texture) {
+  const { FBXLoader } = await import('three/addons/loaders/FBXLoader.js');
+  const root = await new FBXLoader().loadAsync(`${CAR_DIR}/${encodeURIComponent(file)}`);
+  return buildCarFromObject(root, texture, file);
+}
+
+/**
+ * The half of loadCarModel that does not touch the network, split out so the
+ * whole take-apart-and-measure step can be exercised without a browser.
+ */
+export function buildCarFromObject(root, texture, label = 'model') {
+  root.updateMatrixWorld(true);
+
+  // Trim, glass and details keep the atlas.
+  const trim = new THREE.MeshStandardMaterial({
+    map: texture,
+    roughness: 0.55,
+    metalness: 0.12,
+  });
+  // The paint swatch is a single flat colour, so it does not need the texture
+  // at all — a plain material means changing colour is one property write.
+  const paint = new THREE.MeshStandardMaterial({
+    color: 0xc0392b,
+    roughness: 0.42,
+    metalness: 0.28,
+  });
+  // "Color Bloom" is the exporter's name for the lamps. The atlas cell behind
+  // the rear lamps is actually blue, so the lights are given their own
+  // materials rather than inheriting whatever swatch the artist happened to use.
+  const headlight = new THREE.MeshStandardMaterial({
+    color: 0xfff4dd,
+    emissive: 0xffeec2,
+    emissiveIntensity: HEAD_OFF,
+    roughness: 0.3,
+  });
+  const taillight = new THREE.MeshStandardMaterial({
+    color: 0x6e0f0c,
+    emissive: 0xff2214,
+    emissiveIntensity: TAIL_IDLE,
+    roughness: 0.34,
+  });
+
+  const wheelMeshes = {};
+  const bodyParts = [];
+
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.castShadow = true;
+    o.receiveShadow = true;
+
+    const tag = WHEEL_RE.exec(o.name);
+    if (tag) {
+      // Tyres are not re-grouped, so they need the atlas material assigned
+      // directly — left alone they keep whatever the exporter embedded.
+      o.material = trim;
+      wheelMeshes[tag[1].toUpperCase()] = o;
+    } else {
+      bodyParts.push(o);
+    }
+  });
+
+  // Which of the mesh's materials the exporter used for the lamps.
+  let bloomIndex = -1;
+  for (const part of bodyParts) {
+    [].concat(part.material).forEach((m, i) => {
+      if (m && /bloom/i.test(m.name || '')) bloomIndex = i;
+    });
+  }
+
+  const keys = ['FL', 'FR', 'BL', 'BR'];
+  if (!keys.every((k) => wheelMeshes[k])) {
+    throw new Error(`${label}: expected four tyres, found ${Object.keys(wheelMeshes).join(',') || 'none'}`);
+  }
+
+  // Measure in the FBX's own space before anything is re-parented.
+  const wheelInfo = {};
+  for (const k of keys) {
+    const box = new THREE.Box3().setFromObject(wheelMeshes[k]);
+    wheelInfo[k] = {
+      centre: box.getCenter(new THREE.Vector3()),
+      size: box.getSize(new THREE.Vector3()),
+    };
+  }
+
+  const bodyBox = new THREE.Box3();
+  for (const part of bodyParts) bodyBox.expandByObject(part);
+
+  const trackHalf = (Math.abs(wheelInfo.FL.centre.x) + Math.abs(wheelInfo.FR.centre.x)) / 2;
+  const wheelbaseHalf = (Math.abs(wheelInfo.FL.centre.z) + Math.abs(wheelInfo.BL.centre.z)) / 2;
+  const wheelRadius = keys.reduce((a, k) => a + wheelInfo[k].size.y, 0) / (keys.length * 2);
+  const wheelWidth = (wheelInfo.FL.size.x + wheelInfo.FR.size.x) / 2;
+
+  // Ground plane of the model: the lowest point of the tyres.
+  const groundY = Math.min(...keys.map((k) => wheelInfo[k].centre.y - wheelInfo[k].size.y / 2));
+
+  // Bake each part's world transform into its geometry. FBX hierarchies carry
+  // transforms on ancestor nodes (exporters routinely put a 0.01 scale on the
+  // root), and re-parenting a mesh silently drops everything above it. Baking
+  // first means every part is expressed in one common space with an identity
+  // local transform, so the groups below are the only transforms in play.
+  for (const mesh of [...bodyParts, ...keys.map((k) => wheelMeshes[k])]) {
+    mesh.updateWorldMatrix(true, false);
+    mesh.geometry = mesh.geometry.clone();
+    mesh.geometry.applyMatrix4(mesh.matrixWorld);
+    mesh.position.set(0, 0, 0);
+    mesh.quaternion.identity();
+    mesh.scale.set(1, 1, 1);
+  }
+
+  // Re-group the bodywork so paint and each pair of lamps are independently
+  // addressable. Done after baking, while the geometry is still in the model's
+  // own +Z-forward space — the front/rear split reads the sign of z directly.
+  const paintCell = findPaintCell(bodyParts, bloomIndex);
+  const bodyMaterials = [trim, paint, headlight, taillight];
+  for (const part of bodyParts) regroupBody(part, paintCell, bloomIndex, bodyMaterials);
+
+  // Body group, yawed to face -Z and dropped so y = 0 is the contact plane.
+  // A yaw about Y leaves y untouched, so combining it with the drop in a single
+  // node is safe here.
+  const body = new THREE.Group();
+  const inner = new THREE.Group();
+  inner.rotation.y = Math.PI;
+  inner.position.y = -groundY;
+  for (const part of bodyParts) inner.add(part);
+  body.add(inner);
+
+  // Wheels become free-standing, each re-centred on its own axle so the vehicle
+  // can steer and spin them about their own hub.
+  //
+  // The centring translation and the yaw MUST live on separate nodes. Three
+  // composes a local matrix as T·R·S, so a single node carrying both maps a
+  // point to R·p + T — the rotation is applied *before* the offset, leaving the
+  // hub at R·centre − centre rather than at the origin. The wheel then orbits
+  // that leftover offset instead of spinning in place.
+  const wheels = {};
+  for (const k of keys) {
+    const holder = new THREE.Group(); // steer + spin, driven by the vehicle
+    const yaw = new THREE.Group(); // match the body's 180° flip
+    const hub = new THREE.Group(); // bring the axle to the origin — applied first
+
+    yaw.rotation.y = Math.PI;
+    hub.position.copy(wheelInfo[k].centre).negate();
+
+    hub.add(wheelMeshes[k]);
+    yaw.add(hub);
+    holder.add(yaw);
+    wheels[k] = holder;
+  }
+
+  return {
+    body,
+    wheels,
+    metrics: {
+      trackHalf,
+      wheelbaseHalf,
+      wheelRadius,
+      wheelWidth,
+      // Chassis box excluding wheels, relative to the contact plane.
+      bodyHeight: bodyBox.max.y - groundY,
+      bodyHalfWidth: (bodyBox.max.x - bodyBox.min.x) / 2,
+      bodyHalfLength: (bodyBox.max.z - bodyBox.min.z) / 2,
+    },
+    materials: bodyMaterials,
+    paintCell,
+
+    /**
+     * Head lamps. `flash` overdrives them well past "on" — a flash reads as a
+     * flash because it is brighter than the beam, not merely present.
+     */
+    setHeadlights(on, flash) {
+      headlight.emissiveIntensity = flash ? HEAD_FLASH : on ? HEAD_ON : HEAD_OFF;
+    },
+
+    /** Repaints the car. One property write — the paint slot has no texture. */
+    setColor(hex) {
+      paint.color.setHex(hex, THREE.SRGBColorSpace);
+    },
+
+    /**
+     * Brake lights. `t` is 0..1; the lamps sit at a dim standing glow and rise
+     * an order of magnitude under braking, which is what reads as "on" once the
+     * bloom pass gets hold of it.
+     */
+    setBrake(t) {
+      const k = Math.max(0, Math.min(1, t));
+      taillight.emissiveIntensity = TAIL_IDLE + (TAIL_BRAKE - TAIL_IDLE) * k;
+    },
+  };
+}

@@ -1,0 +1,546 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>FastRoads — infinite procedural driving</title>
+
+<style>
+  :root {
+    --ink: #f4ead9;
+    --dim: rgba(244, 234, 217, 0.55);
+    --accent: #ffb457;
+    --danger: #ff5f4d;
+    --font: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0e0d12;
+    color: var(--ink);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  canvas { display: block; }
+
+  #app { position: fixed; inset: 0; }
+
+  /* ---------------------------------------------------------------- HUD -- */
+
+  #hud {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.8s ease 0.2s;
+  }
+  #hud.live { opacity: 1; }
+
+  #cluster {
+    position: absolute;
+    right: 26px;
+    bottom: 22px;
+    width: 208px;
+    height: 208px;
+  }
+
+  #cluster svg { width: 100%; height: 100%; overflow: visible; }
+
+  .tach-track { fill: none; stroke: rgba(244, 234, 217, 0.14); stroke-width: 6; stroke-linecap: round; }
+  .tach-fill  { fill: none; stroke: var(--accent); stroke-width: 6; stroke-linecap: round;
+                filter: drop-shadow(0 0 6px rgba(255, 180, 87, 0.55)); }
+  .tach-red   { fill: none; stroke: var(--danger); stroke-width: 6; stroke-linecap: round; opacity: 0.35; }
+
+  #speed-val {
+    position: absolute;
+    left: 0; right: 0;
+    top: 78px;
+    text-align: center;
+    font-size: 46px;
+    font-weight: 600;
+    letter-spacing: -2px;
+    line-height: 1;
+    text-shadow: 0 2px 14px rgba(0, 0, 0, 0.6);
+  }
+  #speed-unit {
+    position: absolute;
+    left: 0; right: 0;
+    top: 126px;
+    text-align: center;
+    font-size: 11px;
+    letter-spacing: 3px;
+    color: var(--dim);
+  }
+  #gear {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: 26px;
+    text-align: center;
+    font-size: 15px;
+    letter-spacing: 2px;
+    color: var(--accent);
+    transition: transform 0.18s ease-out, color 0.18s ease-out, text-shadow 0.18s;
+  }
+  #gear.shift {
+    transform: scale(1.5);
+    color: #fff;
+    text-shadow: 0 0 14px rgba(255, 180, 87, 0.9);
+    transition-duration: 0.04s;
+  }
+
+  #gear-mode {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: 10px;
+    text-align: center;
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: rgba(244, 234, 217, 0.4);
+  }
+  #gear-mode.manual { color: var(--accent); }
+
+  #trip {
+    position: absolute;
+    left: 26px;
+    bottom: 24px;
+    font-size: 12px;
+    line-height: 1.9;
+    letter-spacing: 1px;
+    color: var(--dim);
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
+  }
+  #trip b { color: var(--ink); font-weight: 500; }
+
+  #stats {
+    position: absolute;
+    left: 26px;
+    top: 22px;
+    font-size: 11px;
+    line-height: 1.8;
+    letter-spacing: 1px;
+    color: var(--dim);
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
+  }
+
+  /* ------------------------------------------------------------ overlay -- */
+
+  #overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 26px;
+    background: radial-gradient(120% 90% at 50% 40%, #221c1b 0%, #0c0b10 70%);
+    z-index: 10;
+    transition: opacity 0.7s ease;
+    text-align: center;
+    padding: 24px;
+  }
+  #overlay.gone { opacity: 0; pointer-events: none; }
+
+  #title {
+    font-size: clamp(34px, 8vw, 68px);
+    font-weight: 700;
+    letter-spacing: -3px;
+    margin: 0;
+    background: linear-gradient(100deg, #ffd9a0 0%, #ff9d4d 55%, #e8705a 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  #tagline { margin: -18px 0 0; font-size: 12px; letter-spacing: 5px; color: var(--dim); text-transform: uppercase; }
+
+  #keys {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 7px 20px;
+    font-size: 12px;
+    color: var(--dim);
+    letter-spacing: 1px;
+  }
+  #keys span:nth-child(odd) { color: var(--ink); text-align: right; }
+
+  #start {
+    pointer-events: auto;
+    border: 1px solid rgba(255, 180, 87, 0.45);
+    background: rgba(255, 180, 87, 0.08);
+    color: var(--accent);
+    font-family: var(--font);
+    font-size: 13px;
+    letter-spacing: 4px;
+    padding: 15px 42px;
+    border-radius: 2px;
+    cursor: pointer;
+    transition: background 0.25s, transform 0.15s, opacity 0.3s;
+    text-transform: uppercase;
+  }
+  #start:hover { background: rgba(255, 180, 87, 0.18); }
+  #start:active { transform: scale(0.97); }
+  #start:disabled { opacity: 0.35; cursor: default; }
+
+  #boot { font-size: 11px; letter-spacing: 2px; color: var(--dim); min-height: 16px; }
+
+  /* ------------------------------------------------------------ garage -- */
+
+  #garage {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    width: min(880px, 92vw);
+  }
+  #garage.ready { display: flex; }
+
+  #car-list {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    pointer-events: auto;
+  }
+
+  .car-chip {
+    border: 1px solid rgba(244, 234, 217, 0.16);
+    background: rgba(244, 234, 217, 0.03);
+    color: var(--dim);
+    font-family: var(--font);
+    font-size: 11px;
+    letter-spacing: 2px;
+    padding: 10px 16px;
+    border-radius: 2px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: color 0.18s, border-color 0.18s, background 0.18s;
+  }
+  .car-chip:hover { color: var(--ink); border-color: rgba(244, 234, 217, 0.4); }
+  .car-chip[aria-pressed="true"] {
+    color: var(--accent);
+    border-color: rgba(255, 180, 87, 0.6);
+    background: rgba(255, 180, 87, 0.1);
+  }
+
+  .garage-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+    pointer-events: auto;
+  }
+  .garage-label {
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: rgba(244, 234, 217, 0.35);
+    text-transform: uppercase;
+    min-width: 58px;
+    text-align: right;
+  }
+
+  .swatch {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 2px solid rgba(244, 234, 217, 0.2);
+    cursor: pointer;
+    padding: 0;
+    transition: transform 0.15s, border-color 0.15s;
+  }
+  .swatch:hover { transform: scale(1.15); }
+  .swatch[aria-pressed="true"] {
+    border-color: var(--accent);
+    transform: scale(1.2);
+  }
+
+  .eng-chip {
+    border: 1px solid rgba(244, 234, 217, 0.14);
+    background: none;
+    color: var(--dim);
+    font-family: var(--font);
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    padding: 6px 10px;
+    border-radius: 2px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .eng-chip:hover { color: var(--ink); border-color: rgba(244, 234, 217, 0.35); }
+  .eng-chip[aria-pressed="true"] {
+    color: var(--accent);
+    border-color: rgba(255, 180, 87, 0.55);
+    background: rgba(255, 180, 87, 0.08);
+  }
+
+  #seed-input {
+    background: rgba(244, 234, 217, 0.05);
+    border: 1px solid rgba(244, 234, 217, 0.16);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 11px;
+    letter-spacing: 2px;
+    padding: 7px 10px;
+    width: 168px;
+    border-radius: 2px;
+    outline: none;
+  }
+  #seed-input:focus { border-color: rgba(255, 180, 87, 0.55); }
+
+  #car-detail {
+    min-height: 58px;
+    max-width: 620px;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--dim);
+    letter-spacing: 0.5px;
+  }
+  #car-detail b { color: var(--ink); font-weight: 500; }
+
+  #car-stats {
+    display: flex;
+    gap: 22px;
+    justify-content: center;
+    margin-top: 8px;
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--dim);
+    text-transform: uppercase;
+  }
+  #car-stats span b { display: block; color: var(--accent); font-size: 15px;
+                      letter-spacing: 0; margin-top: 3px; font-weight: 600; }
+  #boot.err { color: var(--danger); letter-spacing: 1px; max-width: 620px; line-height: 1.7; }
+
+  /* ----------------------------------------------------------- settings -- */
+
+  #settings {
+    position: fixed;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: stretch;
+    z-index: 6;
+    font-family: var(--font);
+  }
+
+  #settings-panel {
+    width: 0;
+    overflow: hidden;
+    transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+    background: rgba(16, 15, 18, 0.55);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(244, 234, 217, 0.1);
+    border-left: none;
+    border-radius: 0 3px 3px 0;
+  }
+  #settings.open #settings-panel { width: 268px; }
+
+  #settings-body {
+    width: 268px;
+    max-height: min(78vh, 620px);
+    overflow-y: auto;
+    padding: 14px 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  #settings-body::-webkit-scrollbar { width: 6px; }
+  #settings-body::-webkit-scrollbar-thumb { background: rgba(244, 234, 217, 0.16); }
+
+  #settings-toggle {
+    align-self: center;
+    width: 20px;
+    height: 62px;
+    border: 1px solid rgba(244, 234, 217, 0.1);
+    border-left: none;
+    border-radius: 0 3px 3px 0;
+    background: rgba(16, 15, 18, 0.55);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    color: var(--dim);
+    font-family: var(--font);
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.2s, background 0.2s;
+  }
+  #settings-toggle:hover { color: var(--ink); background: rgba(30, 28, 32, 0.7); }
+
+  .set-section {
+    font-size: 9px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: rgba(244, 234, 217, 0.32);
+    margin: 10px 0 2px;
+    border-bottom: 1px solid rgba(244, 234, 217, 0.08);
+    padding-bottom: 5px;
+  }
+  .set-section:first-child { margin-top: 0; }
+
+  .set-row {
+    display: grid;
+    grid-template-columns: 84px 1fr 34px;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: var(--dim);
+  }
+  .set-name { text-transform: uppercase; }
+  .set-val { text-align: right; color: rgba(244, 234, 217, 0.75); font-size: 9px; }
+
+  .set-row input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 3px;
+    background: rgba(244, 234, 217, 0.16);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  .set-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+  .set-row input[type="range"]::-moz-range-thumb {
+    width: 11px; height: 11px; border: none; border-radius: 50%;
+    background: var(--accent); cursor: pointer;
+  }
+
+  .set-btn {
+    border: 1px solid rgba(244, 234, 217, 0.14);
+    background: rgba(244, 234, 217, 0.03);
+    color: var(--dim);
+    font-family: var(--font);
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    padding: 8px 10px;
+    border-radius: 2px;
+    cursor: pointer;
+    text-transform: uppercase;
+    text-align: left;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .set-btn:hover { color: var(--ink); border-color: rgba(244, 234, 217, 0.35); }
+  .set-btn.on {
+    color: var(--accent);
+    border-color: rgba(255, 180, 87, 0.5);
+    background: rgba(255, 180, 87, 0.08);
+  }
+
+  #toast {
+    position: fixed;
+    left: 50%;
+    top: 40px;
+    transform: translateX(-50%);
+    font-size: 12px;
+    letter-spacing: 3px;
+    color: var(--ink);
+    background: rgba(20, 17, 16, 0.72);
+    border: 1px solid rgba(244, 234, 217, 0.12);
+    padding: 9px 20px;
+    border-radius: 2px;
+    opacity: 0;
+    transition: opacity 0.35s;
+    pointer-events: none;
+    z-index: 5;
+    text-transform: uppercase;
+  }
+  #toast.show { opacity: 1; }
+</style>
+
+<div id="app"></div>
+
+<div id="hud">
+  <div id="stats"></div>
+
+  <div id="trip">
+    <div>TRIP <b id="trip-km">0.00</b> km</div>
+    <div>ALT <b id="trip-alt">0</b> m</div>
+  </div>
+
+  <div id="cluster">
+    <svg viewBox="0 0 200 200" aria-hidden="true">
+      <!-- 240deg arc, opening at the bottom -->
+      <path class="tach-track" d="M 40.2 158.6 A 84 84 0 1 1 159.8 158.6" />
+      <path class="tach-red"   id="tach-red"  d="M 40.2 158.6 A 84 84 0 1 1 159.8 158.6" />
+      <path class="tach-fill"  id="tach-fill" d="M 40.2 158.6 A 84 84 0 1 1 159.8 158.6" />
+    </svg>
+    <div id="speed-val">0</div>
+    <div id="speed-unit">KM / H</div>
+    <div id="gear">N</div>
+    <div id="gear-mode">AUTO</div>
+  </div>
+</div>
+
+<div id="settings">
+  <div id="settings-panel"><div id="settings-body"></div></div>
+  <button id="settings-toggle" type="button" aria-expanded="false" title="Settings">›</button>
+</div>
+
+<div id="toast"></div>
+
+<div id="overlay">
+  <h1 id="title">FASTROADS</h1>
+  <p id="tagline">endless procedural roads</p>
+
+  <div id="keys">
+    <span>W / ↑</span><span>throttle</span>
+    <span>S / ↓</span><span>brake &amp; reverse</span>
+    <span>A D / ← →</span><span>steer</span>
+    <span>SPACE</span><span>handbrake</span>
+    <span>E / Q</span><span>shift up / down</span>
+    <span>G</span><span>auto / manual</span>
+    <span>L</span><span>headlights</span>
+    <span>F</span><span>flash (hold)</span>
+    <span>C</span><span>camera</span>
+    <span>R</span><span>respawn</span>
+    <span>M</span><span>mute</span>
+  </div>
+
+  <div id="garage">
+    <div id="car-list"></div>
+    <div class="garage-row"><span class="garage-label">Paint</span><span id="color-list" style="display:flex;gap:7px;flex-wrap:wrap;justify-content:center"></span></div>
+    <div class="garage-row">
+      <span class="garage-label">Seed</span>
+      <input id="seed-input" type="text" spellcheck="false" autocomplete="off" />
+      <button id="seed-apply" class="eng-chip" type="button">Generate</button>
+      <button id="seed-random" class="eng-chip" type="button">Random</button>
+    </div>
+    <div class="garage-row"><span class="garage-label">Engine</span><span id="engine-list" style="display:flex;gap:5px;flex-wrap:wrap;justify-content:center;max-width:620px"></span></div>
+    <div id="car-detail"></div>
+  </div>
+
+  <button id="start" disabled>Loading…</button>
+  <div id="boot">booting physics runtime…</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/",
+    "@dimforge/rapier3d-compat": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/+esm"
+  }
+}
+</script>
+
+<script type="module">
+  import { boot } from './src/main.js';
+
+  boot().catch((err) => {
+    console.error(err);
+    const el = document.getElementById('boot');
+    el.className = 'err';
+    el.textContent = 'FAILED TO START — ' + (err && err.message ? err.message : err) +
+      '  ·  this project must be served over http:// (ES modules + WASM). Try: npx serve';
+  });
+</script>
