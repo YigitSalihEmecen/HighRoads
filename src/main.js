@@ -109,6 +109,7 @@ export async function boot() {
 
   const game = new Game({ gfx, world, path, chunks, models, roster });
   game.seed = startSeed;
+  game.input.bindTouch(document);
   // No world, no RAPIER: traffic owns no physics objects at all. See traffic.js.
   game.traffic = new Traffic({ scene: gfx.scene, path, chunks, models, roster });
   game.setCar(roster.some((c) => c.id === DEFAULT_CAR) ? DEFAULT_CAR : roster[0].id);
@@ -208,6 +209,7 @@ function buildGarage(game, roster) {
   const select = (id, preview = true) => {
     game.setCar(id);
     for (const [cid, chip] of chips) chip.setAttribute('aria-pressed', String(cid === id));
+    chips.get(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
     refreshDetail();
     // The click is a user gesture, which is the only moment Web Audio will
     // start. Taking it means the player hears the engine before committing to
@@ -274,6 +276,7 @@ function buildGarage(game, roster) {
   const pickEngine = (id) => {
     game.setEngine(id);
     for (const [eid, el] of engineChips) el.setAttribute('aria-pressed', String(eid === id));
+    engineChips.get(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
     refreshDetail();
     flash(engineChips.get(id));
     game.previewEngine().then(refreshDetail);

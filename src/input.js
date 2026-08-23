@@ -60,14 +60,16 @@ export class Input {
    * still releases it — otherwise the throttle sticks on.
    */
   bindTouch(root = document) {
-    const host = root.getElementById ? root.getElementById('touch') : null;
-    if (!host) return false;
-
     const isTouch =
       typeof window !== 'undefined' &&
-      ('ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0);
+      ('ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0 || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches));
     if (!isTouch) return false;
     document.body.classList.add('touch');
+
+    if (this._touchBound) return true;
+    const host = root.getElementById ? root.getElementById('touch') : null;
+    if (!host) return false;
+    this._touchBound = true;
 
     for (const btn of host.querySelectorAll('.tbtn')) {
       const hold = btn.dataset.hold;
@@ -75,21 +77,30 @@ export class Input {
 
       const down = (e) => {
         e.preventDefault();
-        btn.setPointerCapture && btn.setPointerCapture(e.pointerId);
+        try {
+          if (btn.setPointerCapture && e.pointerId != null) {
+            btn.setPointerCapture(e.pointerId);
+          }
+        } catch (_) {}
         btn.classList.add('on');
         if (hold) this.touch[hold] = 1;
         if (tap) this.pressed.add(tap);
       };
       const up = (e) => {
         e.preventDefault();
+        try {
+          if (btn.releasePointerCapture && e.pointerId != null && btn.hasPointerCapture && btn.hasPointerCapture(e.pointerId)) {
+            btn.releasePointerCapture(e.pointerId);
+          }
+        } catch (_) {}
         btn.classList.remove('on');
         if (hold) this.touch[hold] = 0;
       };
 
-      btn.addEventListener('pointerdown', down);
-      btn.addEventListener('pointerup', up);
-      btn.addEventListener('pointercancel', up);
-      btn.addEventListener('pointerleave', up);
+      btn.addEventListener('pointerdown', down, { passive: false });
+      btn.addEventListener('pointerup', up, { passive: false });
+      btn.addEventListener('pointercancel', up, { passive: false });
+      btn.addEventListener('lostpointercapture', up, { passive: false });
       btn.addEventListener('contextmenu', (e) => e.preventDefault());
     }
     return true;

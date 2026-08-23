@@ -152,12 +152,24 @@ export class ChaseCamera {
 
     const bodyH = (vehicle.V && vehicle.V.bodyHeight) || CAMERA.bodyRef;
     const scale = clamp(bodyH / CAMERA.bodyRef, 1, CAMERA.distScaleMax);
-    const r = cfg.dist * scale;
+
+    // Responsive framing for mobile:
+    const aspect = this.camera.aspect || 1.0;
+    // On portrait screens (aspect < 1.0), the narrow horizontal FOV cuts off the sides of the car.
+    // Scale distance and lift look-at aim so the car is positioned gracefully in the upper open half of the screen.
+    const portraitDist = aspect < 1.0 ? clamp(1.2 / aspect, 1.0, 1.7) : 1.0;
+    const portraitAim = aspect < 1.0 ? cfg.aim * 1.6 : cfg.aim;
+
+    const r = cfg.dist * scale * portraitDist;
 
     this._desired
-      .set(Math.sin(this._orbit) * r, cfg.height * scale, Math.cos(this._orbit) * r)
+      .set(
+        Math.sin(this._orbit) * r,
+        cfg.height * scale * (aspect < 1.0 ? 1.2 : 1.0),
+        Math.cos(this._orbit) * r
+      )
       .add(vehicle.renderPos);
-    this._target.copy(vehicle.renderPos).addScaledVector(WORLD_UP, cfg.aim * scale);
+    this._target.copy(vehicle.renderPos).addScaledVector(WORLD_UP, portraitAim * scale);
 
     if (!this.initialised) {
       this.position.copy(this._desired);

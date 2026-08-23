@@ -1,5 +1,5 @@
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>FastRoads — infinite procedural driving</title>
 
 <style>
@@ -9,6 +9,10 @@
     --accent: #ffb457;
     --danger: #ff5f4d;
     --font: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sat: env(safe-area-inset-top, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
   }
 
   * { box-sizing: border-box; }
@@ -22,9 +26,12 @@
     color: var(--ink);
     font-family: var(--font);
     -webkit-font-smoothing: antialiased;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
-  canvas { display: block; }
+  canvas { display: block; touch-action: none; }
 
   #app { position: fixed; inset: 0; }
 
@@ -36,15 +43,17 @@
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.8s ease 0.2s;
+    z-index: 5;
   }
   #hud.live { opacity: 1; }
 
   #cluster {
     position: absolute;
-    right: 26px;
-    bottom: 22px;
+    right: max(26px, var(--sar));
+    bottom: max(22px, var(--sab));
     width: 208px;
     height: 208px;
+    transition: transform 0.2s ease, right 0.2s ease, bottom 0.2s ease;
   }
 
   #cluster svg { width: 100%; height: 100%; overflow: visible; }
@@ -104,8 +113,8 @@
 
   #trip {
     position: absolute;
-    left: 26px;
-    bottom: 24px;
+    left: max(26px, var(--sal));
+    bottom: max(24px, var(--sab));
     font-size: 12px;
     line-height: 1.9;
     letter-spacing: 1px;
@@ -116,8 +125,8 @@
 
   #stats {
     position: absolute;
-    left: 26px;
-    top: 22px;
+    left: max(26px, var(--sal));
+    top: max(22px, var(--sat));
     font-size: 11px;
     line-height: 1.8;
     letter-spacing: 1px;
@@ -143,15 +152,12 @@
     background:
       linear-gradient(to bottom, rgba(12, 11, 16, 0.94) 0%, rgba(12, 11, 16, 0.5) 15%, rgba(12, 11, 16, 0) 32%),
       linear-gradient(to top,    rgba(12, 11, 16, 0.97) 0%, rgba(12, 11, 16, 0.88) 24%, rgba(12, 11, 16, 0) 54%);
-    z-index: 10;
+    z-index: 15;
     transition: opacity 0.7s ease, visibility 0s;
     text-align: center;
-    padding: 20px 20px 16px;
-    /* Only the panels take clicks; the gap between them is the car. */
+    padding: max(18px, var(--sat)) max(18px, var(--sar)) max(16px, var(--sab)) max(18px, var(--sal));
     pointer-events: none;
   }
-  /* Hidden, not removed — Traffic mode can send the player back here. Visibility
-     is what stops the buttons underneath still catching clicks at opacity 0. */
   #overlay.gone {
     opacity: 0;
     visibility: hidden;
@@ -164,21 +170,21 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 11px;
+    gap: 9px;
     width: min(940px, 96vw);
   }
 
   #title {
-    font-size: clamp(26px, 5.6vw, 46px);
+    font-size: clamp(24px, 5.2vw, 44px);
     font-weight: 700;
-    letter-spacing: -3px;
+    letter-spacing: -2px;
     margin: 0;
     background: linear-gradient(100deg, #ffd9a0 0%, #ff9d4d 55%, #e8705a 100%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
   }
-  #tagline { margin: -6px 0 0; font-size: 10px; letter-spacing: 5px; color: var(--dim); text-transform: uppercase; }
+  #tagline { margin: -4px 0 0; font-size: 10px; letter-spacing: 4px; color: var(--dim); text-transform: uppercase; }
 
   #keys {
     display: flex;
@@ -201,13 +207,14 @@
     font-size: 14px;
     font-weight: 600;
     letter-spacing: 5px;
-    padding: 14px 54px;
-    border-radius: 2px;
+    padding: 13px 52px;
+    border-radius: 4px;
     cursor: pointer;
     transition: background 0.25s, transform 0.15s, opacity 0.3s;
     text-transform: uppercase;
+    box-shadow: 0 4px 18px rgba(255, 180, 87, 0.2);
   }
-  #start:hover { background: rgba(255, 180, 87, 0.18); }
+  #start:hover { background: rgba(255, 180, 87, 0.22); }
   #start:active { transform: scale(0.97); }
   #start:disabled { opacity: 0.35; cursor: default; }
 
@@ -230,26 +237,30 @@
     justify-content: center;
     gap: 8px;
     pointer-events: auto;
+    max-width: 100%;
   }
 
   .car-chip {
     border: 1px solid rgba(244, 234, 217, 0.16);
-    background: rgba(244, 234, 217, 0.03);
+    background: rgba(244, 234, 217, 0.04);
     color: var(--dim);
     font-family: var(--font);
     font-size: 11px;
     letter-spacing: 2px;
-    padding: 10px 16px;
-    border-radius: 2px;
+    padding: 9px 15px;
+    border-radius: 4px;
     cursor: pointer;
     text-transform: uppercase;
-    transition: color 0.18s, border-color 0.18s, background 0.18s;
+    transition: color 0.18s, border-color 0.18s, background 0.18s, transform 0.12s;
+    white-space: nowrap;
   }
   .car-chip:hover { color: var(--ink); border-color: rgba(244, 234, 217, 0.4); }
+  .car-chip:active { transform: scale(0.96); }
   .car-chip[aria-pressed="true"] {
     color: var(--accent);
-    border-color: rgba(255, 180, 87, 0.6);
-    background: rgba(255, 180, 87, 0.1);
+    border-color: rgba(255, 180, 87, 0.7);
+    background: rgba(255, 180, 87, 0.14);
+    box-shadow: 0 0 12px rgba(255, 180, 87, 0.25);
   }
 
   .garage-row {
@@ -265,7 +276,7 @@
     letter-spacing: 3px;
     color: rgba(244, 234, 217, 0.35);
     text-transform: uppercase;
-    min-width: 58px;
+    min-width: 54px;
     text-align: right;
   }
 
@@ -280,7 +291,8 @@
   .swatch:hover { transform: scale(1.15); }
   .swatch[aria-pressed="true"] {
     border-color: var(--accent);
-    transform: scale(1.2);
+    transform: scale(1.22);
+    box-shadow: 0 0 10px rgba(255, 180, 87, 0.5);
   }
 
   .eng-chip {
@@ -291,16 +303,17 @@
     font-size: 10px;
     letter-spacing: 1.5px;
     padding: 6px 10px;
-    border-radius: 2px;
+    border-radius: 3px;
     cursor: pointer;
     text-transform: uppercase;
     transition: color 0.15s, border-color 0.15s, background 0.15s;
+    white-space: nowrap;
   }
   .eng-chip:hover { color: var(--ink); border-color: rgba(244, 234, 217, 0.35); }
   .eng-chip[aria-pressed="true"] {
     color: var(--accent);
-    border-color: rgba(255, 180, 87, 0.55);
-    background: rgba(255, 180, 87, 0.08);
+    border-color: rgba(255, 180, 87, 0.65);
+    background: rgba(255, 180, 87, 0.12);
   }
 
   #seed-input {
@@ -310,19 +323,19 @@
     font-family: var(--font);
     font-size: 11px;
     letter-spacing: 2px;
-    padding: 7px 10px;
-    width: 168px;
-    border-radius: 2px;
+    padding: 6px 10px;
+    width: 150px;
+    border-radius: 3px;
     outline: none;
   }
   #seed-input:focus { border-color: rgba(255, 180, 87, 0.55); }
 
   #car-detail {
-    min-height: 42px;
+    min-height: 38px;
     max-width: 680px;
     text-align: center;
     font-size: 12px;
-    line-height: 1.7;
+    line-height: 1.6;
     color: var(--dim);
     letter-spacing: 0.5px;
   }
@@ -330,16 +343,16 @@
 
   #car-stats {
     display: flex;
-    gap: 22px;
+    gap: 20px;
     justify-content: center;
-    margin-top: 8px;
+    margin-top: 6px;
     font-size: 10px;
     letter-spacing: 2px;
     color: var(--dim);
     text-transform: uppercase;
   }
-  #car-stats span b { display: block; color: var(--accent); font-size: 15px;
-                      letter-spacing: 0; margin-top: 3px; font-weight: 600; }
+  #car-stats span b { display: block; color: var(--accent); font-size: 14px;
+                      letter-spacing: 0; margin-top: 2px; font-weight: 600; }
   /* Tapping a car or an engine blips the throttle; flash the chip with it. */
   .car-chip.revving, .eng-chip.revving {
     border-color: rgba(255, 180, 87, 0.9);
@@ -356,7 +369,7 @@
     transform: translateY(-50%);
     display: flex;
     align-items: stretch;
-    z-index: 6;
+    z-index: 25;
     font-family: var(--font);
   }
 
@@ -364,12 +377,12 @@
     width: 0;
     overflow: hidden;
     transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-    background: rgba(16, 15, 18, 0.55);
+    background: rgba(16, 15, 18, 0.65);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
-    border: 1px solid rgba(244, 234, 217, 0.1);
+    border: 1px solid rgba(244, 234, 217, 0.12);
     border-left: none;
-    border-radius: 0 3px 3px 0;
+    border-radius: 0 4px 4px 0;
   }
   #settings.open #settings-panel { width: 268px; }
 
@@ -387,12 +400,12 @@
 
   #settings-toggle {
     align-self: center;
-    width: 20px;
-    height: 62px;
-    border: 1px solid rgba(244, 234, 217, 0.1);
+    width: 22px;
+    height: 60px;
+    border: 1px solid rgba(244, 234, 217, 0.12);
     border-left: none;
-    border-radius: 0 3px 3px 0;
-    background: rgba(16, 15, 18, 0.55);
+    border-radius: 0 4px 4px 0;
+    background: rgba(16, 15, 18, 0.6);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
     color: var(--dim);
@@ -401,7 +414,7 @@
     cursor: pointer;
     transition: color 0.2s, background 0.2s;
   }
-  #settings-toggle:hover { color: var(--ink); background: rgba(30, 28, 32, 0.7); }
+  #settings-toggle:hover { color: var(--ink); background: rgba(30, 28, 32, 0.75); }
 
   .set-section {
     font-size: 9px;
@@ -456,7 +469,7 @@
     font-size: 10px;
     letter-spacing: 1.5px;
     padding: 8px 10px;
-    border-radius: 2px;
+    border-radius: 3px;
     cursor: pointer;
     text-transform: uppercase;
     text-align: left;
@@ -477,42 +490,82 @@
     display: block;
     position: fixed;
     inset: 0;
-    z-index: 7;
+    z-index: 10;
     pointer-events: none;
-    /* Stops the browser treating a drag on a control as a scroll or a zoom. */
     touch-action: none;
   }
 
-  .pad { position: absolute; display: flex; gap: 12px; pointer-events: auto; }
-  .pad-left  { left: 18px;  bottom: 22px; }
-  .pad-right { right: 18px; bottom: 22px; }
-  .pad-aux   { right: 18px; top: 18px; flex-wrap: wrap; justify-content: flex-end;
-               max-width: 210px; gap: 7px; }
+  .pad {
+    position: absolute;
+    display: flex;
+    gap: 10px;
+    pointer-events: auto;
+    touch-action: none;
+  }
+  .pad-left  {
+    left: max(16px, var(--sal));
+    bottom: max(18px, var(--sab));
+  }
+  .pad-right {
+    right: max(16px, var(--sar));
+    bottom: max(18px, var(--sab));
+  }
+  .pad-aux   {
+    right: max(14px, var(--sar));
+    top: max(14px, var(--sat));
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: 210px;
+    gap: 6px;
+  }
 
   .tbtn {
     -webkit-tap-highlight-color: transparent;
     user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
     border: 1px solid rgba(244, 234, 217, 0.22);
-    background: rgba(18, 17, 20, 0.42);
-    backdrop-filter: blur(9px);
-    -webkit-backdrop-filter: blur(9px);
+    background: rgba(18, 17, 20, 0.48);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     color: var(--ink);
     font-family: var(--font);
-    border-radius: 12px;
-    transition: background 0.08s, transform 0.08s;
+    border-radius: 14px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    transition: background 0.08s, transform 0.08s, border-color 0.08s;
   }
   .tbtn:active, .tbtn.on {
-    background: rgba(255, 180, 87, 0.34);
-    border-color: rgba(255, 180, 87, 0.7);
-    transform: scale(0.96);
+    background: rgba(255, 180, 87, 0.38);
+    border-color: rgba(255, 180, 87, 0.85);
+    box-shadow: 0 0 16px rgba(255, 180, 87, 0.5);
+    transform: scale(0.95);
   }
-  .steer, .pedal { width: 84px; height: 84px; font-size: 26px; }
-  .pedal.go { background: rgba(60, 140, 80, 0.3); }
-  .small { min-width: 46px; height: 34px; font-size: 10px; letter-spacing: 1px; border-radius: 8px; }
-
-  @media (max-height: 460px) {
-    .steer, .pedal { width: 68px; height: 68px; font-size: 21px; }
-    .pad-left, .pad-right { bottom: 12px; }
+  .steer, .pedal {
+    width: 76px;
+    height: 76px;
+    font-size: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .pedal.go {
+    background: rgba(45, 125, 65, 0.45);
+    border-color: rgba(90, 200, 120, 0.4);
+  }
+  .pedal.go:active, .pedal.go.on {
+    background: rgba(60, 160, 85, 0.7);
+    border-color: rgba(100, 240, 140, 0.9);
+    box-shadow: 0 0 18px rgba(90, 220, 130, 0.6);
+  }
+  .small {
+    min-width: 42px;
+    height: 32px;
+    font-size: 10px;
+    letter-spacing: 1px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   /* ------------------------------------------------------------- run HUD -- */
@@ -520,17 +573,18 @@
   #run {
     position: absolute;
     left: 0; right: 0;
-    top: 16px;
+    top: max(14px, var(--sat));
     display: none;
     flex-direction: column;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
+    z-index: 6;
   }
   /* Only Traffic mode has a score; Zen mode is just driving. */
   #hud.traffic #run { display: flex; }
 
   #score {
-    font-size: 34px;
+    font-size: 32px;
     font-weight: 600;
     letter-spacing: -1px;
     line-height: 1;
@@ -542,14 +596,14 @@
   #chain {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 8px;
     opacity: 0;
     transition: opacity 0.3s;
   }
   #chain.live { opacity: 1; }
-  #mult { font-size: 15px; font-weight: 600; color: var(--accent); letter-spacing: 0; }
+  #mult { font-size: 14px; font-weight: 600; color: var(--accent); letter-spacing: 0; }
   #chain-bar {
-    width: 128px; height: 3px;
+    width: 120px; height: 3px;
     background: rgba(244, 234, 217, 0.16);
     border-radius: 2px;
     overflow: hidden;
@@ -561,7 +615,7 @@
   }
 
   #award {
-    font-size: 12px;
+    font-size: 11px;
     letter-spacing: 2px;
     color: var(--accent);
     opacity: 0;
@@ -576,20 +630,21 @@
   #gameover {
     position: fixed;
     inset: 0;
-    z-index: 12;
+    z-index: 30;
     display: none;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 14px;
     text-align: center;
-    background: radial-gradient(120% 90% at 50% 45%, rgba(34, 20, 18, 0.86) 0%, rgba(10, 9, 13, 0.95) 70%);
+    padding: max(20px, var(--sat)) max(20px, var(--sar)) max(20px, var(--sab)) max(20px, var(--sal));
+    background: radial-gradient(120% 90% at 50% 45%, rgba(34, 20, 18, 0.88) 0%, rgba(10, 9, 13, 0.96) 70%);
   }
   #gameover.show { display: flex; }
   .go-title { font-size: 12px; letter-spacing: 6px; color: var(--danger); text-transform: uppercase; }
   #go-points {
     display: block;
-    font-size: clamp(46px, 11vw, 74px);
+    font-size: clamp(42px, 10vw, 70px);
     font-weight: 700;
     letter-spacing: -3px;
     line-height: 1;
@@ -602,22 +657,253 @@
   #toast {
     position: fixed;
     left: 50%;
-    top: 40px;
+    top: max(34px, var(--sat));
     transform: translateX(-50%);
     font-size: 12px;
     letter-spacing: 3px;
     color: var(--ink);
-    background: rgba(20, 17, 16, 0.72);
-    border: 1px solid rgba(244, 234, 217, 0.12);
+    background: rgba(20, 17, 16, 0.78);
+    border: 1px solid rgba(244, 234, 217, 0.14);
     padding: 9px 20px;
-    border-radius: 2px;
+    border-radius: 3px;
     opacity: 0;
     transition: opacity 0.35s;
     pointer-events: none;
-    z-index: 5;
+    z-index: 28;
     text-transform: uppercase;
   }
   #toast.show { opacity: 1; }
+
+  /* ------------------------------------------- RESPONSIVE / MOBILE RULES -- */
+
+  /* Touch devices: hide physical keyboard helper */
+  body.touch #keys {
+    display: none;
+  }
+
+  /* Mobile Portrait Layout */
+  @media (max-width: 640px) {
+    #title { font-size: 26px; }
+    #tagline { font-size: 9px; letter-spacing: 3px; }
+    #dock {
+      gap: 7px;
+      max-height: 52vh;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 10px 12px;
+      background: rgba(14, 13, 18, 0.76);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(244, 234, 217, 0.12);
+      border-radius: 8px;
+    }
+    #car-list, #engine-list {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      justify-content: flex-start;
+      max-width: 100%;
+      width: 100%;
+      padding: 2px 2px 6px;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    #car-list::-webkit-scrollbar, #engine-list::-webkit-scrollbar {
+      display: none;
+    }
+    .car-chip, .eng-chip {
+      flex-shrink: 0;
+    }
+    #car-detail {
+      font-size: 11px;
+      line-height: 1.5;
+      min-height: auto;
+    }
+    #car-stats {
+      gap: 12px;
+      font-size: 9px;
+    }
+    #car-stats span b {
+      font-size: 13px;
+    }
+    #start {
+      padding: 11px 40px;
+      font-size: 13px;
+    }
+
+    /* In-game HUD in portrait */
+    #cluster {
+      right: max(14px, var(--sar));
+      bottom: max(112px, var(--sab));
+      transform: scale(0.78);
+      transform-origin: bottom right;
+    }
+    #trip {
+      left: max(14px, var(--sal));
+      bottom: max(116px, var(--sab));
+      font-size: 11px;
+      line-height: 1.7;
+    }
+    #stats {
+      left: max(14px, var(--sal));
+      top: max(14px, var(--sat));
+      font-size: 10px;
+    }
+  }
+
+  /* Mobile Landscape Layout */
+  @media (max-height: 520px) {
+    #overlay {
+      padding: max(8px, var(--sat)) max(14px, var(--sar)) max(8px, var(--sab)) max(14px, var(--sal));
+      justify-content: space-between;
+    }
+    #brand {
+      position: absolute;
+      top: max(8px, var(--sat));
+      left: max(16px, var(--sal));
+      align-items: flex-start;
+      text-align: left;
+      z-index: 2;
+    }
+    #title { font-size: 20px; letter-spacing: -1px; }
+    #tagline { font-size: 8px; letter-spacing: 2px; margin-top: -2px; }
+    #keys { display: none; }
+    #dock {
+      gap: 5px;
+      max-height: 48vh;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 6px 12px;
+      background: rgba(14, 13, 18, 0.78);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(244, 234, 217, 0.12);
+      border-radius: 8px;
+      width: min(840px, 94vw);
+    }
+    #garage {
+      gap: 5px;
+    }
+    #car-list, #engine-list {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      justify-content: flex-start;
+      max-width: 100%;
+      width: 100%;
+      padding: 2px 2px 4px;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    #car-list::-webkit-scrollbar, #engine-list::-webkit-scrollbar {
+      display: none;
+    }
+    .car-chip {
+      flex-shrink: 0;
+      padding: 6px 11px;
+      font-size: 10px;
+    }
+    .eng-chip {
+      flex-shrink: 0;
+      padding: 4px 8px;
+      font-size: 9px;
+    }
+    .garage-row {
+      gap: 6px;
+    }
+    .garage-label {
+      font-size: 9px;
+      min-width: 44px;
+    }
+    .swatch {
+      width: 20px;
+      height: 20px;
+    }
+    #car-detail {
+      font-size: 10px;
+      line-height: 1.4;
+      min-height: auto;
+    }
+    #car-stats {
+      margin-top: 2px;
+      gap: 12px;
+      font-size: 8px;
+    }
+    #car-stats span b {
+      font-size: 12px;
+      margin-top: 1px;
+    }
+    #seed-input {
+      padding: 4px 8px;
+      font-size: 10px;
+      width: 120px;
+    }
+    #start {
+      padding: 8px 34px;
+      font-size: 12px;
+      letter-spacing: 3px;
+    }
+    #boot {
+      font-size: 9px;
+      min-height: 12px;
+    }
+
+    /* In-game HUD in landscape: cluster bottom-center between thumbs */
+    #cluster {
+      right: auto;
+      left: 50%;
+      bottom: max(6px, var(--sab));
+      transform: translateX(-50%) scale(0.68);
+      transform-origin: bottom center;
+    }
+    #trip {
+      left: max(16px, var(--sal));
+      top: max(46px, var(--sat));
+      bottom: auto;
+      font-size: 10px;
+      line-height: 1.6;
+    }
+    #stats {
+      left: max(16px, var(--sal));
+      top: max(12px, var(--sat));
+      font-size: 9px;
+    }
+
+    /* Touch Controls in landscape */
+    .steer, .pedal {
+      width: 64px;
+      height: 64px;
+      font-size: 20px;
+    }
+    .pad-left {
+      left: max(14px, var(--sal));
+      bottom: max(10px, var(--sab));
+    }
+    .pad-right {
+      right: max(14px, var(--sar));
+      bottom: max(10px, var(--sab));
+    }
+    .pad-aux {
+      max-width: 220px;
+      gap: 5px;
+      top: max(10px, var(--sat));
+      right: max(12px, var(--sar));
+    }
+    .small {
+      min-width: 36px;
+      height: 28px;
+      font-size: 9px;
+    }
+
+    /* Settings in landscape: full height drawer */
+    #settings {
+      top: 0;
+      transform: none;
+      height: 100%;
+    }
+    #settings-body {
+      max-height: 100vh;
+      padding: 10px 12px 14px;
+    }
+  }
 </style>
 
 <div id="app"></div>
