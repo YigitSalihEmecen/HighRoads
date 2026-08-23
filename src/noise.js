@@ -103,16 +103,41 @@ export function createTerrain(seed) {
   // is allowed to allocate.
   const t0 = [0, 0, 0], t1 = [0, 0, 0], t2 = [0, 0, 0];
 
+  /**
+   * Octave budget for the sample currently being evaluated.
+   *
+   * The terrain grid is dense on the carriageway and sparse at the fog line —
+   * lateral columns reach 55 m apart out there, against base octaves whose
+   * finest wavelength is around 7 m. Sampling a 7 m feature every 55 m is
+   * aliasing, and aliased gradient noise does not read as "distant detail", it
+   * reads as random spikes: the pointy facets on far hillsides came from here,
+   * not from the landform generators.
+   *
+   * So the octave count is a function of how finely the mesh can resolve the
+   * result. Each fBm variant fades its last octave in and out rather than
+   * dropping it, or the far field would visibly pop as the player drives.
+   * Normalisation uses only the octaves actually taken, so reducing the budget
+   * costs detail without costing amplitude.
+   */
+  let lodOct = 99;
+
+  /** Amplitude weight for octave `i` under the current budget, 0..1. */
+  function lodAmp(i) {
+    return lodOct >= 99 ? 1 : clamp(lodOct - i, 0, 1);
+  }
+
   /** Plain fBm. For masks and fields that are not landforms. */
   function fbm(noise, x, y, freq, oct, gain) {
     let a = 0, amp = 1, f = freq, norm = 0;
     for (let i = 0; i < oct; i++) {
-      a += amp * noise(x * f, y * f, t0)[0];
-      norm += amp;
+      const w = amp * lodAmp(i);
+      if (w <= 0) break;
+      a += w * noise(x * f, y * f, t0)[0];
+      norm += w;
       amp *= gain;
       f *= 2;
     }
-    return a / norm;
+    return norm > 0 ? a / norm : 0;
   }
 
   /**
@@ -128,35 +153,52 @@ export function createTerrain(seed) {
   function erodedFbm(noise, x, y, freq, oct, gain, damp) {
     let a = 0, amp = 1, f = freq, norm = 0, dx = 0, dy = 0;
     for (let i = 0; i < oct; i++) {
+      const w = amp * lodAmp(i);
+      if (w <= 0) break;
       noise(x * f, y * f, t1);
-      a += (amp * t1[0]) / (1 + damp * (dx * dx + dy * dy));
+      a += (w * t1[0]) / (1 + damp * (dx * dx + dy * dy));
       // Accumulate the octave's own derivative, unscaled. Multiplying by the
       // sample frequency makes |Sum d|^2 grow as 4^octave, which drives the
       // damping to ~0.01 by the seventh octave and erases exactly the detail
       // that was supposed to survive on the ridges.
       dx += t1[1];
       dy += t1[2];
-      norm += amp;
+      norm += w;
       amp *= gain;
       f *= 2;
     }
-    return a / norm;
+    return norm > 0 ? a / norm : 0;
   }
 
-  /** Ridged: |n| folded and squared, so crests sharpen and troughs round off. */
+  /**
+   * Ridged: |n| folded and squared, so crests sharpen and troughs round off.
+   *
+   * The fold is SOFTENED. `1 - |n|` has a corner at every zero crossing of n,
+   * and that corner is a genuine C1 discontinuity in the height field — one
+   * per octave, at every scale, which is what produced knife-edged ridges and
+   * spiky facets no amount of mesh resolution could smooth away. Replacing
+   * |n| with sqrt(n² + e) rounds the crest over a band of width ~sqrt(e)
+   * while leaving the flanks untouched, so a ridge still reads as a ridge and
+   * still has a defined crest line — it just has a radius on it, the way an
+   * eroded one does.
+   */
+  const RIDGE_SOFT = 0.004;
   function ridgedFbm(noise, x, y, freq, oct, gain, damp) {
     let a = 0, amp = 1, f = freq, norm = 0, dx = 0, dy = 0;
     for (let i = 0; i < oct; i++) {
+      const w = amp * lodAmp(i);
+      if (w <= 0) break;
       noise(x * f, y * f, t2);
-      const r = 1 - Math.abs(t2[0]);
-      a += (amp * r * r) / (1 + damp * (dx * dx + dy * dy));
+      const n = t2[0];
+      const r = 1 - Math.sqrt(n * n + RIDGE_SOFT);
+      a += (w * r * r) / (1 + damp * (dx * dx + dy * dy));
       dx += t2[1];
       dy += t2[2];
-      norm += amp;
+      norm += w;
       amp *= gain;
       f *= 2;
     }
-    return (a / norm) * 2 - 1;
+    return norm > 0 ? (a / norm) * 2 - 1 : -1;
   }
 
   /**
@@ -257,21 +299,34 @@ export function createTerrain(seed) {
    */
   function canyonH(x, y) {
     const r = ridgedFbm(nC, x, y, 0.0011, 4, 0.5, 0.28) * 0.5 + 0.5;
-    const gorge = smoothstep(0.32, 0.6, r);
+    // Wall width, widened from 0.32..0.60. A 128 m drop compressed into that
+    // narrow a band of the ridged field lands on the mesh as a near-vertical
+    // facet whose normal flips between neighbouring columns — the dark jagged
+    // band across canyon walls. Spread over twice the range it is still
+    // unmistakably a gorge, and every triangle in it has a sane normal.
+    const gorge = smoothstep(0.26, 0.68, r);
     const rim = erodedFbm(nA, x, y, 0.0019, 3, 0.5, 0.3) * 18;
     return 48 + rim - (1 - gorge) * 128;
   }
 
-  /** Plateau: quantised terraces with eroded escarpments between them. */
+  /**
+   * Plateau: terraces with eroded escarpments between them.
+   *
+   * The terrace function is smooth, not quantised. `floor()` blended against
+   * the raw field by a smoothstep still leaves a corner wherever the blend
+   * weight and the sawtooth meet, and those corners are one per terrace across
+   * the whole landform. Instead the staircase itself is built from a
+   * smoothstep: flat across the tread, easing over the riser, C1 everywhere.
+   */
   function plateauH(x, y) {
     const b = erodedFbm(nA, x, y, 0.0013, 4, 0.5, 0.38);
     const steps = 3;
-    const q = Math.floor(b * steps) / steps;
-    // Blend terrace against the raw field so an escarpment has a face rather
-    // than a vertical wall the mesh cannot represent.
-    const frac = b * steps - Math.floor(b * steps);
-    const edge = smoothstep(0.12, 0.44, Math.abs(frac - 0.5) * 2);
-    return lerp(b, q, edge) * 135 + 18;
+    const t = b * steps;
+    const base = Math.floor(t);
+    const frac = t - base;
+    // Riser occupies the middle 40% of each tread; the rest is flat.
+    const terraced = (base + smoothstep(0.3, 0.7, frac)) / steps;
+    return terraced * 135 + 18;
   }
 
   /* -------------------------------------------------------------- fields -- */
@@ -281,12 +336,13 @@ export function createTerrain(seed) {
    * height — road alignment, terrain mesh, prop placement — comes through here,
    * so they can never disagree.
    */
-  function base(x, z) {
+  function base(x, z, octaves = 99) {
+    lodOct = octaves;
     const p = domainWarp(x, z, 130, 0.0006);
     const wx = p.x, wy = p.y;
     const w = archetypes(x, z);
 
-    return (
+    const h = (
       w.plains * plainsH(wx, wy) +
       w.hills * hillsH(wx, wy) +
       w.valley * valleyH(wx, wy) +
@@ -294,6 +350,8 @@ export function createTerrain(seed) {
       w.canyon * canyonH(wx, wy) +
       w.plateau * plateauH(wx, wy)
     );
+    lodOct = 99;
+    return h;
   }
 
   /**
@@ -304,11 +362,20 @@ export function createTerrain(seed) {
    * apart there and a short wavelength would alias into spikes.
    */
   function height(x, z, lateral) {
-    let h = base(x, z);
+    // Octave budget from the mesh's own lateral resolution: ~2.4 m columns on
+    // and near the road, growing geometrically to 55 m at the corridor edge.
+    // Eight octaves are resolvable close in; past ~400 m barely three are.
+    const octaves = lerp(8, 3.2, smoothstep(80, 420, lateral));
+
+    let h = base(x, z, octaves);
     const detail = 1 - smoothstep(60, 200, lateral);
     const graded = lerp(0.2, 1, smoothstep(16, 90, lateral));
+    // The mid-scale roughness bottoms out around a 33 m wavelength, which needs
+    // columns closer than ~16 m to sample honestly. It has to die out before
+    // the far field for the same reason the base octaves do.
+    const mid = 1 - smoothstep(150, 380, lateral);
 
-    h += erodedFbm(nC, x, z, 0.0075, 3, 0.5, 0.5) * 6.2 * lerp(0.35, 1, graded);
+    h += erodedFbm(nC, x, z, 0.0075, 3, 0.5, 0.5) * 6.2 * lerp(0.35, 1, graded) * mid;
     h += fbm(nC, x + 91.3, z - 55.1, 0.028, 2, 0.5) * 0.85 * detail * graded;
     return h;
   }

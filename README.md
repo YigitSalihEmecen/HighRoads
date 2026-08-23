@@ -120,39 +120,89 @@ loose fill will not.
 
 ### Tunnels
 
-Real bores through the rock, enabled by default. Where cover stays deep enough for long
-enough to be worth boring, the mountain is left solid right across the corridor
-so the terrain sheet becomes the lid, a swept arch supplies floor, walls and
-roof, and the mouths are cut out of the terrain's index buffer wherever the rock
-is thinner than the arch is tall. Measured through a bore:
+Real bores through the rock, on by default (`ROAD.tunnels`). Where cover stays
+deep enough for long enough to be worth boring, the mountain is left solid right
+across the corridor so the terrain sheet becomes the lid, and a swept arch
+supplies floor, walls and roof.
 
-```
-  s     tun   over-road   verdict
- 657   0.00        0.0    open road
- 665   0.12        1.4    MOUTH (quads removed)
- 681   0.99       22.0    solid rock above bore
- 713   1.00       19.4    solid rock above bore
- 729   0.17        2.1    MOUTH (quads removed)
- 737   0.00        0.0    open road
-```
+**Where a bore goes is decided by a stateless filter.** The marking used to grow
+runs incrementally and commit one only when it looked "settled" relative to how
+far generation had got, which made the answer depend on the order samples were
+framed in. It froze runs mid-mountain: measured, 32 m of road carrying 11–14 m
+of rock with no bore marked. Outside a bore the cut-and-fill clamp flattens the
+corridor to road level, so that became a **15 m vertical cliff straight across
+the carriageway** at the tunnel exit — which is what "the roof doesn't integrate
+with the terrain" actually was. Not a seam: a missing tunnel.
 
-No terrain intrudes into the carriageway anywhere along the span, and the car
-drove through the first tunnel at 209 km/h. But on a later span it stops dead
-inside the bore, upright, all four wheels down, at the right height, at full
-throttle, with no lateral offset. Ruled out by measurement: the portal rings
-(excluded from the collider, and it still happens), the mouth width, and unstable
-tunnel flags (0 of 1008 samples change between build time and final).
+It is now four standard 1-D morphological steps on the rock-cover signal —
+threshold, close short shallow spots, open away short runs, then a distance
+transform for the portal ramp — so a sample's answer depends only on the cover
+within a bounded window around it. Results are written only where they are
+final, and the spline will not report a length as ready until the flags there
+have settled, so no chunk is ever built against one that might still change.
 
-Two findings from that hunt are worth keeping regardless. Releasing the cut clamp
-across the full width — the obvious reading of "leave the terrain alone here" —
-raises the carriageway with it and builds a ramp out of the portal, so the car
-drives up over the mountain rather than into it. And the portal rings must not
-be collision geometry: a span is clipped to its chunk, so a tunnel crossing a
-chunk boundary grows a pair of them back to back mid-bore, which as collision
-geometry is a bulkhead across the road.
+Two mesh faults are worth recording because neither shows up in any ray test.
+The shell used to leave its floor points where they were, on the reasoning that
+it should sit flush on the slab — what that actually did was sweep the floor a
+second time in the same place, and since the lining is double-sided both copies
+drew and fought for the depth buffer. **11.4% of every bore's triangles were
+coincident**, which is the shimmer along the floor. And end caps were emitted at
+both ends of every span, including where a span had merely been clipped by a
+chunk boundary, so a ring of rock appeared around the bore in the middle of the
+tunnel once every 120 m. Caps now go only where the bore really ends, and spans
+snap to a global station grid so two chunks meeting at a boundary generate
+bit-identical vertices there.
+
+**Everything else about a tunnel is decided in road space.** The previous scheme
+asked a height question — "is this terrain vertex below the arch?" — and it
+could not bound its own error. Two rules replace it:
+
+*Clearance, not cutting.* `boreClearance(v)` is the height above the road plane
+that terrain is held clear of, applied with a `max`. The mountain therefore
+*cannot* reach into the bore, whatever the rock cover does, so no roof quad ever
+has to be removed to keep the carriageway open. Cutting on a height test was
+only ever as reliable as where the grid's vertices happened to land.
+
+*The mouth is a rectangle.* A vertex is a mouth if the tunnel factor is in
+transition and `|v|` is inside the bore — which is exactly the two rows over
+which the surface climbs from cut-and-fill level to the mountain. That climb is
+the rock face, and the face is the only thing that stands across the bore.
+
+The portal transition is deliberately **short** — 6 m, about two rows. At the
+old 18 m the terrain climbed the full depth of the mountain inside the ramp, up
+to 60 m of rise, so the vertex left standing beside the hole sat **35 m** above
+the arch while the shell reached only 8.2 m. That ring of nothing around every
+mouth was the visible "gap around the tunnel". Making the transition a face
+instead bounds the surviving edge to one cell of cut slope, which the shell
+covers by construction rather than by luck.
+
+Both the clamp release and the headroom arrive on the *same* eased ramp — a step
+on either put a riser the height of the arch between one row and the next — and
+the headroom decays sideways over 45 m rather than over the 2.5 m sill, so the
+bore sits inside a hill instead of under a creased 62° berm.
+
+Measured: **0** vertices cut away inside a sealed bore (each would be open sky
+over the road) and **0** left standing in a mouth, across six seeds. **0** sky
+leaks in 211 000 rays fired up and outward from inside sealed bores, against the
+terrain *and* the shell. Worst terrain step away from a portal **1.4 m** across
+seven seeds, against 28.8 m before; portal faces are 6–9 m, which is what a
+portal is.
+
+Three things learned the hard way and worth keeping:
+
+- Releasing the cut clamp across the full width — the obvious reading of "leave
+  the terrain alone here" — raises the carriageway with it and builds a ramp out
+  of the portal, so the car drives up over the mountain rather than into it.
+- The portal rings must not be collision geometry. A span is clipped to its
+  chunk, so a tunnel crossing a chunk boundary grows a pair of them back to back
+  mid-bore, which as collision geometry is a bulkhead across the road.
+- One threshold per concept. Four places tested "is there a tunnel here" with
+  three different numbers, and in the band between them the terrain was lifted
+  clear of the arch but not removed — an 8.8 m wall across the approach, which
+  is `tunnelCrown + tunnelRoof` exactly.
 
 Without tunnels the cut-and-fill clamp produces deep cuttings instead — 13 m to
-77 m depending on seed.
+77 m depending on seed — and they look fine.
 
 ### Terrain is generated in road space, not world space
 
@@ -256,33 +306,115 @@ wrapping the box around the whole body left it scraping. Rapier's contact
 friction then fought the tyres, and the two heaviest bodies — van and monster
 truck — simply never moved.
 
-### Steering is limited by grip *and* by rollover
+### Steering is limited by grip and by rollover — until the car is sideways
 
-For a steady turn `v²/R = a_max`, and Ackermann gives `R = L/tan(δ)`, so the
-largest angle the car can actually follow is
+In a steady-state turn `v²/R = a_max` and Ackermann gives `R = L/tan(δ)`, so the
+largest angle the car can actually follow is `δ_max = atan(L·a_max/v²)`, with
+`a_max` the lesser of what the tyres will hold and what the vehicle will stand
+up to (`SSF·g`, half-track over centre-of-mass height). Let the player exceed it
+and the front tyres are asked for more than they have: the wheel turns, the car
+plows on, and it feels completely disconnected from its front axle. That is why
+the Monster Truck understeers and the Sport does not.
 
-For a steady turn `v²/R = a_max`, and Ackermann gives `R = L/tan(δ)`, so the
-largest angle the car can actually follow is
+**But it is a steady-state derivation, and a slide is not a steady state.** Once
+the car is sideways the front wheels are being pointed down the velocity vector,
+not used to generate more lateral force, so neither ceiling applies to them.
+Enforcing it anyway is what made a slide unrecoverable: measured at 108 km/h,
+the rollover limit capped the lock at **4.3°**, so a driver trying to catch a
+190°/s spin had essentially no countersteer and none of it was their fault.
+Countersteer took 3.96 s to arrest and the car went right round.
 
-```
-δ_max = atan( L · a_max / v² )
-a_max = min( μ·(g + downforce·v²/m),  SSF·g )        SSF = half-track / CoM height
-```
+The lock now opens as the chassis slip angle grows — **proportionally**, to a
+fixed multiple of whatever the limit already was, never a jump to full lock.
+Going straight to 33° the moment the car moved around read as the steering ratio
+changing underneath you. It costs nothing when straight, because the term is
+zero there, and it does not make the tall vehicles roll: a saturated tyre does
+not produce more lateral force just because the wheel is turned further, and a
+slalom at 90 km/h in the monster truck, van, military and pickup stays level.
 
-This is the single change that most affects how the car feels. A hand-drawn
-speed-sensitive curve let the wheel reach angles the car could never follow —
-at 150 km/h it allowed 12° when the tyres could only use about 2.5°. You steered
-and almost nothing happened, which is exactly the sensation of a car being
-disconnected from its front axle. Capping the input at the grip limit (plus a
-5% margin, so a slide is still provokable) means whatever you ask for, the car
-delivers.
+Two smaller changes carry the rest of the feel:
 
-The second term is the Static Stability Factor, the real-world rollover metric.
-A vehicle tips once lateral acceleration exceeds `SSF·g`, so anything whose SSF
-is below its own grip coefficient rolls *before* it slides. That is precisely
-the van (SSF 0.80) and the monster truck (0.86), and without this term they lie
-down in the first corner every time. The sports car (SSF 1.60) is grip-limited,
-as it should be — it slides.
+- The Magic Formula shape factor was 1.45, which keeps only `sin(C·π/2)` = 76%
+  of peak grip once the slip angle is large — the tyre falls off a cliff the
+  moment it lets go. At 1.25 it keeps 92%, and a slide becomes something you
+  steer rather than something that happens to you. Speed retained through a
+  drift went from 15 to **51 km/h**.
+- A yaw damper fades in between 36° and 72° of chassis slip. Below 36° it does
+  literally nothing. It was tried at 23° and a strength of 3.0, which caught a
+  spin in 0.68 s — excellent, and completely obvious: 23° is an ordinary slide,
+  so the car was being straightened out from under the driver every time they
+  provoked one. Late and gentle, it is a net that catches a genuine spin rather
+  than a hand on the wheel.
+
+Measured end to end: a handbrake turn at 108 km/h leaves the car yawing at
+3.2 rad/s. Untouched it takes 3.45 s to arrest and rotates 286° — very nearly
+all the way round. With the assist it is 2.54 s and 135°. The assist is doing
+real work without doing the driving.
+
+### Depth of field was the wrong tool
+
+Depth of field focuses at *one* distance. With focus pulled toward the horizon
+as speed rose, the car — five metres from the camera — became the most
+out-of-focus thing on screen, which in a driving game is nonsense.
+
+Radial blur is the effect that belongs here: the centre of the screen, where the
+car and the road ahead are, stays perfectly sharp, and samples are smeared along
+the direction away from the centre so the periphery streaks past. It reads as
+speed because that is what speed looks like, and it never touches the thing you
+are steering. The field of view opens 12° across the speed range as well —
+`CAMERA.speedRef` used to be 165 m/s, which is 594 km/h, so every speed-dependent
+camera term had been effectively inert.
+
+### Two modes, and a reason to take a risk
+
+**Zen** is the original brief: an empty road, no traffic, nowhere to be.
+**Traffic** turns the same road into a game — the other cars are the obstacle
+and the reward at once, because the points are for threading past them, and the
+run ends the moment you actually hit one.
+
+The scoring is the familiar shape and the shape is the point: closer pays more,
+and consecutive passes build a multiplier that bleeds away unless it is
+refreshed. What makes that a decision rather than a readout is that the chain is
+worth more than any single pass, so the player keeps hunting for one more gap
+instead of backing off — which is exactly the behaviour that gets them hit.
+
+Three details are load-bearing:
+
+- **Oncoming traffic pays 2.4×.** It arrives at the sum of both speeds, so the
+  same lateral gap is a fraction of the time to judge and react to. Paying the
+  same for it would make the safe half of the road the optimal one.
+- **The chain is refilled, not extended.** A late pass is worth exactly as much
+  as an early one, so there is never a reason to hold back and wait for the bar.
+- **There is a cooldown.** Without one, threading between two cars abreast scores
+  twice in the same instant, and a queue in both lanes is a jackpot for a single
+  decision. One decision, one payment.
+
+A pass is measured over the whole encounter, not sampled: `_trackPasses` keeps a
+running minimum of the clearance and reports it once the car is astern. At
+250 km/h against oncoming traffic two cars can go from ten metres apart to ten
+metres past inside one frame, so a per-frame sample would make the reward depend
+on frame rate.
+
+### The garage is the real car
+
+The title screen leaves the middle of the screen transparent and orbits the
+actual vehicle, sitting on the actual road, in the actual scene. Nothing is a
+preview: paint is a live material property, so a colour click is immediate, and
+switching car rebuilds the same vehicle the player is about to drive.
+
+Picking a car or an engine also blips the throttle, with the gearbox forced to
+neutral so the engine revs freely instead of bogging against a stopped
+driveline. That first click is what starts Web Audio — it is the user gesture
+the API requires, and taking it there means the player hears an engine before
+committing to it rather than discovering it a kilometre down the road.
+
+The car is **pinned** while it is being chosen. Cancelling its velocity is not
+enough: the drift that accumulates inside a physics step was 11 cm in five
+seconds on a 4.7% grade, so any seed with a gradient under the spawn had the
+player picking a paint colour for something rolling away down the road. Position
+is rewritten too, with height left free so the suspension still settles.
+Leaving the garage sweeps the camera round behind the car rather than cutting to
+it, which matters at the exact moment the player takes control.
 
 ### Rendered motion is interpolated between physics steps
 
@@ -362,26 +494,59 @@ is honest) and the host supplies its own reversing force.
 
 ### Traffic
 
-Kinematic, not simulated. Nine more raycast vehicles would cost nine more
-drivetrains and give nothing back — nobody sees an AI car's suspension travel,
-and an AI that can spin into a ditch is a bug. Each car rides the spline
-directly and carries a Rapier body so contact is detectable. What *is* simulated
-is behaviour: a car-following model with a time headway, awareness of the player
-behind, and lane changes both to overtake and to yield.
+**Traffic owns no physics objects.** There are no traffic rigid bodies and no
+traffic colliders anywhere in the world. A car is a position on the spline,
+`(s, v)`, a speed, and a mesh.
 
-Measured: 14 cars held around the player, both directions, 65–110 km/h, lane
-offsets at ±1.4 and ±4.3 m. Flashing behind a car in the inner lane moves it out
-(lane 0 → 1, offset 1.45 → 4.34 m) and it lifts off while it does. Tailgating
-*without* flashing pushes it slightly above its own cruise, which is what real
-drivers do.
+This is a deliberate reversal. Every previous version tried to make traffic real
+bodies so collisions would "just work", and each failed the same way: a body
+driven by writing its velocity has effectively infinite mass, so the solver's
+contact impulse is never consumed and compounds frame over frame. Measured
+outcomes along the way — a struck car reaching 6920 km/h, the player ejected
+35 m vertically, wrecks handed back several hundred metres per second, and after
+each patch, cars that simply stopped and sat in the road. Releasing control just
+before contact bounded the damage without curing it, because the object still
+had two masters.
 
-**Traffic colliders are sensors, not solids.** A kinematic body in Rapier has
-effectively infinite mass, so any overlap with the player resolves entirely by
-moving the player — and because traffic is teleported along the spline each
-frame rather than swept, that resolves as a catapult. Measured: the player spent
-**90.31%** of a run airborne with solid traffic, against **0.00%** with sensors.
-Contact is still reported, so a deliberate collision response can be authored on
-top; what is gone is the launching.
+Giving it one master makes a whole class of bugs unrepresentable. Traffic cannot
+be launched, cannot gain energy, and cannot come to rest in a live lane. The
+player's suspension rays cannot find "ground" on a roof — the bug that arrived
+twice by different routes. And nine cars cost nine matrices a frame instead of
+nine rigid bodies.
+
+Hitting one still has to feel like hitting something. The overlap test is two
+boxes in road space, which is cheap and stable in a way a world-space test on a
+curved road is not. The response is the closed-form impulse for two masses
+meeting at a closing speed:
+
+```
+j = −(1 + e) · (v_rel · n) · m₁m₂/(m₁ + m₂)
+```
+
+applied to the player's body and to nothing else, resolved along the shallower
+overlap axis so a rear-end shunt is told from a side-swipe. Energy cannot be
+injected: the impulse always opposes the approach, by construction. It is capped
+at 11 m/s of Δv — not a fudge, but the difference between a shunt and being
+deleted from the world by a glancing blow at 300 km/h.
+
+The struck car takes its half as a scripted spin-out: it slews toward the verge,
+rotating and slowing, and leaves after a few seconds. Because that is scripted
+it can move out of the way immediately, so no penetration ever persists and
+there is nothing for a solver to recover from.
+
+What *is* simulated is behaviour, because that is the part you feel: a
+car-following model with a time headway, corner speed from `√(a/κ)`, awareness
+of the player behind, and lane changes both to overtake and to yield when
+flashed. Separation is *asserted* rather than converged on — with nothing
+simulated, overlap can be made impossible instead of unlikely.
+
+Cars appear beyond 460 m, where fog and depth of field have taken them. The old
+window started 40 m ahead, which put cars into existence in plain sight in the
+middle of the carriageway.
+
+Measured, four minutes at 150 km/h across four seeds: nearest spawn 460 m,
+longest a healthy car sat still **0.00 s**, car-frames below 1 m/s **0.00%**,
+same-lane overlaps **0**, settled lane error 0.076 m, population 9 of 9.
 
 ### Depth, not fog
 
@@ -431,21 +596,19 @@ Half of every draw is taken near one of a handful of cluster seeds rather than
 independently. Independent draws give a Poisson field — statistically even, and
 it reads exactly as "scattered to fill space". Clumping produces thickets and
 copses with open ground between them. Canopy is additionally gated on the
-squared forest-density field so stands have edges, and rock is biased onto steep
-ground so outcrops gather where outcrops belong.
+squared forest-density field so stands have edges and a clearing has nothing in
+it.
 
 Measured nearest-neighbour clustering index: **0.59**, where 1.0 is an evenly
 scattered field and below 1 is clumped.
 
-### Ground cover, and why it is a separate pass
+### Scenery is trees only, for now
 
-Grass runs outside the weighted species draw. It has to read as a continuous
-surface rather than as scattered individuals, so it needs an order of magnitude
-more instances than anything else and its own density mask — competing for the
-same draws as trees starved it. At 192 triangles a tuft it is by far the
-cheapest thing in the scene, which is what makes 300 per chunk affordable.
-Coverage is gated by a mid-frequency noise field with a hard floor, so the
-ground keeps bald patches instead of looking sprayed on.
+Rocks, bushes, plants, flowers, logs and the whole grass pass are switched off.
+They were placed by the same weighted-suitability draw as the trees, and a
+half-populated understorey reads worse than none — the scatter needs designing
+rather than tuning. `foliage.js` is the entire vocabulary; putting a group back
+means adding it there and to `FOLIAGE_GROUPS`, and nothing else changes.
 
 ### Props sit on the mesh, not on the maths
 
@@ -460,9 +623,7 @@ interpolated, not just the height — taking y from the mesh while placing x and
 analytically leaves the point off the triangle whose height was read, which on a
 curve or in the coarse far field is worth most of a metre.
 
-Measured, per batch: rocks, trees, bushes, logs and posts all land at **0 mm**.
-The only non-zero figures are deliberate — grass sunk 40 mm so no daylight shows
-under a tuft on a slope, and reflectors 860 mm up their posts.
+Measured, per batch: every tree batch lands at **0 mm**, and reflectors 860 mm up their posts.
 
 ### Foliage ecology
 
@@ -518,7 +679,7 @@ not. Scattering is deferred to a frame where no ground is being generated:
 | phase | mean | worst |
 |---|---|---|
 | ground (terrain + road + collider) | 6.4 ms | 7.0 ms |
-| props (scatter + grass) | 3.4 ms | 4.3 ms |
+| props (tree scatter) | 3.4 ms | 4.3 ms |
 
 Worst single frame: **7.0 ms**, down from ~15 ms.
 
@@ -562,11 +723,11 @@ All nine settle 4/4 wheels with under 10 mm of sag error against the analytic
 | Seam discontinuity | 6.9 × 10⁻⁶ m |
 | Chunk cost | 2501 terrain verts / 4800 tris + ~125 props / 101k instanced tris, ~9 ms to build, 1 per frame |
 | Streaming | 9 live chunks, 7 prop batches each, flat heap over 10 km |
-| Foliage | 54 models + 3 grass, one shared material |
+| Foliage | 6 canopy species, 26 models, one shared material |
 | Terrain relief | mountains to 147 m, 7° mean slope; plains 3° |
 | Seeds | `?seed=` in the URL; identical seed reproduces the road exactly |
-| Tunnels | 0–18% of route by seed; 0 of 4181 floor probes found a hole |
-| Carriageway | 4 lanes of 2.9 m, two each way, solid double centre line |
+| Tunnels | 0–18% of route by seed; 0 steps and 0 holes in ~500k carriageway ray probes |
+| Carriageway | 4 lanes of 3.7 m, two each way, solid double centre line |
 | Canopy clustering index | 0.59 (1.0 = evenly scattered) |
 | 4 min drive | 13.7 km at 209 km/h, 0.5 m max lateral, 0.00% airborne, 0 respawns |
 | Scene cost | ~151k instanced triangles and 9 batches per chunk; ~1.5 M triangles live |
@@ -647,12 +808,15 @@ All nine settle 4/4 wheels with under 10 mm of sag error against the analytic
 
 ### Known limitation
 
-About 12 vertices per chunk (0.5%), all beyond 478 m lateral, still carry
-unreliable normals: that is where the fold guard squeezes columns into slivers
-on the inside of a bend. It is inherent to road-space terrain. The terrain
-material is flat-shaded, so rendered normals come from screen-space derivatives
-rather than the attribute, and the colouring takes `|n.y|` so a sliver cannot
-paint a slope as a cliff. At that distance fog leaves ≤13% of the colour.
+Out past 420 m lateral, about three terrain cells per seed still have faces
+meeting at more than 60°. **Every one of them is on the inside of a bend**, and
+the cause is the fold guard: it maps lateral offsets through the *local*
+curvature, which differs from row to row, so a cell 600 m out is a skewed
+parallelogram and its normal is unreliable. That is inherent to road-space
+terrain, not to the noise. Colouring takes `|n.y|` so a sliver can never paint a
+slope as a cliff, and at that distance fog leaves almost none of the colour.
+Fixing it properly means making the fold mapping independent of per-row
+curvature.
 
 ## Tuning
 
@@ -662,10 +826,11 @@ Everything lives in `src/config.js`. The interesting knobs:
 - `VEHICLE.springK` / `damperBump` / `damperRebound` — ride quality. Critical
   damping for the corner mass is `2·√(k·m/4)` ≈ 7250; the defaults sit at
   0.46/0.61 of that.
-- `CARS[].mass / peakTorque / grip / comHeight` — vehicle character. Geometry is
-  measured, so these are the only numbers worth touching.
-- `FOLIAGE_GROUPS[].cap` and `GRASS.cap` — the triangle budget for scenery.
-  Canopy is the expensive one at ~2200 triangles a tree; grass is 192.
+- `CARS[].mass / grip / comHeight / travelScale` — vehicle character. Geometry is
+  measured and engine_sim owns the torque curve, so these are the only numbers
+  worth touching.
+- `FOLIAGE_GROUPS.canopy.cap` / `.picks` — the triangle budget for scenery, at
+  roughly 2200 triangles a tree and one draw call per model per chunk.
 - `CHUNK.nearStep` / `nearBand` — how finely the drivable band is meshed. See
   the off-road note above before raising the amplitude of the detail octaves in
   `noise.js` to match.

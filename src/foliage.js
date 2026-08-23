@@ -1,15 +1,17 @@
 /**
- * foliage.js — which plants exist, how big they are, and where they belong.
+ * foliage.js — which trees exist, how big they are, and where they belong.
  *
- * The Quaternius pack is deliberately over-supplied: 150 models covering snow,
- * desert and autumn variants we mostly don't want. This module curates a
- * temperate subset and attaches the ecology — the rules that decide whether a
- * given patch of hillside gets pines, birches, scrub or bare rock.
+ * SCOPE: trees only, deliberately. The Quaternius pack also ships rocks,
+ * bushes, plants, flowers, logs and grass tufts, and all of them are currently
+ * switched off — the scatter needs designing properly rather than tuning, and
+ * a half-populated understorey reads worse than none. The species table below
+ * is the whole vocabulary; adding a group back means adding it here and to
+ * FOLIAGE_GROUPS, and nothing else changes.
  *
  * Placement is driven by three signals already available from the terrain:
  *   altitude   pushes conifers up and broadleaves down, and stops everything
  *              at the treeline;
- *   slope      bare rock on anything steep enough that soil wouldn't hold;
+ *   slope      nothing grows on ground too steep for soil to hold;
  *   region     the biome mask from noise.js, so forest thins out into open
  *              country and back over kilometres rather than metres.
  *
@@ -30,7 +32,6 @@
 
 /** @type {Record<string, FoliageKind>} */
 export const FOLIAGE = {
-  // ---- canopy ------------------------------------------------------------
   pine: {
     models: ['PineTree_1', 'PineTree_2', 'PineTree_3', 'PineTree_4', 'PineTree_5'],
     height: [9, 19],
@@ -85,113 +86,24 @@ export const FOLIAGE = {
     lateral: [15, 150],
     regionBias: 0.9,
   },
-
-  // ---- understorey -------------------------------------------------------
-  bush: {
-    models: ['Bush_1', 'Bush_2', 'BushBerries_1', 'BushBerries_2'],
-    height: [1.1, 2.4],
-    weight: 0.85,
-    altitude: [-60, 110],
-    maxSlope: 0.7,
-    lateral: [9, 90],
-  },
-  plant: {
-    models: ['Plant_1', 'Plant_2', 'Plant_3', 'Plant_4', 'Plant_5'],
-    height: [0.5, 1.1],
-    weight: 0.7,
-    altitude: [-60, 95],
-    maxSlope: 0.6,
-    // Close in, where the eye actually resolves something this small.
-    lateral: [8, 45],
-  },
-  flowers: {
-    models: ['Flowers'],
-    height: [0.35, 0.6],
-    weight: 0.35,
-    altitude: [-40, 70],
-    maxSlope: 0.4,
-    lateral: [8, 30],
-    regionBias: -0.5,
-  },
-
-  // ---- ground furniture --------------------------------------------------
-  rock: {
-    models: ['Rock_1', 'Rock_2', 'Rock_3', 'Rock_4', 'Rock_5', 'Rock_6', 'Rock_7'],
-    height: [0.6, 3.4],
-    // Rock passes every suitability test — it has no slope or altitude limit —
-    // so it needs a low weight or it simply wins most of the draws and the
-    // world turns into a quarry.
-    weight: 0.3,
-    altitude: [-60, 160],
-    // Rock is the one thing that *prefers* steep ground.
-    maxSlope: 5,
-    lateral: [9, 210],
-    regionBias: 0.7,
-  },
-  mossRock: {
-    models: ['Rock_Moss_1', 'Rock_Moss_3', 'Rock_Moss_5', 'Rock_Moss_6'],
-    height: [0.5, 2.6],
-    weight: 0.24,
-    altitude: [-60, 90],
-    maxSlope: 5,
-    lateral: [9, 150],
-    regionBias: -0.4,
-  },
-  log: {
-    models: ['WoodLog', 'WoodLog_Moss', 'TreeStump', 'TreeStump_Moss'],
-    height: [0.5, 1.2],
-    weight: 0.22,
-    altitude: [-60, 95],
-    maxSlope: 0.4,
-    lateral: [10, 70],
-  },
-};
-
-/**
- * Ground cover is a separate, denser pass rather than one more species in the
- * weighted draw. Grass has to read as a continuous surface, not as scattered
- * individuals, so it needs an order of magnitude more instances than anything
- * else and its own density mask — competing for the same draws as trees would
- * have starved it. At 192 triangles a tuft it is by far the cheapest thing
- * here, which is what makes that affordable.
- */
-export const GRASS = {
-  models: ['Grass', 'Grass_2', 'Grass_Short'],
-  /** Concrete models per chunk; more variety costs a draw call each. */
-  picks: 2,
-  height: [0.35, 0.95],
-  /** Verge outwards. Stops well inside the fog so it is never a distant carpet. */
-  lateral: [7.0, 62],
-  maxSlope: 0.62,
-  altitude: [-70, 115],
-  samples: 850,
-  cap: 300,
-  /**
-   * Bald patches. Grass covering every square metre looks sprayed on; real
-   * ground has worn tracks, dry soil and rock showing through, so coverage is
-   * gated by a mid-frequency noise field with a hard floor.
-   */
-  patchScale: 0.035,
-  patchFloor: 0.28,
 };
 
 /**
  * Species are drawn from groups, and each chunk commits to only a few members
  * of each group. This is purely a batching concern: an InstancedMesh exists per
- * (chunk, model), so letting all twelve species appear everywhere costs 130+
- * draw calls before a single tree is shaded. Picking per chunk keeps the batch
- * count near six while the world at large still shows everything.
+ * (chunk, model), so letting every species appear everywhere costs a draw call
+ * each before a single tree is shaded. Picking per chunk keeps the batch count
+ * low while the world at large still shows everything.
  *
- * The caps are a triangle budget. Canopy models are 1700–2900 triangles each —
- * two orders of magnitude more than a rock — so they are what actually needs
- * limiting, not the prop count.
+ * The cap is a triangle budget. Canopy models are 1700–2900 triangles each, so
+ * the count is what needs limiting rather than the sample count.
  */
 export const FOLIAGE_GROUPS = {
-  canopy: { members: ['pine', 'commonTree', 'birch', 'willow', 'autumnTree', 'deadTree'], picks: 2, cap: 34 },
-  shrub: { members: ['bush'], picks: 1, cap: 34 },
-  ground: { members: ['plant', 'flowers'], picks: 1, cap: 55 },
-  stone: { members: ['rock', 'mossRock'], picks: 1, cap: 34 },
-  debris: { members: ['log'], picks: 1, cap: 8 },
+  canopy: {
+    members: ['pine', 'commonTree', 'birch', 'willow', 'autumnTree', 'deadTree'],
+    picks: 3,
+    cap: 52,
+  },
 };
 
 /** Which group a species belongs to. */

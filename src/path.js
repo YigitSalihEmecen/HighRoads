@@ -41,6 +41,8 @@ export class RoadPath {
     this.frames = [];
 
     this.framedUpTo = -1;
+    /** Last sample whose tunnel flag is final. See _markTunnels. */
+    this.markedUpTo = -1;
     this.heading = 0;
     /** Next control-point segment to sample (segment i spans ctrl[i]..ctrl[i+1]). */
     this.nextSegment = 1;
@@ -53,6 +55,11 @@ export class RoadPath {
   /** Arc length covered by fully framed samples. */
   get length() {
     return this.framedUpTo >= 0 ? this.pts[this.framedUpTo].s : 0;
+  }
+
+  /** Arc length whose tunnel flags are settled and will not change again. */
+  get markedLength() {
+    return this.markedUpTo >= 0 ? this.pts[this.markedUpTo].s : 0;
   }
 
   // ------------------------------------------------------------- building --
@@ -195,69 +202,88 @@ export class RoadPath {
   /**
    * Promotes sustained deep cuttings into tunnels.
    *
-   * A run of samples buried deeper than `tunnelCover` becomes a bore, provided
-   * it is long enough to be worth boring — otherwise the road just cuts
-   * through. The factor ramps over a portal length at each end so the terrain
-   * closes overhead gradually rather than the roof appearing at a seam.
+   * This is a MORPHOLOGICAL filter on the cover signal, and it is deliberately
+   * stateless: the answer for a sample is a pure function of the cover values
+   * within a bounded window around it, so it does not matter when — or how many
+   * times — it is computed.
+   *
+   * The previous version grew runs incrementally and committed one only once it
+   * looked "settled" relative to the generation frontier. That made the result
+   * depend on the order samples happened to be framed in, and it froze runs
+   * mid-mountain: measured, 32 m of road where the rock was 11–14 m deep but no
+   * bore had been marked. Outside a bore the cut-and-fill clamp flattens the
+   * corridor to road level, so those 32 m became a 15 m vertical cliff straight
+   * across the carriageway at the tunnel exit. That is the "roof does not
+   * integrate with the terrain" artefact: not a seam, a missing tunnel.
+   *
+   * Four steps, all standard 1-D morphology:
+   *
+   *   1. threshold   cover >= tunnelCover
+   *   2. CLOSE       dilate then erode by tunnelBridge/2 — merges runs split by
+   *                  a shallow spot too short to be worth surfacing for
+   *   3. OPEN        erode then dilate by tunnelMinLength/2 — deletes runs too
+   *                  short to be worth boring
+   *   4. ramp        distance to the nearest non-bore sample, over tunnelPortal
+   *
+   * Results are only written where they are final — at least `support` samples
+   * inside the recomputed window at both ends — and `markedUpTo` records how
+   * far that reaches. `ensureLength` waits on it, so no chunk is ever built
+   * against a flag that might still change.
    */
   _markTunnels() {
     const f = this.frames;
-    const pts = this.pts;
     if (this.framedUpTo < CURV_WINDOW) return;
 
-    // Recompute a trailing window from scratch each pass rather than marking
-    // incrementally. Two things force this:
-    //
-    //  - A single physical tunnel rarely has monotonic cover, so one shallow
-    //    spot splits it into two runs. Each half then gets its own portal ramp
-    //    and the tunnel factor collapses toward zero in the MIDDLE of the bore,
-    //    which lifts the corridor into a wall across the carriageway. The car
-    //    drives into a tunnel at 200 km/h and stops dead against it.
-    //  - Those two halves are usually discovered in *different* passes, so
-    //    merging them is impossible if earlier samples are never revisited.
-    //
-    // Resetting the window means a run is always seen whole.
-    const from = Math.max(CURV_WINDOW, this.framedUpTo - 700);
-    for (let i = from; i <= this.framedUpTo; i++) if (f[i]) f[i].tunnel = 0;
+    const rad = (metres) => Math.max(1, Math.round(metres / ROAD.sampleStep));
+    const bridgeR = rad(ROAD.tunnelBridge * 0.5);
+    const minR = rad(ROAD.tunnelMinLength * 0.5);
+    const portalR = rad(ROAD.tunnelPortal);
+    const support = 2 * bridgeR + 2 * minR + portalR + 4;
 
-    const bridge = Math.max(1, Math.round(ROAD.tunnelBridge / ROAD.sampleStep));
-    const deep = (i) => f[i] && f[i].cover >= ROAD.tunnelCover;
+    const from = Math.max(CURV_WINDOW, this.framedUpTo - 900);
+    const n = this.framedUpTo - from + 1;
+    if (n < 2 * support + 2) return;
 
-    let i = from;
-    while (i <= this.framedUpTo) {
-      if (!deep(i)) { i++; continue; }
-
-      // Extend through the run, stepping over dips shorter than the bridge.
-      let j = i;
-      let probe = i + 1;
-      while (probe <= this.framedUpTo) {
-        if (deep(probe)) { j = probe; probe++; continue; }
-        let gapEnd = probe;
-        while (gapEnd <= this.framedUpTo && gapEnd - probe < bridge && !deep(gapEnd)) gapEnd++;
-        if (gapEnd <= this.framedUpTo && deep(gapEnd)) { j = gapEnd; probe = gapEnd + 1; }
-        else break;
+    let a = new Uint8Array(n);
+    if (ROAD.tunnels) {
+      for (let k = 0; k < n; k++) {
+        const fr = f[from + k];
+        a[k] = fr && fr.cover >= ROAD.tunnelCover ? 1 : 0;
       }
-
-      // Only commit a run that is certainly finished. One still touching the
-      // frontier may grow, or merge with what comes next, on a later pass.
-      const settled = j < this.framedUpTo - bridge;
-      const length = pts[j].s - pts[i].s;
-      if (settled && length >= ROAD.tunnelMinLength) {
-        const portal = Math.min(18, length * 0.3);
-        for (let k = i; k <= j; k++) {
-          const a = pts[k].s - pts[i].s;
-          const b = pts[j].s - pts[k].s;
-          f[k].tunnel = clamp(Math.min(a, b) / portal, 0, 1);
-        }
-      }
-      i = j + 1;
     }
+
+    a = erode(dilate(a, bridgeR), bridgeR);   // close short shallow spots
+    a = dilate(erode(a, minR), minR);         // open away short runs
+
+    // Distance (in samples) to the nearest sample that is not a bore.
+    const dist = new Int32Array(n);
+    let run = 0;
+    for (let k = 0; k < n; k++) { run = a[k] ? run + 1 : 0; dist[k] = run; }
+    run = 0;
+    for (let k = n - 1; k >= 0; k--) {
+      run = a[k] ? run + 1 : 0;
+      if (run < dist[k]) dist[k] = run;
+    }
+
+    const lo = from + support;
+    const hi = this.framedUpTo - support;
+    for (let i = lo; i <= hi; i++) {
+      if (!f[i]) continue;
+      // dist === 1 is the outermost bore sample, which must read as 0.
+      f[i].tunnel = clamp(((dist[i - from] - 1) * ROAD.sampleStep) / ROAD.tunnelPortal, 0, 1);
+    }
+    if (hi > this.markedUpTo) this.markedUpTo = hi;
   }
 
-  /** Grows the spline until framed arc length reaches `sTarget`. */
+  /**
+   * Grows the spline until arc length `sTarget` is not merely sampled but
+   * has FINAL tunnel flags. Waiting on `length` instead lets a chunk be built
+   * against a flag the next pass will change, and a chunk carries its terrain
+   * hole and its bore geometry from the moment it is built.
+   */
   ensureLength(sTarget) {
     let guard = 0;
-    while (this.length < sTarget && guard++ < 4096) {
+    while (this.markedLength < sTarget && guard++ < 4096) {
       this._extendSamples();
       this._buildFrames();
     }
@@ -359,6 +385,26 @@ export class RoadPath {
     return _v.dot(f.right);
   }
 }
+
+/**
+ * 1-D binary dilation / erosion over a window of +-r samples, via a prefix sum
+ * so the cost is independent of the radius.
+ */
+function window1d(src, r, wantAll) {
+  const n = src.length;
+  const sum = new Int32Array(n + 1);
+  for (let i = 0; i < n; i++) sum[i + 1] = sum[i] + src[i];
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const lo = Math.max(0, i - r);
+    const hi = Math.min(n - 1, i + r);
+    const count = sum[hi + 1] - sum[lo];
+    out[i] = wantAll ? (count === hi - lo + 1 ? 1 : 0) : (count > 0 ? 1 : 0);
+  }
+  return out;
+}
+const dilate = (src, r) => window1d(src, r, false);
+const erode = (src, r) => window1d(src, r, true);
 
 export function makeFrame() {
   return {

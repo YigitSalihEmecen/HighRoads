@@ -11,11 +11,11 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 
-import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE, TRAFFIC } from './config.js';
+import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE } from './config.js';
 import { loadFoliage, loadCarTexture, loadCarModel } from './assets.js';
 import { foliageModelNames } from './foliage.js';
 import { CARS, CAR_COLORS, ENGINE_OPTIONS, DEFAULT_CAR, carById, colorById, buildCarParams } from './cars.js';
-import { lerp, smoothstep } from './util.js';
+import { smoothstep } from './util.js';
 import { createTerrain } from './noise.js';
 import { RoadPath } from './path.js';
 import { ChunkManager } from './chunks.js';
@@ -27,6 +27,18 @@ import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { createScene } from './scene.js';
 import { Settings } from './settings.js';
+import { ScoreRun } from './score.js';
+
+/**
+ * The two ways to play. Zen is the original brief — an empty road, going
+ * nowhere in particular. Traffic turns the same road into a game: the cars are
+ * the obstacle and the reward at once, since the points are for threading past
+ * them, and the run ends the moment you actually hit one.
+ */
+const GAME_MODES = [
+  { id: 'traffic', name: 'Traffic', blurb: 'Points for near misses. One crash ends the run.' },
+  { id: 'zen', name: 'Zen', blurb: 'Empty road, no traffic, no way to lose.' },
+];
 
 /**
  * The body origin now *is* the contact plane (see cars.buildCarParams), so a
@@ -43,7 +55,6 @@ const IDLE_INPUT = { steer: 0, throttle: 0, brake: 0, handbrake: false };
 export async function boot() {
   const bootEl = document.getElementById('boot');
   const startBtn = document.getElementById('start');
-  const overlay = document.getElementById('overlay');
 
   bootEl.textContent = 'loading rapier wasm…';
   await RAPIER.init();
@@ -98,9 +109,8 @@ export async function boot() {
 
   const game = new Game({ gfx, world, path, chunks, models, roster });
   game.seed = startSeed;
-  game.traffic = new Traffic({
-    scene: gfx.scene, world, RAPIER, path, chunks, models, roster,
-  });
+  // No world, no RAPIER: traffic owns no physics objects at all. See traffic.js.
+  game.traffic = new Traffic({ scene: gfx.scene, path, chunks, models, roster });
   game.setCar(roster.some((c) => c.id === DEFAULT_CAR) ? DEFAULT_CAR : roster[0].id);
 
   // Run the loop straight away, with controls inert. The scene behind the
@@ -115,16 +125,16 @@ export async function boot() {
   startBtn.disabled = false;
   startBtn.textContent = 'Drive';
 
+  game.enterGarage();
+
   const begin = async () => {
-    startBtn.removeEventListener('click', begin);
+    if (game.active) return;
     await game.powertrain.start(game.car());
-    overlay.classList.add('gone');
-    game.hud.show();
-    game.settings = new Settings(game);
-    game.active = true;
-    setTimeout(() => overlay.remove(), 900);
+    game.startRun();
   };
   startBtn.addEventListener('click', begin);
+  document.getElementById('go-again').addEventListener('click', () => game.startRun());
+  document.getElementById('go-garage').addEventListener('click', () => game.enterGarage());
 
   window.__fastroads = game;
   return game;
@@ -184,13 +194,28 @@ function buildGarage(game, roster) {
       `<span>Layout<b>${spec.drive.toUpperCase()}</b></span>` +
       (eng ? `<span>Redline<b>${eng.redlineRpm}</b></span>` : '') +
       `</div>` +
-      `<div style="margin-top:6px;opacity:.6">${drive}${stock ? '' : ' · engine swapped'}</div>`;
+      `<div style="margin-top:6px;opacity:.6">${drive}${stock ? '' : ' · engine swapped'}` +
+      ` — ${GAME_MODES.find((m) => m.id === game.mode).blurb}</div>`;
   };
 
-  const select = (id) => {
+  /** Flashes a chip for as long as the throttle blip lasts. */
+  const flash = (el) => {
+    if (!el) return;
+    el.classList.add('revving');
+    setTimeout(() => el.classList.remove('revving'), 900);
+  };
+
+  const select = (id, preview = true) => {
     game.setCar(id);
     for (const [cid, chip] of chips) chip.setAttribute('aria-pressed', String(cid === id));
     refreshDetail();
+    // The click is a user gesture, which is the only moment Web Audio will
+    // start. Taking it means the player hears the engine before committing to
+    // it rather than discovering it a kilometre down the road.
+    if (preview) {
+      flash(chips.get(id));
+      game.previewEngine().then(refreshDetail);
+    }
   };
 
   for (const spec of roster) {
@@ -202,6 +227,26 @@ function buildGarage(game, roster) {
     chip.addEventListener('click', () => select(spec.id));
     list.appendChild(chip);
     chips.set(spec.id, chip);
+  }
+
+  // ---- mode -------------------------------------------------------------
+  const modeList = document.getElementById('mode-list');
+  const modeChips = new Map();
+  const pickMode = (id) => {
+    game.setMode(id);
+    for (const [mid, el] of modeChips) el.setAttribute('aria-pressed', String(mid === id));
+    refreshDetail();
+  };
+  for (const m of GAME_MODES) {
+    const el = document.createElement('button');
+    el.className = 'car-chip';
+    el.type = 'button';
+    el.textContent = m.name;
+    el.title = m.blurb;
+    el.setAttribute('aria-pressed', String(m.id === game.mode));
+    el.addEventListener('click', () => pickMode(m.id));
+    modeList.appendChild(el);
+    modeChips.set(m.id, el);
   }
 
   // ---- paint ------------------------------------------------------------
@@ -230,6 +275,8 @@ function buildGarage(game, roster) {
     game.setEngine(id);
     for (const [eid, el] of engineChips) el.setAttribute('aria-pressed', String(eid === id));
     refreshDetail();
+    flash(engineChips.get(id));
+    game.previewEngine().then(refreshDetail);
   };
   for (const e of ENGINE_OPTIONS) {
     const el = document.createElement('button');
@@ -243,8 +290,9 @@ function buildGarage(game, roster) {
   }
 
   garage.classList.add('ready');
-  select(game.carId);
+  select(game.carId, false);   // no audio before the player has clicked anything
   pickColor(game.colorId);
+  pickMode(game.mode);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -265,6 +313,16 @@ class Game {
     this.flashing = false;
     this.colorId = null;
     this.engineChoice = 'stock';
+    /** Seconds of throttle blip left on the title screen. */
+    this.previewing = false;
+
+    this.mode = GAME_MODES[0].id;
+    this.run = new ScoreRun();
+    /** True while the title screen is up — distinct from merely not driving. */
+    this.inGarage = true;
+    this._impactMark = 0;
+    this.overlayEl = document.getElementById('overlay');
+    this.gameOverEl = document.getElementById('gameover');
 
     this.input = new Input();
     this.hud = new HUD();
@@ -331,9 +389,85 @@ class Game {
     if (this.vehicle) this.vehicle.setColor(colorById(id).hex);
   }
 
+  setMode(id) {
+    this.mode = id;
+    if (this.traffic) this.traffic.setEnabled(id === 'traffic');
+    this.hud.setMode(id);
+  }
+
+  // ------------------------------------------------------------ run flow --
+
+  /**
+   * Back to the title screen: car parked, camera orbiting, overlay up. The
+   * overlay is hidden rather than removed precisely so this can happen — a
+   * Traffic run always ends somewhere, and it has to end somewhere the player
+   * can choose what to do next.
+   */
+  enterGarage() {
+    this.active = false;
+    this.inGarage = true;
+    this.gameOverEl.classList.remove('show');
+    this.overlayEl.classList.remove('gone');
+    this.cam.setGarage(true);
+    this.hud.hide();
+    if (this.traffic) this.traffic.dispose();
+    this.respawn(this.carS);
+    this.vehicle.setParked(true);
+  }
+
+  startRun() {
+    this.gameOverEl.classList.remove('show');
+    this.overlayEl.classList.add('gone');
+    this.inGarage = false;
+    this.cam.setGarage(false);
+    this.hud.show();
+    this.hud.setMode(this.mode);
+    if (!this.settings) this.settings = new Settings(this);
+    this.input.bindTouch(document);
+    this.vehicle.setParked(false);
+    this.respawn(this.carS);
+    if (this.traffic) this.traffic.setEnabled(this.mode === 'traffic');
+    this.run.reset();
+    this._impactMark = this.traffic ? this.traffic.impacts : 0;
+    this.trip = 0;
+    this.active = true;
+  }
+
+  /** Traffic mode only: one collision and the run is over. */
+  endRun() {
+    if (!this.active) return;
+    this.active = false;
+    const record = this.run.finish();
+    document.getElementById('go-points').textContent = Math.round(this.run.score).toLocaleString();
+    document.getElementById('go-best').textContent = Math.round(this.run.best).toLocaleString();
+    document.getElementById('go-detail').textContent =
+      `${this.run.passes} near ${this.run.passes === 1 ? 'miss' : 'misses'} · ` +
+      `${(this.trip / 1000).toFixed(2)} km`;
+    document.getElementById('go-record').textContent = record ? 'New best' : '';
+    this.gameOverEl.classList.add('show');
+  }
+
   setEngine(id) {
     this.engineChoice = id;
     return this.powertrain.setEngine(id);
+  }
+
+  /**
+   * Starts the audio if it is not running yet and blips the throttle, so the
+   * garage is audible as well as visible. Safe to call repeatedly; safe to call
+   * before any model has loaded.
+   */
+  async previewEngine() {
+    if (!this.vehicle) return;
+    try {
+      if (!this.powertrain.sim) await this.powertrain.start(this.car());
+      else this.powertrain.setCar(this.car());
+    } catch (err) {
+      console.warn('[fastroads] engine preview unavailable:', err && err.message);
+      return;
+    }
+    this.previewing = true;
+    this.powertrain.blip();
   }
 
   /** The current car as the powertrain wants it: spec plus derived params. */
@@ -381,6 +515,15 @@ class Game {
       ? { throttle: control.brake, brake: control.throttle }
       : { throttle: control.throttle, brake: control.brake };
 
+    // On the title screen the car is parked, so the gearbox goes to neutral and
+    // the only throttle is whatever blip the garage asked for. In gear against a
+    // stopped driveline it would bog instead of revving.
+    // The title screen puts the gearbox in neutral so the engine revs freely
+    // for the preview. A finished run does NOT — the car is still on the road
+    // and should coast to a stop in gear like a car that has just crashed.
+    const garage = this.inGarage;
+    if (garage) pedals.throttle = this.powertrain.blipThrottle(dt);
+
     // How far off the asphalt the car is, for surface drag and grip.
     {
       const lat = Math.abs(this.path.lateralOffset(this.vehicle.pos, this.carS));
@@ -389,7 +532,7 @@ class Game {
 
     // Brake lights follow the pedal, not the gear — they come on in reverse too.
     this.vehicle.setBrakeLight(this.active ? control.brake : 0);
-    this.flashing = this.active && this.input.held('KeyF');
+    this.flashing = this.active && this.input.flashHeld;
     this.vehicle.setHeadlights(this.headlights, this.flashing);
 
     this.vehicle.setDriveForce(
@@ -398,6 +541,7 @@ class Game {
         throttle: pedals.throttle,
         brake: pedals.brake,
         reverse,
+        neutral: garage,
       })
     );
 
@@ -430,7 +574,13 @@ class Game {
         v: this.path.lateralOffset(this.vehicle.pos, this.carS),
         speed: Math.abs(this.vehicle.forwardSpeed),
         flashing: this.flashing,
+        vehicle: this.vehicle,
       });
+
+      if (this.mode === 'traffic') {
+        this.run.update(dt, this.traffic.passes, Math.abs(this.vehicle.forwardSpeed));
+        if (this.traffic.impacts !== this._impactMark) this.endRun();
+      }
     }
 
     if (this.active) this.trip += this.vehicle.speed * dt;
@@ -441,11 +591,15 @@ class Game {
     // see this frame's position, not last frame's.
     this.cam.update(dt, this.vehicle);
     this.gfx.follow(this.vehicle.pos, dt);
-    // The sharp zone extends with speed, so the road stays readable when it matters.
-    this.gfx.setFocus(
-      lerp(ATMOSPHERE.dofFocusNear, ATMOSPHERE.dofFocusFar,
-           smoothstep(0, 60, Math.abs(this.vehicle.forwardSpeed)))
+    // Periphery streaks with speed; the centre of the screen, where the car is,
+    // stays sharp. Nothing at all on the title screen.
+    this.gfx.setSpeedBlur(
+      this.active
+        ? smoothstep(6, ATMOSPHERE.speedBlurRef, Math.abs(this.vehicle.forwardSpeed))
+        : 0
     );
+
+    if (this.active && this.mode === 'traffic') this.hud.updateRun(dt, this.run);
 
     if (this.active) {
       this.hud.update(dt, {

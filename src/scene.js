@@ -86,6 +86,64 @@ const SKY_FRAG = /* glsl */ `
   }
 `;
 
+/* ------------------------------------------------------------ speed blur -- */
+
+/**
+ * Radial blur, strength driven by road speed.
+ *
+ * This replaces a depth-of-field pass, which was the wrong tool: it focuses at
+ * ONE distance, and with focus pulled out to the horizon at speed the car —
+ * five metres from the camera — was the most out-of-focus thing on screen. A
+ * driving game blurring the car the player is steering is nonsense.
+ *
+ * Radial blur is the effect that actually belongs here. The centre of the
+ * screen, where the car and the road ahead are, stays perfectly sharp; samples
+ * are smeared along the direction away from the centre, so the periphery
+ * streaks past. It reads as speed because that is what speed looks like, and it
+ * never touches the thing you are looking at.
+ *
+ * GLSL ES 1.00 only — no const arrays, no in/out. See the bug ledger.
+ */
+const SPEED_BLUR_SHADER = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uStrength: { value: 0 },
+    uInner: { value: 0.16 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float uStrength;
+    uniform float uInner;
+    varying vec2 vUv;
+
+    void main() {
+      vec2 toCentre = vUv - vec2(0.5);
+      float r = length(toCentre);
+      // Sharp core, then the smear grows quadratically toward the corners.
+      float falloff = smoothstep(uInner, 0.72, r);
+      float amount = uStrength * falloff * falloff;
+
+      vec4 sum = texture2D(tDiffuse, vUv);
+      float weight = 1.0;
+      for (int i = 1; i <= 8; i++) {
+        float t = float(i) / 8.0;
+        vec2 off = toCentre * amount * t;
+        float w = 1.0 - t * 0.55;
+        sum += texture2D(tDiffuse, vUv - off) * w;
+        weight += w;
+      }
+      gl_FragColor = sum / weight;
+    }
+  `,
+};
+
 /* --------------------------------------------------------------- vignette -- */
 
 const VIGNETTE_SHADER = {
@@ -230,32 +288,19 @@ export async function createScene(container) {
   // rather than taking the whole game down with us.
 
   let composer = null;
-  let dof = null;
+  let speedBlur = null;
   try {
-    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { ShaderPass }, { OutputPass }, bokeh] =
+    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { ShaderPass }, { OutputPass }] =
       await Promise.all([
         import('three/addons/postprocessing/EffectComposer.js'),
         import('three/addons/postprocessing/RenderPass.js'),
         import('three/addons/postprocessing/UnrealBloomPass.js'),
         import('three/addons/postprocessing/ShaderPass.js'),
         import('three/addons/postprocessing/OutputPass.js'),
-        import('three/addons/postprocessing/BokehPass.js').catch(() => null),
       ]);
 
     composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
-
-    // Depth of field. Reverted to three's own BokehPass after a hand-written
-    // depth-gated replacement turned the screen black; this is the version that
-    // was known to render correctly.
-    if (ATMOSPHERE.blurEnabled && bokeh && bokeh.BokehPass) {
-      dof = new bokeh.BokehPass(scene, camera, {
-        focus: ATMOSPHERE.dofFocus,
-        aperture: ATMOSPHERE.dofAperture,
-        maxblur: ATMOSPHERE.dofMaxBlur,
-      });
-      composer.addPass(dof);
-    }
     composer.addPass(
       new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -264,7 +309,16 @@ export async function createScene(container) {
         ATMOSPHERE.bloomThreshold
       )
     );
-    composer.addPass(new ShaderPass(VIGNETTE_SHADER));
+    const vignette = new ShaderPass(VIGNETTE_SHADER);
+    // Was hard-coded in the shader's default while ATMOSPHERE.vignette sat
+    // unread, so turning the knob in config did nothing.
+    vignette.uniforms.uAmount.value = ATMOSPHERE.vignette;
+    composer.addPass(vignette);
+    if (ATMOSPHERE.speedBlur > 0) {
+      speedBlur = new ShaderPass(SPEED_BLUR_SHADER);
+      speedBlur.uniforms.uInner.value = ATMOSPHERE.speedBlurInner;
+      composer.addPass(speedBlur);
+    }
     composer.addPass(new OutputPass()); // tone mapping + sRGB happen here
     composer.setSize(window.innerWidth, window.innerHeight);
   } catch (err) {
@@ -301,12 +355,11 @@ export async function createScene(container) {
     else renderer.render(scene, camera);
   }
 
-  /** Pulls focus with speed. */
-  function setFocus(metres) {
-    if (!dof) return;
-    const u = dof.uniforms || (dof.materialBokeh && dof.materialBokeh.uniforms);
-    if (u && u.focus) u.focus.value = metres;
+  /** How hard the periphery streaks. `t` is 0..1 across the speed range. */
+  function setSpeedBlur(t) {
+    if (!speedBlur) return;
+    speedBlur.uniforms.uStrength.value = ATMOSPHERE.speedBlur * Math.max(0, Math.min(1, t));
   }
 
-  return { renderer, scene, camera, sun, hemi, sky, sunDir, composer, dof, follow, render, resize, setFocus };
+  return { renderer, scene, camera, sun, hemi, sky, sunDir, composer, follow, render, resize, setSpeedBlur };
 }

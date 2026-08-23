@@ -3,13 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Infinite procedural driving — Three.js + Rapier + Simplex Noise",
+  "description": "Infinite procedural driving \u2014 Three.js + Rapier + engine_sim",
   "scripts": {
-    "start": "npx --yes serve -l 8137 ."
-  },
-  "dependencies": {
-    "@dimforge/rapier3d-compat": "^0.14.0",
-    "simplex-noise": "^4.0.3",
-    "three": "^0.169.0"
+    "start": "npx --yes serve -l 8137 .",
+    "probe": "node probe/ui.mjs && node probe/engine.mjs && node probe/tunnel.mjs && node probe/roof.mjs && node probe/skyleak.mjs && node probe/tunmesh.mjs && node probe/cliff.mjs && node probe/traffic.mjs && node probe/score.mjs && node probe/props.mjs && node probe/handling.mjs && node probe/terrain.mjs && node probe/drive.mjs",
+    "probe:deps": "npm install --no-save --no-audit --no-fund three@0.169.0 @dimforge/rapier3d-compat@0.14.0",
+    "engine:update": "git submodule update --remote engine_sim && node probe/engine.mjs"
   }
 }
