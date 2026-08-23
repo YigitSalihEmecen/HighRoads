@@ -37,9 +37,62 @@ export class Input {
       this.handbrake = false;
     };
 
+    /** Set by the on-screen controls; merged with the keyboard each update. */
+    this.touch = { left: 0, right: 0, throttle: 0, brake: 0, handbrake: 0, flash: 0 };
+
     target.addEventListener('keydown', this._onKeyDown, { passive: false });
     target.addEventListener('keyup', this._onKeyUp);
     target.addEventListener('blur', this._onBlur);
+  }
+
+  /** True if the flash control is held, from either input. */
+  get flashHeld() {
+    return this.held('KeyF') || !!this.touch.flash;
+  }
+
+  /**
+   * Binds the on-screen controls.
+   *
+   * Buttons are either `data-hold` (a continuous input, held while touched) or
+   * `data-tap` (a one-shot, injected as the matching key so the rest of the
+   * game needs no separate path). Pointer events cover touch, pen and mouse in
+   * one listener set, and capture means a finger that slides off the button
+   * still releases it — otherwise the throttle sticks on.
+   */
+  bindTouch(root = document) {
+    const host = root.getElementById ? root.getElementById('touch') : null;
+    if (!host) return false;
+
+    const isTouch =
+      typeof window !== 'undefined' &&
+      ('ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0);
+    if (!isTouch) return false;
+    document.body.classList.add('touch');
+
+    for (const btn of host.querySelectorAll('.tbtn')) {
+      const hold = btn.dataset.hold;
+      const tap = btn.dataset.tap;
+
+      const down = (e) => {
+        e.preventDefault();
+        btn.setPointerCapture && btn.setPointerCapture(e.pointerId);
+        btn.classList.add('on');
+        if (hold) this.touch[hold] = 1;
+        if (tap) this.pressed.add(tap);
+      };
+      const up = (e) => {
+        e.preventDefault();
+        btn.classList.remove('on');
+        if (hold) this.touch[hold] = 0;
+      };
+
+      btn.addEventListener('pointerdown', down);
+      btn.addEventListener('pointerup', up);
+      btn.addEventListener('pointercancel', up);
+      btn.addEventListener('pointerleave', up);
+      btn.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+    return true;
   }
 
   /**
@@ -66,10 +119,14 @@ export class Input {
   }
 
   update(dt) {
-    const left = this.held('KeyA', 'ArrowLeft') ? 1 : 0;
-    const right = this.held('KeyD', 'ArrowRight') ? 1 : 0;
-    const up = this.held('KeyW', 'ArrowUp') ? 1 : 0;
-    const down = this.held('KeyS', 'ArrowDown') ? 1 : 0;
+    // Touch and keyboard are merged rather than switched between, so a phone
+    // with a connected keyboard, or a desktop with a touchscreen, works either
+    // way round without a mode to get wrong.
+    const t = this.touch;
+    const left = this.held('KeyA', 'ArrowLeft') || t.left ? 1 : 0;
+    const right = this.held('KeyD', 'ArrowRight') || t.right ? 1 : 0;
+    const up = this.held('KeyW', 'ArrowUp') || t.throttle ? 1 : 0;
+    const down = this.held('KeyS', 'ArrowDown') || t.brake ? 1 : 0;
 
     const steerTarget = left - right;
     const steerRate = steerTarget === 0 ? KEY_FALL : KEY_RISE;
@@ -77,7 +134,7 @@ export class Input {
 
     this.throttle = moveTowards(this.throttle, up, (up ? KEY_RISE : KEY_FALL) * 1.8 * dt);
     this.brake = moveTowards(this.brake, down, (down ? KEY_RISE : KEY_FALL) * 2.4 * dt);
-    this.handbrake = this.held('Space');
+    this.handbrake = this.held('Space') || !!this.touch.handbrake;
 
     this._pollGamepad();
 

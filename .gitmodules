@@ -1,0 +1,15 @@
+# The engine sound simulator is a SEPARATE PROJECT, consumed as a submodule.
+#
+# It is developed in its own repository and pulled in here; nothing in this repo
+# should ever edit it. `powertrain.js` adapts to its public API and overrides one
+# method per instance, specifically so the vendored source stays pristine.
+#
+#   git clone --recurse-submodules <this repo>     # fresh checkout
+#   git submodule update --init --recursive        # if you already cloned
+#   git submodule update --remote engine_sim       # pull the latest sound engine
+#
+# `branch = main` is what makes the last one work without editing anything here.
+[submodule "engine_sim"]
+	path = engine_sim
+	url = https://github.com/YigitSalihEmecen/Engine_Sim.git
+	branch = main

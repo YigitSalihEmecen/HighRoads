@@ -36,6 +36,27 @@ import { EngineSim } from '../engine_sim/src/engine-sim.js';
 const RHO_AIR = 1.225;
 
 /**
+ * Stall upshift.
+ *
+ * The simulator's automatic upshifts on rpm, which is right for an engine and a
+ * gearbox that were designed for each other. This game lets any engine go in any
+ * car, and the drivetrain deliberately stays the CAR's — so a 1.2 litre V-twin
+ * ends up pulling a 1180 kg sports car through a 3.62 first gear. Measured, it
+ * asymptotes at 8790 rpm and 82 km/h and never reaches the upshift threshold at
+ * all: not slow, stuck. Forcing the shift by hand took it straight to 107 km/h,
+ * because second gear puts the engine back where it makes torque.
+ *
+ * So: near the top of the rev range, with the throttle open, making no further
+ * progress — change up. A real automatic does exactly this; it shifts when
+ * acceleration stops, not only when the tachometer says so. Every combination
+ * that pulls properly reaches its normal upshift long before this can fire.
+ */
+const STALL_FRAC = 0.86;    // of redline
+const STALL_RATE = 220;     // rpm/s below which the engine counts as plateaued
+const STALL_TIME = 0.7;     // s it must persist
+const STALL_COOLDOWN = 1.2; // s before it may fire again
+
+/**
  * Builds a drivetrain profile from a car's own derived parameters, so the
  * simulator's inertias and ratios describe the vehicle actually on screen
  * rather than one of its five built-in presets.
@@ -92,6 +113,10 @@ export class Powertrain {
     this.params = null;
 
     this._car = null;
+    /** Stall-upshift bookkeeping. See STALL_FRAC. */
+    this._stallFor = 0;
+    this._stallCool = 0;
+    this._prevRpm = 0;
     /** 'stock' follows the car's own engine; anything else overrides it. */
     this.engineChoice = 'stock';
     /** Gearbox mode. Manual holds the gear until the driver asks. */
@@ -102,6 +127,8 @@ export class Powertrain {
     this.mix = { exhaust: 1.0, intake: 0.6, mechanical: 0.34, transmission: 0.22,
                  turbo: 0.5, transients: 0.4, sub: 1.0 };
     this.tone = { rumble: 1.1, brightness: 0.72 };
+    /** Three-band compressor amount: 0 bypasses it, 1 is the simulator's tune. */
+    this.dynamics = 1;
     /**
      * Five-band EQ, in dB, applied on top of the simulator's own voicing:
      * 60 sub, 200 body, 800 honk, 2.5k rasp, 8k air.
@@ -152,6 +179,12 @@ export class Powertrain {
     return this.tone;
   }
 
+  setDynamics(amount) {
+    this.dynamics = Math.max(0, Math.min(1, amount));
+    if (this.sim) this.sim.setDynamics(this.dynamics);
+    return this.dynamics;
+  }
+
   /** Any engine in any car. The drivetrain profile stays the car's own. */
   setEngine(id) {
     this.engineChoice = id || 'stock';
@@ -195,14 +228,20 @@ export class Powertrain {
     this.sim.setMix(this.mix);
     this.sim.setTone(this.tone);
     this.sim.setEQ(this.eq);
-    // More compression than the default, with a lower threshold: the peaks that
-    // read as "overblown" are transient, and the limiter alone was catching
-    // them too late.
-    if (this.sim.comp) {
-      this.sim.comp.threshold.value = -20;
-      this.sim.comp.ratio.value = 4.5;
-      this.sim.comp.knee.value = 26;
-    }
+    // Dynamics are the simulator's job now.
+    //
+    // This used to reach into `sim.comp` — a single full-range compressor — and
+    // pull its threshold down to tame the transient peaks that read as
+    // "overblown" at high rpm. That node no longer exists: the simulator now
+    // runs a three-band compressor whose high band (above 2 kHz) sits at a
+    // -30 dB threshold with 5:1 and a 2 ms attack, which is the same problem
+    // solved properly rather than by squashing the whole mix to reach it.
+    //
+    // Its default is the tuned setting, so the correct migration is to ask for
+    // exactly that and stop hand-tuning. `sim.comp` was behind an `if`, so had
+    // this been left alone it would simply have stopped doing anything the day
+    // the submodule moved — silently, which is the worst way for it to go.
+    this.sim.setDynamics(this.dynamics);
     this.ready = true;
     this.setMuted(this.muted);
   }
@@ -247,8 +286,13 @@ export class Powertrain {
     // Reverse is not a gear the simulator has. Rather than fake one, the
     // gearbox goes to neutral — the engine idles and revs against no load,
     // which is honest — and the host supplies a modest reversing force itself.
+    // Neutral is used for two things: reverse (which the simulator has no gear
+    // for, so the engine idles honestly against no load and the host supplies a
+    // reversing force) and the garage preview, where the car is parked and the
+    // point is to hear the engine rev freely rather than bog against a stopped
+    // driveline.
     this.reverse = state.reverse;
-    if (this.reverse) {
+    if (this.reverse || state.neutral) {
       if (p.gear !== 0) p.selectGear(0);
     } else if (p.gear === 0 && !p.shifting && this.autoShift) {
       p.selectGear(1);
@@ -260,6 +304,8 @@ export class Powertrain {
     this.sim.setThrottle(state.throttle);
     this.sim.setBrake(state.brake);
     this.sim.update(dt);
+
+    this._stallUpshift(dt, p, state.throttle);
 
     const params = (this.params = this.sim._lastParams);
     this.rpm = p.rpm;
@@ -281,6 +327,49 @@ export class Powertrain {
 
     this.force = Number.isFinite(force) ? force : 0;
     return this.force;
+  }
+
+  /**
+   * Changes up when the engine is at the top of its range, the driver is asking
+   * for more, and nothing is happening. See STALL_FRAC for why this exists.
+   */
+  _stallUpshift(dt, p, throttle) {
+    this._stallCool = Math.max(0, this._stallCool - dt);
+    const redline = (this.sim.profile && this.sim.profile.redlineRpm) || this.maxRpm;
+    const rate = Math.abs(p.rpm - this._prevRpm) / Math.max(dt, 1e-4);
+    this._prevRpm = p.rpm;
+
+    const eligible =
+      this.autoShift && !p.shifting && this._stallCool <= 0 &&
+      p.gear >= 1 && p.gear < p.gearCount &&
+      throttle > 0.7 && p.rpm > redline * STALL_FRAC && rate < STALL_RATE;
+
+    if (!eligible) {
+      this._stallFor = 0;
+      return;
+    }
+    this._stallFor += dt;
+    if (this._stallFor < STALL_TIME) return;
+    this._stallFor = 0;
+    this._stallCool = STALL_COOLDOWN;
+    this.sim.shiftUp();
+  }
+
+  /**
+   * A throttle blip, for the garage. Returns the throttle to feed this frame;
+   * shaped as a single hump so it sounds like a driver blipping the pedal
+   * rather than a step input.
+   */
+  blip(seconds = 0.85) {
+    this._blip = seconds;
+    this._blipFor = seconds;
+  }
+
+  blipThrottle(dt) {
+    if (!this._blip || this._blip <= 0) return 0;
+    this._blip -= dt;
+    const t = 1 - Math.max(0, this._blip) / this._blipFor;
+    return Math.sin(Math.min(1, t) * Math.PI) ** 0.7;
   }
 
   /** Gear label for the HUD. */

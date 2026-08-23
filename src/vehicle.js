@@ -86,6 +86,11 @@ export class RaycastVehicle {
 
     this.upsideDownFor = 0;
 
+    /** Pinned in place for the title screen — see setParked. */
+    this.parked = false;
+    this.parkedQuat = new THREE.Quaternion();
+    this.parkedPos = new THREE.Vector3();
+
     // ---- scratch (reused every substep; the physics loop allocates zero) --
     this.pos = new THREE.Vector3();
     this.quat = new THREE.Quaternion();
@@ -99,6 +104,12 @@ export class RaycastVehicle {
     this._ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
     this._rayFilter =
       (RAPIER.QueryFilterFlags && RAPIER.QueryFilterFlags.EXCLUDE_SENSORS) || undefined;
+    // Suspension rays must see the world but NOT other cars. Membership bit 0,
+    // mask everything except traffic's bit 1. Without this the springs find
+    // "ground" on a traffic car's roof during a collision and throw the player
+    // ten metres into the air — the same launch bug as before, via a different
+    // route now that traffic cars are solid rather than sensors.
+    this._rayGroups = (0x0001 << 16) | 0xfffd;
     this._a = new THREE.Vector3();
     this._b = new THREE.Vector3();
     this._c = new THREE.Vector3();
@@ -132,7 +143,61 @@ export class RaycastVehicle {
    * before each world.step(), so `prev` and the post-step state bracket exactly
    * one substep.
    */
+  /**
+   * Pins the car for the title screen.
+   *
+   * Horizontal velocity and all rotation are cancelled every step, while
+   * vertical motion is left alone so the suspension still settles onto whatever
+   * the ground is doing. Without this the car simply rolls away down the road
+   * whenever the seed happens to put a gradient under it, and the player is
+   * choosing a paint colour for something disappearing into the distance.
+   */
+  setParked(on) {
+    this.parked = !!on;
+    if (on) {
+      const t = this.body.translation();
+      const r = this.body.rotation();
+      this.parkedPos.set(t.x, t.y, t.z);
+      this.parkedQuat.set(r.x, r.y, r.z, r.w);
+    }
+  }
+
   beginStep() {
+    if (this.parked) {
+      // Velocity AND position. Zeroing the velocity alone leaves the drift that
+      // accumulates inside each step — gravity acts, the solver integrates, and
+      // the car creeps a few millimetres per step before the next reset catches
+      // it. Measured on a 4.7% grade that was 11 cm in five seconds, which over
+      // the time it takes to choose a car is the length of the bonnet. Height is
+      // left alone so the suspension still settles onto the road.
+      const t = this.body.translation();
+      this.body.setTranslation({ x: this.parkedPos.x, y: t.y, z: this.parkedPos.z }, true);
+      this.body.setLinvel({ x: 0, y: Math.min(0, this.body.linvel().y), z: 0 }, true);
+      this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      this.body.setRotation(this.parkedQuat, true);
+    }
+
+    // A hard ceiling on how fast the chassis may be travelling, in any
+    // direction, at the start of a step.
+    //
+    // Nothing in this game legitimately exceeds it — the fastest car tops out
+    // well below. What does exceed it is a solver artefact: a deep contact
+    // resolved in a single step can hand back hundreds of metres per second,
+    // and the car leaves for the horizon and never comes back. Physically the
+    // energy was never there, so removing it is a correction, not a cheat.
+    const lv = this.body.linvel();
+    const sp = Math.hypot(lv.x, lv.y, lv.z);
+    if (sp > this.V.maxChassisSpeed) {
+      const k = this.V.maxChassisSpeed / sp;
+      this.body.setLinvel({ x: lv.x * k, y: lv.y * k, z: lv.z * k }, true);
+    }
+    const av = this.body.angvel();
+    const aw = Math.hypot(av.x, av.y, av.z);
+    if (aw > 12) {
+      const k = 12 / aw;
+      this.body.setAngvel({ x: av.x * k, y: av.y * k, z: av.z * k }, true);
+    }
+
     const t = this.body.translation();
     const r = this.body.rotation();
     this.prevPos.set(t.x, t.y, t.z);
@@ -257,12 +322,10 @@ export class RaycastVehicle {
       this._ray,
       maxToi,
       true,
-      // Ray casts hit sensors unless told not to. Traffic bodies are sensors,
-      // so without this the suspension finds "ground" on a passing car, the
-      // spring pushes against a surface that is not there, and the player is
-      // launched — measured at 73% of a run spent airborne.
+      // Ray casts hit sensors unless told not to, and would otherwise find
+      // "ground" on anything that happens to be alongside.
       this._rayFilter,
-      undefined,
+      this._rayGroups,
       undefined,
       this.body // never let a suspension ray hit our own chassis
     );
@@ -338,7 +401,29 @@ export class RaycastVehicle {
     // Whichever limit arrives first: sliding, or tipping over. For a sports car
     // that is grip; for a van or a monster truck it is roll.
     const aMax = Math.min(aGrip, V.rolloverAccel);
-    const maxSteer = clamp(Math.atan((L * aMax) / v2), V.minSteer, V.maxSteer);
+    const gripSteer = Math.atan((L * aMax) / v2);
+
+    // ...but the whole derivation assumes a STEADY-STATE turn, and once the car
+    // is sideways that assumption is gone. In a slide the front wheels are being
+    // pointed down the velocity vector, not used to generate more lateral force,
+    // so neither the grip ceiling nor the rollover ceiling applies to them.
+    //
+    // Enforcing it anyway is what made a slide unrecoverable. Measured on the
+    // old tune at 108 km/h, the rollover limit capped the lock at 4.3 deg — a
+    // driver trying to catch a 190 deg/s spin had essentially no countersteer,
+    // and none of it was their fault. Opening the lock toward full as the
+    // chassis slip angle grows hands the car back, and costs nothing when
+    // straight because the term is zero there.
+    const beta = Math.abs(
+      Math.atan2(this.linvel.dot(this.rightV), Math.max(Math.abs(this.forwardSpeed), 1))
+    );
+    const slide = smoothstep(V.slideOpenFrom, V.slideOpenTo, beta);
+    // Proportional: a fixed multiple of the limit that already applied, never a
+    // jump to full lock. The steering ratio stays continuous — the wheel means
+    // the same thing throughout, there is just more of it to use.
+    const base = clamp(gripSteer, V.minSteer, V.maxSteer);
+    const opened = Math.min(V.maxSteer, base * V.slideLockGain);
+    const maxSteer = lerp(base, opened, slide);
 
     // Scale the slew rate with the available lock so time-to-full-lock stays
     // roughly constant instead of snapping instantly at speed.
@@ -667,6 +752,23 @@ export class RaycastVehicle {
       this.body.applyTorqueImpulse(yaw, true);
     }
 
+    // Slide containment. See VEHICLE.driftAngle: beyond a generous chassis slip
+    // angle the car is no longer drifting, it is spinning, and countersteer has
+    // nothing left to work with because every tyre is far past its peak. A yaw
+    // damper faded in over that band gives the driver the car back without
+    // touching how it behaves at ordinary drift angles.
+    if (!airborne && this.speed > 4) {
+      const vFwd = this.linvel.dot(this.fwd);
+      const vSide = this.linvel.dot(this.rightV);
+      const beta = Math.abs(Math.atan2(vSide, Math.abs(vFwd)));
+      const over = smoothstep(V.driftAngle, V.spinAngle, beta);
+      if (over > 0) {
+        const yawRate = this.angvel.dot(this.up);
+        this._d.copy(this.up).multiplyScalar(-yawRate * over * V.spinRecovery * V.mass * dt);
+        this.body.applyTorqueImpulse(this._d, true);
+      }
+    }
+
     // Hard cap on tumbling — a trimesh edge case should never end the session.
     const spin = this.angvel.length();
     if (spin > 7) {
@@ -742,6 +844,8 @@ export class RaycastVehicle {
     this.driveForce = 0;
     this.slip = 0;
     this.upsideDownFor = 0;
+    this.parkedPos.copy(position);
+    this.parkedQuat.copy(q);
     for (const w of this.wheels) {
       w.compression = 0;
       w.suspLen = this.V.restLength;

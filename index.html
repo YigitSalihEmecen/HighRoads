@@ -127,24 +127,49 @@
 
   /* ------------------------------------------------------------ overlay -- */
 
+  /**
+   * The middle of the title screen is TRANSPARENT. The car being chosen is the
+   * real vehicle, sitting on the real road in the real scene, with the camera
+   * orbiting it — so the picker shows exactly what will be driven, and paint
+   * changes are simply a live material property rather than a preview of one.
+   */
   #overlay {
     position: fixed;
     inset: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 26px;
-    background: radial-gradient(120% 90% at 50% 40%, #221c1b 0%, #0c0b10 70%);
+    justify-content: space-between;
+    background:
+      linear-gradient(to bottom, rgba(12, 11, 16, 0.94) 0%, rgba(12, 11, 16, 0.5) 15%, rgba(12, 11, 16, 0) 32%),
+      linear-gradient(to top,    rgba(12, 11, 16, 0.97) 0%, rgba(12, 11, 16, 0.88) 24%, rgba(12, 11, 16, 0) 54%);
     z-index: 10;
-    transition: opacity 0.7s ease;
+    transition: opacity 0.7s ease, visibility 0s;
     text-align: center;
-    padding: 24px;
+    padding: 20px 20px 16px;
+    /* Only the panels take clicks; the gap between them is the car. */
+    pointer-events: none;
   }
-  #overlay.gone { opacity: 0; pointer-events: none; }
+  /* Hidden, not removed — Traffic mode can send the player back here. Visibility
+     is what stops the buttons underneath still catching clicks at opacity 0. */
+  #overlay.gone {
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.7s ease, visibility 0s linear 0.7s;
+  }
+  #brand, #dock { pointer-events: auto; }
+
+  #brand { display: flex; flex-direction: column; align-items: center; }
+  #dock {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 11px;
+    width: min(940px, 96vw);
+  }
 
   #title {
-    font-size: clamp(34px, 8vw, 68px);
+    font-size: clamp(26px, 5.6vw, 46px);
     font-weight: 700;
     letter-spacing: -3px;
     margin: 0;
@@ -153,27 +178,30 @@
     background-clip: text;
     color: transparent;
   }
-  #tagline { margin: -18px 0 0; font-size: 12px; letter-spacing: 5px; color: var(--dim); text-transform: uppercase; }
+  #tagline { margin: -6px 0 0; font-size: 10px; letter-spacing: 5px; color: var(--dim); text-transform: uppercase; }
 
   #keys {
-    display: grid;
-    grid-template-columns: auto auto;
-    gap: 7px 20px;
-    font-size: 12px;
-    color: var(--dim);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 3px 14px;
+    font-size: 10px;
     letter-spacing: 1px;
+    color: rgba(244, 234, 217, 0.38);
   }
-  #keys span:nth-child(odd) { color: var(--ink); text-align: right; }
+  #keys span { white-space: nowrap; }
+  #keys b { color: rgba(244, 234, 217, 0.72); font-weight: 500; }
 
   #start {
     pointer-events: auto;
-    border: 1px solid rgba(255, 180, 87, 0.45);
-    background: rgba(255, 180, 87, 0.08);
+    border: 1px solid rgba(255, 180, 87, 0.55);
+    background: rgba(255, 180, 87, 0.14);
     color: var(--accent);
     font-family: var(--font);
-    font-size: 13px;
-    letter-spacing: 4px;
-    padding: 15px 42px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 5px;
+    padding: 14px 54px;
     border-radius: 2px;
     cursor: pointer;
     transition: background 0.25s, transform 0.15s, opacity 0.3s;
@@ -191,8 +219,8 @@
     display: none;
     flex-direction: column;
     align-items: center;
-    gap: 14px;
-    width: min(880px, 92vw);
+    gap: 9px;
+    width: 100%;
   }
   #garage.ready { display: flex; }
 
@@ -290,8 +318,8 @@
   #seed-input:focus { border-color: rgba(255, 180, 87, 0.55); }
 
   #car-detail {
-    min-height: 58px;
-    max-width: 620px;
+    min-height: 42px;
+    max-width: 680px;
     text-align: center;
     font-size: 12px;
     line-height: 1.7;
@@ -312,6 +340,11 @@
   }
   #car-stats span b { display: block; color: var(--accent); font-size: 15px;
                       letter-spacing: 0; margin-top: 3px; font-weight: 600; }
+  /* Tapping a car or an engine blips the throttle; flash the chip with it. */
+  .car-chip.revving, .eng-chip.revving {
+    border-color: rgba(255, 180, 87, 0.9);
+    box-shadow: 0 0 14px rgba(255, 180, 87, 0.35);
+  }
   #boot.err { color: var(--danger); letter-spacing: 1px; max-width: 620px; line-height: 1.7; }
 
   /* ----------------------------------------------------------- settings -- */
@@ -436,6 +469,136 @@
     background: rgba(255, 180, 87, 0.08);
   }
 
+  /* -------------------------------------------------------------- touch -- */
+
+  #touch { display: none; }
+  /* Shown only where there is a touch screen — see input.js. */
+  body.touch #touch {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 7;
+    pointer-events: none;
+    /* Stops the browser treating a drag on a control as a scroll or a zoom. */
+    touch-action: none;
+  }
+
+  .pad { position: absolute; display: flex; gap: 12px; pointer-events: auto; }
+  .pad-left  { left: 18px;  bottom: 22px; }
+  .pad-right { right: 18px; bottom: 22px; }
+  .pad-aux   { right: 18px; top: 18px; flex-wrap: wrap; justify-content: flex-end;
+               max-width: 210px; gap: 7px; }
+
+  .tbtn {
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    border: 1px solid rgba(244, 234, 217, 0.22);
+    background: rgba(18, 17, 20, 0.42);
+    backdrop-filter: blur(9px);
+    -webkit-backdrop-filter: blur(9px);
+    color: var(--ink);
+    font-family: var(--font);
+    border-radius: 12px;
+    transition: background 0.08s, transform 0.08s;
+  }
+  .tbtn:active, .tbtn.on {
+    background: rgba(255, 180, 87, 0.34);
+    border-color: rgba(255, 180, 87, 0.7);
+    transform: scale(0.96);
+  }
+  .steer, .pedal { width: 84px; height: 84px; font-size: 26px; }
+  .pedal.go { background: rgba(60, 140, 80, 0.3); }
+  .small { min-width: 46px; height: 34px; font-size: 10px; letter-spacing: 1px; border-radius: 8px; }
+
+  @media (max-height: 460px) {
+    .steer, .pedal { width: 68px; height: 68px; font-size: 21px; }
+    .pad-left, .pad-right { bottom: 12px; }
+  }
+
+  /* ------------------------------------------------------------- run HUD -- */
+
+  #run {
+    position: absolute;
+    left: 0; right: 0;
+    top: 16px;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+  }
+  /* Only Traffic mode has a score; Zen mode is just driving. */
+  #hud.traffic #run { display: flex; }
+
+  #score {
+    font-size: 34px;
+    font-weight: 600;
+    letter-spacing: -1px;
+    line-height: 1;
+    text-shadow: 0 2px 16px rgba(0, 0, 0, 0.75);
+    transition: transform 0.13s ease-out, color 0.13s ease-out;
+  }
+  #score.pop { transform: scale(1.16); color: var(--accent); transition-duration: 0.04s; }
+
+  #chain {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  #chain.live { opacity: 1; }
+  #mult { font-size: 15px; font-weight: 600; color: var(--accent); letter-spacing: 0; }
+  #chain-bar {
+    width: 128px; height: 3px;
+    background: rgba(244, 234, 217, 0.16);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  #chain-bar i {
+    display: block; height: 100%; width: 100%;
+    background: var(--accent);
+    transform-origin: left center;
+  }
+
+  #award {
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: var(--accent);
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.35s, transform 0.35s;
+  }
+  #award.show { opacity: 1; transform: translateY(-2px); }
+  #award.oncoming { color: #ff9d6b; }
+
+  /* ----------------------------------------------------------- game over -- */
+
+  #gameover {
+    position: fixed;
+    inset: 0;
+    z-index: 12;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    text-align: center;
+    background: radial-gradient(120% 90% at 50% 45%, rgba(34, 20, 18, 0.86) 0%, rgba(10, 9, 13, 0.95) 70%);
+  }
+  #gameover.show { display: flex; }
+  .go-title { font-size: 12px; letter-spacing: 6px; color: var(--danger); text-transform: uppercase; }
+  #go-points {
+    display: block;
+    font-size: clamp(46px, 11vw, 74px);
+    font-weight: 700;
+    letter-spacing: -3px;
+    line-height: 1;
+  }
+  .go-sub { font-size: 10px; letter-spacing: 3px; color: var(--dim); text-transform: uppercase; }
+  #go-record { color: var(--accent); min-height: 14px; }
+  .go-actions { display: flex; gap: 10px; margin-top: 8px; }
+  .go-actions button { font-size: 12px; padding: 12px 22px; letter-spacing: 2px; }
+
   #toast {
     position: fixed;
     left: 50%;
@@ -462,6 +625,12 @@
 <div id="hud">
   <div id="stats"></div>
 
+  <div id="run">
+    <div id="score">0</div>
+    <div id="chain"><span id="mult">x1</span><div id="chain-bar"><i></i></div></div>
+    <div id="award"></div>
+  </div>
+
   <div id="trip">
     <div>TRIP <b id="trip-km">0.00</b> km</div>
     <div>ALT <b id="trip-alt">0</b> m</div>
@@ -486,41 +655,76 @@
   <button id="settings-toggle" type="button" aria-expanded="false" title="Settings">›</button>
 </div>
 
+<div id="touch" aria-hidden="true">
+  <div class="pad pad-left">
+    <button class="tbtn steer" data-hold="left">&#9664;</button>
+    <button class="tbtn steer" data-hold="right">&#9654;</button>
+  </div>
+  <div class="pad pad-right">
+    <button class="tbtn pedal" data-hold="brake">&#9660;</button>
+    <button class="tbtn pedal go" data-hold="throttle">&#9650;</button>
+  </div>
+  <div class="pad pad-aux">
+    <button class="tbtn small" data-hold="handbrake">HB</button>
+    <button class="tbtn small" data-tap="KeyQ">&minus;</button>
+    <button class="tbtn small" data-tap="KeyE">+</button>
+    <button class="tbtn small" data-tap="KeyL">LT</button>
+    <button class="tbtn small" data-hold="flash">FL</button>
+    <button class="tbtn small" data-tap="KeyC">CAM</button>
+    <button class="tbtn small" data-tap="KeyR">RST</button>
+  </div>
+</div>
+
 <div id="toast"></div>
 
+<div id="gameover">
+  <div class="go-title">Run ended</div>
+  <div><b id="go-points">0</b><div class="go-sub">points</div></div>
+  <div class="go-sub">Best <b id="go-best">0</b> · <span id="go-detail"></span></div>
+  <div class="go-sub" id="go-record"></div>
+  <div class="go-actions">
+    <button id="go-again" class="eng-chip" type="button">Drive again</button>
+    <button id="go-garage" class="eng-chip" type="button">Garage</button>
+  </div>
+</div>
+
 <div id="overlay">
-  <h1 id="title">FASTROADS</h1>
-  <p id="tagline">endless procedural roads</p>
-
-  <div id="keys">
-    <span>W / ↑</span><span>throttle</span>
-    <span>S / ↓</span><span>brake &amp; reverse</span>
-    <span>A D / ← →</span><span>steer</span>
-    <span>SPACE</span><span>handbrake</span>
-    <span>E / Q</span><span>shift up / down</span>
-    <span>G</span><span>auto / manual</span>
-    <span>L</span><span>headlights</span>
-    <span>F</span><span>flash (hold)</span>
-    <span>C</span><span>camera</span>
-    <span>R</span><span>respawn</span>
-    <span>M</span><span>mute</span>
+  <div id="brand">
+    <h1 id="title">FASTROADS</h1>
+    <p id="tagline">endless procedural roads</p>
   </div>
 
-  <div id="garage">
-    <div id="car-list"></div>
-    <div class="garage-row"><span class="garage-label">Paint</span><span id="color-list" style="display:flex;gap:7px;flex-wrap:wrap;justify-content:center"></span></div>
-    <div class="garage-row">
-      <span class="garage-label">Seed</span>
-      <input id="seed-input" type="text" spellcheck="false" autocomplete="off" />
-      <button id="seed-apply" class="eng-chip" type="button">Generate</button>
-      <button id="seed-random" class="eng-chip" type="button">Random</button>
+  <div id="dock">
+    <div id="garage">
+      <div class="garage-row"><span class="garage-label">Mode</span><span id="mode-list" style="display:flex;gap:7px"></span></div>
+      <div id="car-list"></div>
+      <div id="car-detail"></div>
+      <div class="garage-row"><span class="garage-label">Paint</span><span id="color-list" style="display:flex;gap:7px;flex-wrap:wrap;justify-content:center"></span></div>
+      <div class="garage-row"><span class="garage-label">Engine</span><span id="engine-list" style="display:flex;gap:5px;flex-wrap:wrap;justify-content:center;max-width:660px"></span></div>
+      <div class="garage-row">
+        <span class="garage-label">Seed</span>
+        <input id="seed-input" type="text" spellcheck="false" autocomplete="off" />
+        <button id="seed-apply" class="eng-chip" type="button">Generate</button>
+        <button id="seed-random" class="eng-chip" type="button">Random</button>
+      </div>
     </div>
-    <div class="garage-row"><span class="garage-label">Engine</span><span id="engine-list" style="display:flex;gap:5px;flex-wrap:wrap;justify-content:center;max-width:620px"></span></div>
-    <div id="car-detail"></div>
-  </div>
 
-  <button id="start" disabled>Loading…</button>
-  <div id="boot">booting physics runtime…</div>
+    <button id="start" disabled>Loading…</button>
+    <div id="boot">booting physics runtime…</div>
+
+    <div id="keys">
+      <span><b>W S</b> throttle / brake</span>
+      <span><b>A D</b> steer</span>
+      <span><b>SPACE</b> handbrake</span>
+      <span><b>E Q</b> shift</span>
+      <span><b>G</b> auto/manual</span>
+      <span><b>L</b> lights</span>
+      <span><b>F</b> flash</span>
+      <span><b>C</b> camera</span>
+      <span><b>R</b> respawn</span>
+      <span><b>M</b> mute</span>
+    </div>
+  </div>
 </div>
 
 <script type="importmap">

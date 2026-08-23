@@ -30,7 +30,6 @@ export const ROAD = {
    * not physically contain either of them.
    */
   laneWidth: 3.7,
-  lanes: 4,
   halfWidth: 7.4,
   /** Paved shoulder beyond the lane markings before terrain blending starts. */
   shoulder: 2.0,
@@ -78,25 +77,23 @@ export const ROAD = {
    * rock cutting where the road punches through a ridge. Steeper cut than fill,
    * because rock stands where loose fill will not.
    */
-  cutSlope: 0.85,
-  fillSlope: 0.62,
+  cutSlope: 0.62,
+  fillSlope: 0.5,
+  /** Rounding radius where the cut/fill ramp leaves the verge, metres. */
+  shoulderRound: 14,
+  /** Smoothing window where the ramp meets the natural surface, metres. */
+  slopeBlend: 3.5,
 
   /** Centre line: metres painted, then the same again unpainted. */
   dashLength: 3.0,
 
+  /** Master switch. Off, deep cuttings are what the cut-and-fill clamp gives. */
+  tunnels: true,
   /**
    * A tunnel begins where the ground over the centreline exceeds this, so the
    * mountain has already closed overhead before the bore starts and the car is
    * never driving straight at a terrain surface. Shallower than this and the
    * cut-and-fill clamp opens an ordinary cutting instead.
-   */
-  /**
-   * DISABLED (see README, "Tunnels are off by one constant"). Set to ~11 to
-   * enable. The geometry is verified correct — solid rock over the bore, mouths
-   * cut where the arch breaks out, no terrain intruding into the carriageway —
-   * but on some spans the car stops dead inside the bore against something I
-   * have not identified. A deep cutting is what you get instead, which the
-   * cut-and-fill clamp already produces well.
    */
   tunnelCover: 11,
   tunnelMinLength: 55,
@@ -104,12 +101,37 @@ export const ROAD = {
   tunnelBridge: 60,
   tunnelHalfWidth: 9.2,
   tunnelCrown: 7.6,
-  /** Rock left between the bore crown and the mountain before a mouth opens. */
-  tunnelRoof: 2.5,
-  /** Thickness of the portal ring, which is what gives the mouth solidity. */
-  portalThickness: 2.6,
+  /**
+   * Length of the portal transition, metres — the stretch over which the
+   * terrain goes from the ordinary cut-and-fill surface to the untouched
+   * mountain, and therefore the depth of the opening cut in the rock face.
+   *
+   * SHORT ON PURPOSE, and this is the whole trick. The old value was 18 m,
+   * over which the terrain climbed the full depth of the mountain — measured
+   * at up to 60 m — so the vertex left standing beside the hole sat 35 m above
+   * the arch while the shell reached only 8. That ring of nothing around every
+   * mouth was the "mesh gaps around the tunnel". Two rows of the terrain grid
+   * instead makes the transition a rock FACE, and the mouth a hole punched in
+   * it: the surviving edge can then only be one cell of cut slope above the
+   * arch, which the shell covers by construction rather than by luck.
+   */
+  tunnelPortal: 6,
+  /** Headroom held clear above the arch, metres. */
+  tunnelRoof: 1.2,
+  /** Extra shell height above the arch, to swallow the cut edge. */
+  tunnelShellExtra: 7.0,
   /** Floor slab either side of the bore, so a hole can never outrun the floor. */
   tunnelSill: 2.5,
+  /**
+   * How far past the bore the required headroom decays to nothing, metres.
+   *
+   * This is what shapes the hill the tunnel is bored through. The requirement
+   * itself is local — keep rock above the arch — but applying it over only the
+   * sill width put a 62-degree shoulder either side of the bore, a creased berm
+   * running its whole length. Decayed over 45 m on a smoothstep it merges into
+   * the hillside instead.
+   */
+  tunnelBerm: 45,
 };
 
 export const CHUNK = {
@@ -174,19 +196,32 @@ export const CHUNK = {
   standBias: 1.7,
   /**
    * The outermost band tilts gently away below the eyeline so the corridor ends
-   * by sloping out of sight rather than at a clean cut edge. This is only a
-   * safety net — at 700 m the fog already leaves ~1% of the terrain colour, so
-   * the drop stays shallow. An aggressive drop here produces near-vertical
-   * facets whose normals flip, and those read as a jagged dark band.
+   * by sloping out of sight rather than at a clean cut edge.
+   *
+   * Kept shallow, and this is measured rather than taste. Out here the fold
+   * guard already skews cells — it maps lateral offsets through a curvature
+   * that changes from row to row, so a quad 600 m out is a parallelogram — and
+   * every terrain cell in the corridor whose faces meet at more than 60 degrees
+   * is on the inside of a bend for that reason. Adding a steep drop on top
+   * takes those from 3 to 8 and the worst from 72 to 87 degrees, which reads as
+   * a jagged dark band along the horizon. At 520 m the fog has taken half the
+   * colour and at 700 m nearly all of it, so a 30 m drop hides the edge
+   * perfectly well and costs none of that.
    */
-  horizonFalloff: 560,
-  horizonDrop: 60,
+  horizonFalloff: 520,
+  horizonDrop: 30,
   /** Lateral distance at which the player counts as having left the world. */
   recoverLateral: 300,
 };
 
 export const VEHICLE = {
   mass: 1250,
+  /**
+   * Ceiling on chassis speed, m/s (~360 km/h). Above every car's real top
+   * speed, so it never touches normal driving — it exists purely to stop a
+   * bad contact resolve from turning into an unrecoverable flight.
+   */
+  maxChassisSpeed: 100,
   /** Centre of mass offset from the body origin — low CoM resists rolling. */
   comOffset: { x: 0, y: -0.20, z: 0.05 },
 
@@ -234,7 +269,17 @@ export const VEHICLE = {
    * "goes light". A tyre that simply cancels lateral velocity has no such cue —
    * it grips perfectly right up until it doesn't.
    */
-  tyreShape: 1.45,             // C — peak at B·α ≈ 1.86, then a soft plateau
+  /**
+   * C — the shape factor, and the single biggest lever on whether a slide is
+   * holdable. It sets how much grip survives past the peak:
+   * `sin(C·π/2)` of it, once the slip angle is large. At 1.45 that is 76%, so
+   * the tyre falls off a cliff the moment it lets go and the car is gone. At
+   * 1.25 it keeps 92%, which is what makes a slide something you steer rather
+   * than something that happens to you. 1.32 sits between the two: enough
+   * falloff that the limit is still something you can feel arriving, enough
+   * grip past it that the car does not simply leave.
+   */
+  tyreShape: 1.32,
   corneringStiffnessFront: 14, // B — peak near 7.6 deg: crisp turn-in
   corneringStiffnessRear: 11.5,// softer rear: slip builds progressively
   /** Rear peak grip > front, so the front washes out first (safe understeer). */
@@ -246,12 +291,12 @@ export const VEHICLE = {
    * after cornering. 1.0 would be a perfect nanny; 1.4 still allows wheelspin
    * and power-on rotation but stops a stab of throttle ending in a spin.
    */
-  tractionControl: 1.4,
+  tractionControl: 2.4,
 
   /** Effective mass per tyre for the low-speed velocity-cancelling fallback. */
   lateralGripMass: 0.30,
   /** Handbrake kills most of the rear lateral grip => predictable drifts. */
-  handbrakeGripMul: 0.30,
+  handbrakeGripMul: 0.28,
   /**
    * Tyre forces are applied this far above the contact patch. Real weight
    * transfer stays, but the roll moment shrinks enough to stop silly flips.
@@ -290,21 +335,32 @@ export const VEHICLE = {
    * grip limit you are allowed to ask (so a slide is still provokable).
    */
   maxSteer: 0.58,
-  minSteer: 0.030,
-  steerGripMargin: 1.05,
-  steerRate: 4.4,          // rad/s toward full lock
-  steerReturnRate: 6.2,    // rad/s back to centre when input released
+  /**
+   * Floor on the usable angle, and the margin past the grip limit.
+   *
+   * The derivation `δ_max = atan(L·a_max/v²)` is right, and taken literally it
+   * makes a fast car feel welded straight ahead: measured, 1.72 deg of lock at
+   * 200 km/h with only 1.85x the angle the tightest corner on the road needs.
+   * There is nothing to drive with, and nothing left to catch a slide with
+   * either. The margin is how far past the tyres' honest limit the driver may
+   * ask — understeer is the penalty, which is a fair trade for having a car
+   * that responds — and `minSteer` guarantees a usable angle at any speed.
+   */
+  minSteer: 0.075,
+  steerGripMargin: 1.6,
+  steerRate: 6.2,          // rad/s toward full lock
+  steerReturnRate: 8.0,    // rad/s back to centre when input released
 
   // ----------------------------------------------------------- powertrain --
-  idleRpm: 900,
+  /**
+   * Fallbacks only. Every roster entry supplies its own, and engine_sim owns
+   * the torque curve, the clutch and the shift logic — so there is deliberately
+   * no torque or shift-point tuning here. The keys that used to describe the
+   * old built-in engine model (idle/peak torque/shift rpm, driveline
+   * efficiency) are gone; they had been dead since the simulator took over.
+   */
   maxRpm: 7400,
-  shiftUpRpm: 6700,
-  shiftDownRpm: 2900,
-  shiftTime: 0.28,
-  peakTorque: 385,         // Nm
-  peakTorqueRpm: 4300,
   finalDrive: 3.7,
-  drivelineEfficiency: 0.9,
   /** index 0 = reverse, index 1 = neutral, 2+ = forward gears. */
   gearRatios: [-3.3, 0, 3.62, 2.24, 1.58, 1.19, 0.96, 0.79],
 
@@ -330,14 +386,63 @@ export const VEHICLE = {
   /** Pitch/yaw authority while airborne. */
   airControl: 2.6,
 
-  bodyColor: 0xd94f3d,
+  /**
+   * Slide containment — where a drift stops being a drift and becomes a spin.
+   *
+   * Measured on the old tune: a handbrake turn left the car yawing at
+   * 3.29 rad/s, countersteer took 3.96 s to arrest it, and it went right round.
+   * That is not a difficulty curve, it is a car the driver has been locked out
+   * of: past a certain angle every tyre is so far beyond its peak that the
+   * steering has almost no authority left, so no input recovers it.
+   *
+   * A yaw damper fades in between these two chassis slip angles and is fully
+   * engaged past the second. Below `driftAngle` it does literally nothing.
+   *
+   * DELIBERATELY LATE AND GENTLE. At 23 deg and a strength of 3.0 it caught a
+   * spin in 0.68 s, which is excellent and also completely obvious: 23 deg is
+   * an ordinary slide, so the car was being straightened out from under the
+   * driver every time they provoked one. That is the "weird correction". The
+   * band now starts past the angle a car reaches under any normal provocation
+   * and the strength is less than half, so it is a net that catches a genuine
+   * spin rather than a hand on the wheel.
+   */
+  driftAngle: 0.62,        // ~36 deg — a real slide, and entirely the driver's
+  spinAngle: 1.25,         // ~72 deg — past here the car is going round
+  spinRecovery: 1.3,       // damper strength, N·m·s per rad/s per kg
+
+  /**
+   * Chassis slip angles over which the steering lock opens beyond the
+   * grip-derived limit. See `_updateSteering`: the steady-state derivation does
+   * not hold in a slide, and applying it there leaves no countersteer at all.
+   *
+   * The opening is PROPORTIONAL, not a jump to full lock. Going straight to
+   * 33 deg the moment the car moved around read as the steering ratio changing
+   * underneath you. A fixed multiple of whatever the limit already was keeps
+   * the response continuous — the wheel means the same thing throughout, there
+   * is simply more of it available.
+   */
+  slideOpenFrom: 0.14,     // ~8 deg — the car is starting to move around
+  slideOpenTo: 0.55,       // ~32 deg — fully opened
+  slideLockGain: 4.0,      // how many times the steady-state limit, at most
 };
 
 export const TRAFFIC = {
   /** Cars kept alive around the player. */
-  count: 8,
-  ahead: 420,
-  behind: 220,
+  count: 9,
+
+  /**
+   * The band of road that is populated, and where inside it a car may appear.
+   *
+   * `spawnMin` is the important one. It used to be 40 m, which put cars into
+   * existence in the middle of the carriageway in full view — the single most
+   * obvious thing wrong with the old traffic. At 460 m the exponential fog has
+   * already taken about half the contrast out of a car and the depth-of-field
+   * focus (which reaches 260 m at speed) has softened it, so what arrives is a
+   * shape resolving out of the haze rather than an object switching on.
+   */
+  spawnMin: 460,
+  ahead: 620,
+  behind: 260,
   /** Share of spawns that come the other way. */
   oncomingShare: 0.42,
 
@@ -360,6 +465,24 @@ export const TRAFFIC = {
   pressedBoost: 1.16,
   changeCooldown: 3.5,
   laneRate: 1.1,
+
+  // ------------------------------------------------------------- impacts --
+  /** Bounciness of a car-to-car hit. Sheet metal is not a squash ball. */
+  restitution: 0.15,
+  /**
+   * Ceiling on the speed change one impact may hand the player, m/s.
+   *
+   * Not a fudge factor. The impulse itself is the honest closed-form exchange,
+   * but a glancing blow evaluated at 300 km/h against a 2.6 t military truck
+   * produces a Δv that removes the player from the world, and no amount of
+   * correctness makes that the right outcome in a driving game. 11 m/s is a
+   * hard shunt you can recover from.
+   */
+  maxImpactDv: 11,
+  /** Seconds a struck car spends spinning out before it is taken away. */
+  spinTime: 4.5,
+  /** How fast a spinning car sheds speed, m/s². */
+  spinDecel: 5.5,
 };
 
 export const CAMERA = {
@@ -371,8 +494,8 @@ export const CAMERA = {
    * the camera sits just off the bootlid at rest, which is what makes low speed
    * feel like driving rather than like watching a model from across the room.
    */
-  chase: { dist: 5.2, height: 2.95, ahead: 6.5 },
-  close: { dist: 4.0, height: 2.25, ahead: 5.0 },
+  chase: { dist: 4.4, height: 2.30, ahead: 6.0 },
+  close: { dist: 3.3, height: 1.80, ahead: 4.8 },
   /** Height of the point the camera aims at, above the contact plane. */
   aimHeight: 0.95,
   /**
@@ -394,11 +517,37 @@ export const CAMERA = {
    * how fast the rig is allowed to *react* to a speed change, which is what
    * stops the camera lunging on every throttle stab.
    */
-  speedRef: 165,
+  /**
+   * `speedRef` was 165 m/s — 594 km/h, far beyond anything in the roster — so
+   * the speed factor never rose above about 0.4 and none of the terms below did
+   * much of anything. At 68 m/s the rig reaches full effect at a speed a car can
+   * actually see, and the field of view now opens by a useful amount rather than
+   * by a degree and a half.
+   */
+  speedRef: 68,
   speedLag: 0.5,
-  distGain: 0.55,
-  heightGain: 0.18,
-  fovSpeedGain: 4,
+  /** How far the rig backs off and lifts at full speed, metres. Kept small. */
+  distGain: 0.45,
+  heightGain: 0.12,
+  /** Degrees of extra field of view at full speed — most of the speed cue. */
+  fovSpeedGain: 12,
+
+  /**
+   * Garage: the rig that orbits the car on the title screen.
+   *
+   * `aim` is NEGATIVE on purpose. The look-at point sits at the centre of the
+   * frame, so aiming at a point below the car lifts the car up the screen and
+   * out from behind the dock of buttons along the bottom.
+   */
+  garage: { dist: 7.0, height: 2.1, spin: 0.22, aim: -0.55 },
+
+  /**
+   * Leaving the garage, the rig sweeps to the chase position rather than
+   * cutting. `snapBoost` multiplies the damping rates for `snapTime` seconds so
+   * it arrives promptly without teleporting.
+   */
+  snapTime: 1.1,
+  snapBoost: 2.6,
 };
 
 export const ATMOSPHERE = {
@@ -421,12 +570,12 @@ export const ATMOSPHERE = {
   skyZenith: 0x3f6ea8,
   skyHorizon: 0xdde3e2,
   sunColor: 0xfff4e6,
-  sunIntensity: 2.05,
+  sunIntensity: 2.4,
 
   hemiSky: 0xd2e2f2,
   hemiGround: 0xa39c8c,
   /** Deliberately high: this is what lifts the shadows and kills the contrast. */
-  hemiIntensity: 1.25,
+  hemiIntensity: 1.5,
 
   /** Sun well above the horizon — the single biggest lever on "sunset vibe". */
   sunDir: { x: -0.34, y: 0.62, z: -0.71 },
@@ -437,26 +586,52 @@ export const ATMOSPHERE = {
   /** Post-processing. Bloom is now a hint of glow, not a glare. */
   bloomStrength: 0.10,
   bloomThreshold: 0.95,
-  vignette: 0.2,
+  vignette: 0.13,
   /**
-   * Distance blur. Everything nearer than `blurStart` stays perfectly sharp —
-   * which is what keeps the car crisp regardless of where the camera sits — and
-   * blur ramps to full by `blurEnd`. The start distance is pushed further out
-   * with speed.
+   * Radial speed blur. `speedBlur` is the smear at full speed, as a fraction of
+   * the distance from screen centre; `speedBlurInner` is the radius that stays
+   * perfectly sharp. Set speedBlur to 0 to drop the pass entirely.
+   *
+   * This replaced depth of field, which focused at a single distance and
+   * therefore blurred the car itself — see scene.js.
    */
-  /** Set false to drop depth of field entirely; everything else keeps working. */
-  blurEnabled: true,
-  /**
-   * Depth of field, focus pulled toward the horizon with speed. Note this
-   * focuses at ONE distance, so the car — five metres away — softens as focus
-   * goes out. Lower `dofMaxBlur` to reduce that; it scales the whole effect.
-   */
-  dofFocus: 90,
-  dofAperture: 0.000022,
-  dofMaxBlur: 0.004,
-  dofFocusNear: 55,
-  dofFocusFar: 260,
-  exposure: 1.0,
+  speedBlur: 0.055,
+  speedBlurInner: 0.17,
+  /** Speed, m/s, at which the blur reaches full strength. */
+  speedBlurRef: 68,
+
+  /** Overall brightness multiplier applied by the tone mapper. */
+  exposure: 1.18,
+};
+
+/**
+ * Near-miss scoring, used by Traffic mode.
+ *
+ * The shape is the familiar one: a pass close to another car scores, closer
+ * scores more, and consecutive passes build a multiplier that decays unless it
+ * is refreshed. What is specific here is that ONCOMING traffic is worth much
+ * more — it arrives at the sum of both speeds, so the same lateral gap is a
+ * fraction of the time to react to and ought to pay accordingly.
+ */
+export const SCORE = {
+  /** Lateral clearance, metres, within which a pass scores at all. */
+  nearRange: 2.6,
+  /** Points for a pass that all but touches, and for one at the edge of range. */
+  best: 260,
+  worst: 40,
+  /** Oncoming cars are worth this many times a same-direction pass. */
+  oncomingBonus: 2.4,
+  /** Seconds the chain survives without another pass. */
+  chainTime: 5.0,
+  /** Multiplier gained per pass, and its ceiling. */
+  chainStep: 1,
+  chainMax: 10,
+  /** Minimum seconds between two scoring passes, so a cluster is not a jackpot. */
+  cooldown: 0.3,
+  /** Below this speed a pass does not count, m/s. */
+  minSpeed: 12,
+  /** How far along the road a car must get before its pass is scored. */
+  passWindow: 14,
 };
 
 /** Lighter and less saturated than natural, to sit with the flatter lighting. */

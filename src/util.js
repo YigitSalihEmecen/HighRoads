@@ -85,3 +85,33 @@ export function hashInt(i) {
   h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
   return (h ^ (h >>> 16)) >>> 0;
 }
+
+/**
+ * Polynomial smooth minimum (Quilez). Blends the two values over a window `k`
+ * instead of meeting them at a corner.
+ *
+ * A hard min/max is what puts a crease in a surface: the derivative jumps in
+ * one step. On terrain that crease is a curvature spike, and a car crossing it
+ * at speed is thrown as if it hit a wall — even though nothing is standing up.
+ */
+export function smin(a, b, k) {
+  if (k <= 0) return Math.min(a, b);
+  const h = clamp(0.5 + (0.5 * (b - a)) / k, 0, 1);
+  return lerp(b, a, h) - k * h * (1 - h);
+}
+
+/** Smooth maximum, by symmetry. */
+export function smax(a, b, k) {
+  return -smin(-a, -b, k);
+}
+
+/** Hashes a seed string to a 32-bit integer, for seeding a PRNG from a name. */
+export function hashString(text) {
+  let h = 0x811c9dc5;
+  const s = String(text);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}

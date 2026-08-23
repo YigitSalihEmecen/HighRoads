@@ -23,6 +23,17 @@ export class HUD {
     this.fillEl = document.getElementById('tach-fill');
     this.redEl = document.getElementById('tach-red');
 
+    // ---- Traffic mode ----------------------------------------------------
+    this.scoreEl = document.getElementById('score');
+    this.chainEl = document.getElementById('chain');
+    this.multEl = document.getElementById('mult');
+    this.chainBar = document.querySelector('#chain-bar i');
+    this.awardEl = document.getElementById('award');
+    this._scorePop = 0;
+    this._awardTimer = 0;
+    this._lastScore = -1;
+    this._lastMult = -1;
+
     // Measure the arc rather than hard-coding it — the path is authored in the
     // stylesheet's coordinate space and may be edited independently.
     this.arcLen = this.fillEl.getTotalLength();
@@ -44,6 +55,57 @@ export class HUD {
 
   show() {
     this.root.classList.add('live');
+  }
+
+  hide() {
+    this.root.classList.remove('live');
+  }
+
+  /** Traffic mode gets a score readout; Zen mode is just the instruments. */
+  setMode(mode) {
+    this.root.classList.toggle('traffic', mode === 'traffic');
+  }
+
+  /**
+   * Score, multiplier and the chain timer.
+   *
+   * The chain bar is a CSS transform rather than a width so it never triggers
+   * layout — this runs every frame, and the whole reason the readouts below
+   * only write text when a value changes is that assigning to a live DOM node
+   * shows up in a profile long before the renderer does.
+   */
+  updateRun(dt, run) {
+    if (!this.scoreEl) return;
+
+    if (run.lastAward > 0) {
+      this._scorePop = 0.16;
+      this.scoreEl.classList.add('pop');
+      this.awardEl.textContent =
+        `+${run.lastAward}` + (run.lastOncoming ? '  ONCOMING' : '');
+      this.awardEl.classList.toggle('oncoming', run.lastOncoming);
+      this.awardEl.classList.add('show');
+      this._awardTimer = 0.9;
+    }
+    if (this._scorePop > 0) {
+      this._scorePop -= dt;
+      if (this._scorePop <= 0) this.scoreEl.classList.remove('pop');
+    }
+    if (this._awardTimer > 0) {
+      this._awardTimer -= dt;
+      if (this._awardTimer <= 0) this.awardEl.classList.remove('show');
+    }
+
+    const score = Math.round(run.score);
+    if (score !== this._lastScore) {
+      this.scoreEl.textContent = score.toLocaleString();
+      this._lastScore = score;
+    }
+    if (run.multiplier !== this._lastMult) {
+      this.multEl.textContent = 'x' + run.multiplier;
+      this._lastMult = run.multiplier;
+    }
+    this.chainEl.classList.toggle('live', run.chain > 0);
+    this.chainBar.style.transform = `scaleX(${run.chainFraction.toFixed(3)})`;
   }
 
   toast(message, seconds = 1.6) {

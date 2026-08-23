@@ -23,8 +23,8 @@
 
 import * as THREE from 'three';
 import { CHUNK, ROAD, TERRAIN_COLORS } from './config.js';
-import { clamp, lerp, smoothstep, mulberry32, hashInt } from './util.js';
-import { FOLIAGE, FOLIAGE_GROUPS, GRASS, GROUP_OF, suitability } from './foliage.js';
+import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
+import { FOLIAGE, FOLIAGE_GROUPS, GROUP_OF, suitability } from './foliage.js';
 import { makeFrame } from './path.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -141,6 +141,51 @@ function boreHeightAt(v) {
   // Semi-ellipse springing from the wall top; below that it is a plain wall.
   const t = av / hw;
   return wallH + Math.sqrt(Math.max(0, 1 - t * t)) * (ROAD.tunnelCrown - wallH);
+}
+
+/** Half-width of the sill slab — the widest the bore's footprint ever gets. */
+const SILL = ROAD.tunnelHalfWidth + ROAD.tunnelSill;
+
+/**
+ * "There is a bore here." ONE constant, used by every consumer of the tunnel
+ * factor: the terrain clearance, the mouth, the ground query and the lining
+ * sweep.
+ *
+ * It has to be shared. Three of those used to test slightly different numbers
+ * (0.0005, 0.01, 0.5), and each disagreement opened a band of road where one
+ * rule was in force and another was not. The worst of them lifted the terrain
+ * clear of the arch without removing it, leaving an 8.8 m wall — the arch
+ * height exactly — standing across the carriageway on the approach to a portal.
+ */
+const TUNNEL_EPS = 1e-4;
+
+/**
+ * Height above the road plane that the terrain must be held clear of, so the
+ * mountain can never reach down into the bore.
+ *
+ * This REPLACES cutting the roof away on a height test. The old rule removed
+ * any terrain quad that hung below the arch, which is correct but only as
+ * reliable as the grid: it depended on where vertices happened to land, and a
+ * dip in the rock cover mid-tunnel opened real sky over the carriageway.
+ * Pushing the surface up instead cannot fail — there is no case left in which
+ * terrain and bore occupy the same space — and it costs one `max`.
+ *
+ * The clearance tapers to nothing between the arch and the edge of the sill so
+ * the lift blends into the hillside rather than standing on a step.
+ */
+function boreClearance(v) {
+  const av = Math.abs(v);
+  const arch = boreHeightAt(v);
+  if (arch >= 0) return arch + ROAD.tunnelRoof;
+
+  // Outside the bore the requirement decays to nothing over `tunnelBerm`, on a
+  // smoothstep so both ends are C1. The old taper ran out over the 2.5 m sill,
+  // which put a 62-degree shoulder either side of every tunnel — a berm with a
+  // crease down it, running the length of the bore. Spread over tens of metres
+  // it reads as the hillside the tunnel is bored through, which is the point.
+  const wallTop = ROAD.tunnelCrown * 0.45 + ROAD.tunnelRoof;
+  const t = clamp((av - ROAD.tunnelHalfWidth) / ROAD.tunnelBerm, 0, 1);
+  return wallTop * (1 - smoothstep(0, 1, t));
 }
 
 /**
@@ -297,10 +342,42 @@ export class ChunkManager {
     // cut through a valley, one cut and one filled along a mountainside, both
     // filled across a hollow, and a rock cutting through a ridge.
     //
-    const d = Math.max(0, av - EDGE);
-    const ceiling = yRoad + ROAD.cutSlope * d;
-    const floorY = yRoad - ROAD.fillSlope * d;
-    let y = clamp(yNatural, floorY, ceiling);
+    // Cut and fill, rounded at both ends.
+    //
+    // The plain version — a linear ramp from the verge edge, hard-clamped
+    // against the natural surface — has a corner at each join. Measured, the
+    // ground went from 3 degrees to 40 in a single step at the verge, a
+    // curvature of 1.54/m, which at 30 m/s is 1389 m/s² straight up. Nothing is
+    // standing there; the crease alone is enough to stop a car dead.
+    //
+    // Two changes remove it. The ramp starts with zero gradient and eases into
+    // the cut slope (t²/(t+R) — value and first derivative both zero at the
+    // verge), and the clamp becomes a smooth min/max so the top of a cutting
+    // and the toe of an embankment round into the hillside instead of meeting
+    // it at a corner.
+    const t = Math.max(0, av - EDGE);
+    const ramp = (t * t) / (t + ROAD.shoulderRound);
+    const ceiling = yRoad + ROAD.cutSlope * ramp;
+    const floorY = yRoad - ROAD.fillSlope * ramp;
+
+    // THE BLEND WIDTH MUST CLOSE WITH THE GAP IT IS BLENDING.
+    //
+    // `smin` and `smax` do not agree with `min` and `max` near the crossover —
+    // that is the entire point of them — and each contributes up to k/4 of
+    // error. On the carriageway the ceiling and the floor are the SAME plane
+    // (ramp = 0), so the pair is smoothing a gap of zero width: with a fixed
+    // k = 3.5 the two errors compound to +0.875 m of terrain standing on the
+    // road wherever the natural surface happens to pass near road level. That
+    // is the road disappearing into the ground, and — because a portal is
+    // precisely where the hillside crosses road level — it is also the wall a
+    // car hits at a tunnel mouth.
+    //
+    // Tying k to a quarter of the gap makes the smoothing vanish exactly where
+    // there is nothing to smooth. On the carriageway it degrades to a hard
+    // clamp and the surface is the road plane, to the bit. Out on the slopes
+    // the gap is metres wide and the full blend is back.
+    const k = Math.min(ROAD.slopeBlend, (ceiling - floorY) * 0.25);
+    let y = smax(smin(yNatural, ceiling, k), floorY, k);
 
     // Tunnels. The mountain is left intact right across the corridor, so the
     // terrain sheet becomes the lid over the bore and the hillside reads as
@@ -308,8 +385,14 @@ export class ChunkManager {
     // avoid the road: the car is underneath, on the bore floor, and the only
     // opening is the mouth — cut out of the index buffer where the rock is
     // thinner than the bore is tall.
-    if (frame.tunnel > 0) {
-      y = lerp(y, yNatural, frame.tunnel);
+    if (frame.tunnel > TUNNEL_EPS) {
+      // Both the clamp release and the headroom come in on the SAME eased ramp.
+      // Switching the headroom on as a step put an 8.8 m riser — the arch
+      // height exactly — between one row and the next at every portal.
+      const ramp = smoothstep(0, 1, frame.tunnel);
+      y = lerp(y, yNatural, ramp);
+      const clear = boreClearance(v);
+      if (clear > 0) y = Math.max(y, yRoad + clear * ramp);
     }
 
     // Drainage ditch hugging the verge — but only where the road is roughly at
@@ -408,9 +491,17 @@ export class ChunkManager {
     const f = this.path.frameAt(s, this._frame);
     this._rightFlat.crossVectors(f.tan, WORLD_UP).normalize();
     this.sampleGround(f, this._rightFlat, v, out);
-    // In a tunnel the terrain is the mountain overhead; respawn and the
-    // fell-out-of-the-world check both want the bore floor instead.
-    if (f.tunnel > 0.5) out.y = f.pos.y + v * Math.tan(f.bank);
+    // In a tunnel the terrain is the mountain overhead — and, since the bore
+    // clearance lift, it is held at least an arch's height above the road even
+    // where the mountain itself is thin. Everything that asks this question
+    // (respawn, traffic placement, the fell-out-of-the-world check) wants the
+    // surface the car drives on, which is the bore floor.
+    //
+    // The threshold is "any bore at all", not "mostly a bore". At 0.5 the two
+    // answers differed by the full arch height right where a portal is, so a
+    // respawn or a traffic car landed on the roof: measured as an 8.92 m
+    // discrepancy, which is exactly tunnelCrown + tunnelRoof.
+    if (f.tunnel > TUNNEL_EPS) out.y = f.pos.y + v * Math.tan(f.bank);
     return out;
   }
 
@@ -605,17 +696,20 @@ export class ChunkManager {
         positions[k * 3 + 2] = p.z - origin.z;
         lateralAbs[k] = Math.abs(v);
         worldY[k] = p.y;
-        // A mouth is where the bore is inside the corridor but the mountain
-        // above it is thinner than the arch is tall — exactly the portals, and
-        // any place the rock cover pinches out mid-tunnel.
-        // Remove ground only where it would actually stand inside the bore,
-        // measured against the arch at that lateral offset. Threshold on the
-        // merest hint of a tunnel: between 0 and 0.35 the corridor is still
-        // ramping toward the mountain and that ramp passes through the bore.
-        const arch = boreHeightAt(v);
+        // The mouth is a ROAD-SPACE rectangle, not a height test.
+        //
+        // Terrain is now held clear of the bore everywhere (boreClearance), so
+        // nothing has to be removed to keep the carriageway open. What does
+        // have to be removed is the rock FACE at each end — the two rows over
+        // which the surface climbs from the cut-and-fill level to the mountain
+        // — because that face stands square across the bore. Those are exactly
+        // the rows where the tunnel factor is in transition, and a quad goes if
+        // any corner is one of them. The result is a hole of fixed, known size:
+        // bore width across, one portal length deep, with an edge that cannot
+        // sit more than a cell of cut slope above the arch.
         mouth[k] =
-          frame.tunnel > 0.01 && arch >= 0 &&
-          p.y < frame.pos.y + arch + ROAD.tunnelRoof
+          frame.tunnel > TUNNEL_EPS && frame.tunnel < 1 - TUNNEL_EPS &&
+          Math.abs(v) <= ROAD.tunnelHalfWidth
             ? 1
             : 0;
       }
@@ -706,10 +800,9 @@ export class ChunkManager {
     for (let k = 0; k < lateralAbs.length; k++) {
       const y = worldY[k];
       // Far out on the inside of a bend the fold guard squeezes columns into
-      // slivers whose computed normals are unreliable. The terrain material is
-      // flat-shaded (normals come from screen-space derivatives), so this
-      // attribute only drives colour — take the magnitude so a bad sliver can
-      // never paint a grass slope as a cliff.
+      // slivers whose computed normals are unreliable. Here the normal only
+      // drives colour, so take the magnitude: a bad sliver can then never paint
+      // a grass slope as a cliff.
       const ny = Math.abs(normals[k * 3 + 1]);
       const av = lateralAbs[k];
 
@@ -973,9 +1066,6 @@ export class ChunkManager {
       // broken up inside — and squaring it sharpens the edges further, so a
       // wood has a boundary and a clearing has nothing in it.
       if (isCanopy && rng() > density * density * CHUNK.standBias) continue;
-      // Rock gathers where rock belongs: outcrops on steep ground and ridges,
-      // not scattered evenly across a meadow.
-      if (group === 'stone' && slope < 0.25 && rng() > 0.25) continue;
       placed[group]++;
 
       const model = chosen.get(kindName);
@@ -1009,81 +1099,6 @@ export class ChunkManager {
       out.push(mesh);
     }
 
-    out.push(...this._buildGrass(rng, s0, s1, origin));
-    return out;
-  }
-
-  /**
-   * Ground cover. A dense, cheap pass that runs independently of the species
-   * draw above, masked by a noise field so the terrain keeps bald patches
-   * rather than being uniformly carpeted.
-   */
-  _buildGrass(rng, s0, s1, origin) {
-    const models = GRASS.models.filter((m) => this.foliage.has(m));
-    if (!models.length) return [];
-
-    // A couple of tuft models per chunk — each one is a draw call.
-    const chosen = [];
-    const pool = models.slice();
-    for (let i = 0; i < GRASS.picks && pool.length; i++) {
-      chosen.push(pool.splice(Math.floor(rng() * pool.length), 1)[0]);
-    }
-
-    const batches = chosen.map((name) => ({ name, matrices: [] }));
-    const frame = makeFrame();
-    const rightFlat = new THREE.Vector3();
-    const p = new THREE.Vector3();
-    const pA = new THREE.Vector3();
-    const pB = new THREE.Vector3();
-    let placed = 0;
-
-    for (let n = 0; n < GRASS.samples && placed < GRASS.cap; n++) {
-      const s = lerp(s0, s1, rng());
-      const side = rng() < 0.5 ? -1 : 1;
-      const v = side * lerp(GRASS.lateral[0], GRASS.lateral[1], Math.sqrt(rng()));
-
-      this.path.frameAt(s, frame);
-      rightFlat.crossVectors(frame.tan, WORLD_UP).normalize();
-      this.sampleGround(frame, rightFlat, v, p);
-
-      // Patchiness first — it rejects most samples, so do it before the
-      // slope probes.
-      const mask = this.terrain.nC(p.x * GRASS.patchScale, p.z * GRASS.patchScale) * 0.5 + 0.5;
-      if (mask < GRASS.patchFloor || rng() > mask) continue;
-
-      if (p.y < GRASS.altitude[0] || p.y > GRASS.altitude[1]) continue;
-
-      this.sampleGround(frame, rightFlat, v - 2, pA);
-      this.sampleGround(frame, rightFlat, v + 2, pB);
-      if (Math.abs(pB.y - pA.y) / 4 > GRASS.maxSlope) continue;
-
-      this.meshGroundPoint(s, s0, s1, v, p);
-      // Sink a few centimetres so the tuft's flat base never shows daylight
-      // under it on a slope.
-      p.y -= 0.04;
-
-      const batch = batches[Math.floor(rng() * batches.length)];
-      const proto = this.foliage.get(batch.name);
-      const height = lerp(GRASS.height[0], GRASS.height[1], rng());
-      const scale = height / Math.max(0.01, proto.height);
-      const wob = 0.85 + rng() * 0.3;
-      this._setMatrix(p, origin, scale * wob, scale, scale * wob, rng() * Math.PI * 2);
-      batch.matrices.push(this._mat.clone());
-      placed++;
-    }
-
-    const out = [];
-    for (const batch of batches) {
-      if (!batch.matrices.length) continue;
-      const proto = this.foliage.get(batch.name);
-      const mesh = new THREE.InstancedMesh(proto.geometry, this.matFoliage, batch.matrices.length);
-      // Never shadow-casts: thousands of tufts in a 78 m cascade buys noise.
-      mesh.castShadow = false;
-      mesh.receiveShadow = true;
-      batch.matrices.forEach((mm, i) => mesh.setMatrixAt(i, mm));
-      mesh.instanceMatrix.needsUpdate = true;
-      out.push(mesh);
-    }
     return out;
   }
 
@@ -1114,7 +1129,7 @@ export class ChunkManager {
 
     for (let s = s0; s <= s1 + 1e-6; s += scan) {
       const t = this.path.frameAt(Math.min(s, s1), this._frame).tunnel;
-      if (t > 0.0005) {
+      if (t > TUNNEL_EPS) {
         if (!run) run = { a: s, b: s };
         run.b = Math.min(s + scan, s1);
       } else if (run) {
@@ -1125,8 +1140,20 @@ export class ChunkManager {
     if (run) spans.push(run);
     if (!spans.length) return [];
     for (const sp of spans) {
-      sp.a = Math.max(s0, sp.a - pad);
-      sp.b = Math.min(s1, sp.b + pad);
+      // Does the bore actually END here, or was the span merely cut off by the
+      // edge of this chunk? The difference decides two things: whether to pad
+      // (a real portal needs the lining to reach past the over-cut terrain) and
+      // whether to cap (only a real portal gets a ring of rock around it).
+      sp.openA = this.path.frameAt(sp.a - scan, this._frame).tunnel <= TUNNEL_EPS;
+      sp.openB = this.path.frameAt(sp.b + scan, this._frame).tunnel <= TUNNEL_EPS;
+      sp.a = sp.openA ? Math.max(s0, sp.a - pad) : s0;
+      sp.b = sp.openB ? Math.min(s1, sp.b + pad) : s1;
+      // Snap to a GLOBAL station grid. Chunk length is a whole number of steps,
+      // so two chunks meeting at a boundary put a row at exactly the same arc
+      // length and therefore generate bit-identical vertices there — the joint
+      // is seamless rather than merely close.
+      sp.a = Math.floor(sp.a / step) * step;
+      sp.b = Math.ceil(sp.b / step) * step;
     }
 
     const hw = ROAD.tunnelHalfWidth;
@@ -1153,7 +1180,7 @@ export class ChunkManager {
 
     const out = [];
     for (const span of spans) {
-      const rows = Math.max(2, Math.ceil((span.b - span.a) / step) + 1);
+      const rows = Math.max(2, Math.round((span.b - span.a) / step) + 1);
       const nv = profile.length;
       const verts = new Float32Array(rows * nv * 3);
       const idx = new Uint32Array((rows - 1) * (nv - 1) * 6 + 2 * (nvProfile - 1) * 6);
@@ -1199,11 +1226,23 @@ export class ChunkManager {
       // has real thickness instead of being one triangle deep.
       const shellVerts = [];
       const shellIdx = [];
-      const shell = ROAD.tunnelRoof;
+      // The shell reaches past the terrain's cut edge so any gap shows rock
+      // rather than sky. With the mouth now a fixed road-space rectangle, that
+      // edge can only be one grid cell of cut slope above the clearance line,
+      // so a fixed overshoot genuinely covers it — it is no longer a race
+      // against however far the hillside happened to rise.
+      const shell = ROAD.tunnelRoof + ROAD.tunnelShellExtra;
       const outer = profile.map(([v, hy]) => {
-        // Radial from the tube's axis. The sill corners stay put so the shell
-        // lands flush on the floor slab rather than hovering above it.
-        if (hy < 0.01) return [v, hy];
+        // Radial from the tube's axis, for EVERY point including the floor.
+        //
+        // The floor used to be left where it was, on the reasoning that the
+        // shell should sit flush on the slab. What that actually did was sweep
+        // the floor a second time in the same place — and since the lining
+        // material is double-sided, both copies draw and fight for the depth
+        // buffer. Measured: 11.4% of every bore's triangles were coincident,
+        // which is the shimmer along the tunnel floor. Offsetting the floor
+        // too makes the shell a genuine closed solid with rock under the road
+        // as well as over it, and no face is ever drawn twice.
         const dx = v, dy = hy - wallH;
         const len = Math.max(0.001, Math.hypot(dx, dy));
         return [v + (dx / len) * shell, hy + (dy / len) * shell];
@@ -1232,14 +1271,21 @@ export class ChunkManager {
         }
       }
 
-      // End caps joining inner rim to outer rim, which is the visible mouth.
+      // End caps joining inner rim to outer rim — the visible mouth.
+      //
+      // ONLY at an end that is really the end of the bore. A span clipped by a
+      // chunk boundary used to get one too, which put a raised ring of rock
+      // around the bore in the middle of the tunnel, once every 120 m. It is
+      // the same mistake as capping the collider there, one layer up.
       const capIdx = [];
-      for (const [row, flip] of [[0, false], [rows - 1, true]]) {
+      const capRows = [];
+      if (span.openA) capRows.push([0, false]);
+      if (span.openB) capRows.push([rows - 1, true]);
+      for (const [row, flip] of capRows) {
         for (let i = 0; i < nv - 1; i++) {
           const ai = row * nv + i, bi = row * nv + i + 1;          // inner
           const ao = ai, bo = bi;                                  // outer (offset later)
-          if (flip) capIdx.push([ai, bi, ao, bo, 1]);
-          else capIdx.push([ai, bi, ao, bo, 0]);
+          capIdx.push([ai, bi, ao, bo, flip ? 1 : 0]);
         }
       }
 
