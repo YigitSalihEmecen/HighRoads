@@ -7,7 +7,7 @@
  */
 
 export const WORLD = {
-  seed: 'fastroads-01',
+  seed: 'highroads-01',
 
   /** Slightly heavier than Earth: makes landings snappy and reduces float. */
   gravity: -16.0,
@@ -183,7 +183,18 @@ export const ROUTE = {
    * a fifteen-metre cutting.
    */
   earthFree: 7.0,
-  wEarthwork: 2.4,
+  /**
+   * Raised from 2.4 when the terrain's vertical scale roughly tripled (see
+   * `noise.js:continent` and `mountainH`). The budget is the same 7 m; what
+   * changed is that in country with 600 m of local relief the router now MEETS
+   * that budget everywhere, so the slope of the penalty past it is what decides
+   * whether it traverses a hillside or bulldozes across it. At 2.4 it bulldozed
+   * — mean earthwork 11.2 m over four seeds, which is a motorway cutting for
+   * most of the drive. Swept: 6.0 gives 8.9 m and takes the sidehill share from
+   * 48% to 58%, which is the same road being built by going round rather than
+   * through.
+   */
+  wEarthwork: 6.0,
   /** Steepness, as a fraction of the legal maximum, squared. */
   wGrade: 14,
   /**
@@ -389,6 +400,50 @@ export const CHUNK = {
    */
   trees: false,
 
+  /**
+   * How far BELOW another pass of the road a chunk's far sheet is pushed where
+   * the two overlap, metres. See `chunks.js:sampleGround`.
+   *
+   * The problem this solves is bug #55 and it is structural: a chunk carries
+   * terrain to `halfExtent` (700 m) either side while being `length` (120 m)
+   * long, so wherever the route doubles back within 700 m — which a router that
+   * follows contours does readily — one chunk's sheet covers another chunk's
+   * road. That sheet is natural ground over there, and the road under it is in
+   * a cutting, so what the player meets is a hillside standing on the
+   * carriageway. Measured on the default seed: a 2.6 m step across the road at
+   * s = 2827, put there by a chunk 720 m further along.
+   *
+   * `ROUTE.selfClear` cannot fix it. It keeps the two carriageways 300 m apart;
+   * the sheets are 700 m wide.
+   *
+   * So the far sheet is cut down to the foreign road's own plane, by the same
+   * cut ramp the road's own earthwork uses — and then this much further, so the
+   * two surfaces never fight for the same depth. The finer, correctly carved
+   * sheet that belongs to that road is drawn on top and hides the whole thing;
+   * what is left underneath is invisible geometry rather than a wall. Lowering
+   * only, never lifting: a clamp that can raise ground is a clamp that can bury
+   * a road, which is the bug.
+   */
+  foreignSink: 4.0,
+  /**
+   * Gradient of that cut, rise over run.
+   *
+   * MUCH shallower than `ROAD.cutSlope`, and the reason is the resolution of
+   * the sheet doing the cutting, not anything about earthwork. Out where a
+   * foreign road turns up, the lateral columns are 55 m apart; the clamp is a
+   * V and the mesh draws the CHORD across it, which sits above the true bottom
+   * by roughly slope x spacing / 2. At the road's own 62% that is 17 m of
+   * terrain standing over the carriageway — measured, and it is why the first
+   * version of this fix removed nothing at all. At 10% the chord error is 2.8 m
+   * against a 4 m sink, so the surface stays under the road however the columns
+   * happen to fall relative to it.
+   *
+   * The shallow gradient also makes the depression a few columns wide instead
+   * of one, which is what stops it reading as a crease if it is ever caught
+   * uncovered at the edge of the fog.
+   */
+  foreignSlope: 0.10,
+
   /** Lateral distance at which the player counts as having left the world. */
   recoverLateral: 300,
 };
@@ -491,6 +546,337 @@ export const GRASS = {
   /** Blades drawn into one card, and the card texture's size in pixels. */
   bladesPerCard: 7,
   textureSize: 256,
+
+  /**
+   * The SECOND tier: the middle distance.
+   *
+   * The block above describes grass you can look at. This describes grass you
+   * can see, which is a different problem and does not have the same answer.
+   * Extending the near field outward fails twice over — the instance count goes
+   * up with the area, and at 200 m a 1 m card is four pixels tall, so the count
+   * buys a faint dusting rather than a field. What reads at that distance is a
+   * LAYER: something with a broken top edge standing proud of the ground.
+   *
+   * So: the same card, `scale` times bigger, at `coverage` of the density that
+   * would preserve ground cover. Cards that size are far too coarse to look at,
+   * which is what `fadeIn` is for — they grow in behind the near tier's own
+   * fade-out, so the two hand over between 55 m and 110 m and no card is ever
+   * both close and large.
+   *
+   * The budget, and it is the reason for every number here: area per chunk is
+   * 120 m x 2 x `halfExtent`, so at scale 3.6 and coverage 0.30 that is about
+   * 3,600 instances a chunk against the near tier's 30,000, over seven chunks
+   * instead of three. Roughly 25,000 more instances and 100,000 more triangles
+   * for thirty times the covered ground.
+   *
+   * `behind`/`ahead` rather than a radius, because this tier exists to fill the
+   * view and the view is in front. Three quarters of a symmetric window would
+   * be spent on ground the camera has already passed.
+   */
+  far: {
+    enabled: true,
+    behind: 1,
+    ahead: 5,
+    /** Lateral band, metres. Past this the terrain's detail texture takes over. */
+    halfExtent: 185,
+    /**
+     * Card size, as a multiple of the near tier's — WIDTH and HEIGHT separately.
+     *
+     * This is the difference between a hillside covered in vegetation and a
+     * hillside covered in spikes. Scaling a grass card uniformly by 3.6 makes it
+     * five metres tall, and five metres of grass is a tree: rendered, the far
+     * tier read as a field of dark spines standing off the slope. What the
+     * middle distance needs from it is COVERAGE — a broken, slightly fuzzy top
+     * edge over a lot of ground — so the card grows mostly sideways and only
+     * enough upward to stand proud of the sheet.
+     *
+     * The instance count is divided by the product of the two, not by the square
+     * of one, so the ground covered per instance is what it says.
+     */
+    widthScale: 4.2,
+    heightScale: 1.55,
+    /** Density, as a fraction of what would preserve ground cover at that scale. */
+    coverage: 0.26,
+    /** Grows in over this camera-distance window, behind the near tier's fade. */
+    fadeIn: [55, 110],
+    /** And shrinks out again here — matched to the fog, not to the band. */
+    fadeOut: [330, 470],
+    /** Steepest ground it will stand on. Looser than the near tier: at this
+     *  distance a card on a 60-degree face reads as scrub, not as a mistake. */
+    maxSlope: 2.2,
+  },
+};
+
+/**
+ * The terrain's own surface detail — see `env/ground.js`.
+ *
+ * This is the other half of the answer to "the ground is flat green". The
+ * palette in `TERRAIN_COLORS` decides the hue; this decides whether there is
+ * anything to see between one vertex and the next, which past the verge is tens
+ * of metres of perfectly smooth interpolation.
+ */
+export const GROUND = {
+  enabled: true,
+  /** Detail map resolution. Three channels of luminance; see env/ground.js. */
+  textureSize: 512,
+
+  /**
+   * Metres of world per tile, near and far.
+   *
+   * Not a round ratio, and that is the point: two samples of one tiling map at
+   * frequencies that do not divide give a beat pattern whose period is their
+   * product — 154 metres here — for the cost of one extra texture fetch. Round
+   * numbers line the two tiles up and the repeat becomes visible again.
+   */
+  tileNear: 5.5,
+  tileFar: 28,
+
+  /**
+   * How hard each scale modulates the ground colour, 0..1.
+   *
+   * The near tile carries the grain and most of the contrast; the far tile is
+   * what survives to the horizon. Both are multiplies about 1.0, so a channel
+   * at its mean leaves the palette untouched — turning this block off must not
+   * change how bright the world is.
+   */
+  contrastNear: 0.34,
+  contrastFar: 0.30,
+
+  /**
+   * Distance over which the near tile fades out, metres.
+   *
+   * A 5.5 m tile at 120 m is under a pixel a tile, and a sub-pixel pattern is
+   * not detail, it is noise — it aliases into a shimmer that crawls as the car
+   * moves. Mipmapping greys it out on its own, but fading it explicitly means
+   * the far tile is not fighting a wash of mid-grey for the last of the
+   * contrast.
+   */
+  nearFade: [45, 130],
+};
+
+/**
+ * Procedural stone — see `env/rocks.js`.
+ *
+ * The brief is texture, not landmarks: chips along a verge, scree spilling out
+ * of a cut face, an occasional boulder in the grass. Anything bigger belongs to
+ * the terrain field, which is where mountains are made.
+ */
+export const ROCKS = {
+  enabled: true,
+
+  /**
+   * Chunks either side of the car that carry stone. Rocks are small and the
+   * scatter is cheap, but a 40 cm chip is invisible past about 90 m, so paying
+   * for it across the whole streaming window buys nothing.
+   */
+  behind: 1,
+  ahead: 2,
+
+  /** Scatter attempts per chunk. Most are rejected — see the placement rules. */
+  samples: 2600,
+
+  /**
+   * How many of each class's variants any ONE chunk may use.
+   *
+   * Every distinct geometry in a chunk is another InstancedMesh and another
+   * draw call. With the full library in play a chunk was touching eleven
+   * geometries for a hundred-odd rocks, which is a draw call per nine
+   * instances — the cost model of not instancing at all. Two per class caps it
+   * at six, and since which two is seeded per chunk the whole library still
+   * turns up across a drive.
+   */
+  variantsPerChunk: 2,
+
+  /**
+   * Where stone is allowed, in metres of lateral offset from the centreline.
+   *
+   * It starts INSIDE the grass band and ends well short of it. Two reasons, and
+   * both are about the verge rather than about rocks: the gravel shoulder is
+   * where a real road sheds its stone, and it is the one strip of ground the
+   * player passes within touching distance of at 200 km/h.
+   */
+  band: [9.5, 120],
+
+  /**
+   * Cut faces. Where the terrain is steeper than this, stone is far more likely
+   * — this is the "scree out of a cutting" rule, and it is the single thing
+   * that stops an excavated hillside reading as a smooth green ramp.
+   */
+  screeSlope: 0.62,
+
+  /** Relative weight of each class on ordinary ground, and on a cut face. */
+  mix: { scree: 0.62, stone: 0.31, boulder: 0.07 },
+  screeMix: { scree: 0.86, stone: 0.13, boulder: 0.01 },
+
+  /**
+   * Size classes. `detail` is the icosahedron subdivision — 0 is 20 triangles,
+   * 1 is 80 — and it is the whole triangle budget for this module.
+   *
+   * `flatten` is the vertical squash range. Stone is bedded and broken, so the
+   * default is well under 1; a value near 0.3 is a slab.
+   *
+   * `facets` is how many random half-space planes the lump is clipped against.
+   * That is what a fracture is, and without it the result is a potato.
+   */
+  classes: {
+    scree: {
+      variants: 5, detail: 0, size: [0.10, 0.34],
+      flatten: [0.34, 0.66], facets: 4, roughness: 0.42,
+      // The sun's cascade is 78 m across 2048 px — 4 cm a texel. A 15 cm chip
+      // is three texels, so its shadow is noise, and there are more chips than
+      // everything else put together.
+      shadow: false,
+    },
+    stone: {
+      variants: 5, detail: 1, size: [0.32, 0.95],
+      flatten: [0.40, 0.78], facets: 5, roughness: 0.34,
+    },
+    boulder: {
+      variants: 4, detail: 1, size: [1.0, 2.6],
+      flatten: [0.55, 0.92], facets: 6, roughness: 0.30,
+    },
+  },
+};
+
+/**
+ * Wind noise — see `wind.js`.
+ *
+ * The one sound the engine simulator cannot make, and the cheapest immersion in
+ * the project. Every number here was chosen by listening; the notes say what
+ * each one is for so that stays true after the next change.
+ */
+export const WIND = {
+  /** Master level for the whole layer, 0..1. Exposed in the settings drawer. */
+  volume: 0.45,
+
+  /** Seconds of noise generated at boot. Long enough that the loop is inaudible. */
+  bufferSeconds: 10,
+
+  /**
+   * Speed at which it starts, and where it reaches full, m/s.
+   *
+   * 8 m/s is about 29 km/h — below that a car is quiet and the sound would just
+   * be a floor of hiss under the idle. 72 m/s is 259 km/h, past everything in
+   * the roster, so nothing ever sits pinned at the top of the curve.
+   */
+  startSpeed: 8,
+  fullSpeed: 72,
+
+  /**
+   * Shape of the rise.
+   *
+   * Aeroacoustic POWER goes as roughly the sixth power of velocity, which is
+   * true and useless: it puts everything under 150 km/h at silence and
+   * everything over it at one level. This is an AMPLITUDE curve with a tilt —
+   * just over squared — so the whole speed range is expressive.
+   */
+  exponent: 2.2,
+
+  /** Seconds of one-pole smoothing on the speed the filters follow. */
+  smoothing: 0.18,
+  /** Time constant for the parameter ramps. Below ~20 ms these click. */
+  rampTime: 0.05,
+
+  /** Broadband rush: level at full speed, and the low-pass sweep. */
+  rushLevel: 0.85,
+  rushCutoff: [260, 1500],
+
+  /**
+   * Edge whistle: level, band, and how far up the speed range it waits.
+   *
+   * It arrives at 45% of the range and climbs quadratically from there. That
+   * lateness is the whole effect — it is what makes 200 km/h sound different
+   * from 120 km/h rather than simply louder.
+   */
+  whistleLevel: 0.30,
+  whistleFreq: [900, 2600],
+  whistleFrom: 0.45,
+  whistleQ: 1.6,
+};
+
+/**
+ * Tyre effects — smoke and marks. See `fx.js`.
+ *
+ * Both are driven by the SAME quantity the skid audio already uses, `wheel
+ * .slipAmount`, which is how far past its peak the tyre is. Nothing here
+ * introduces a second opinion about whether a tyre is sliding.
+ */
+export const FX = {
+  smoke: {
+    enabled: true,
+    /**
+     * Particle pool. Fixed: the mesh is allocated once and particles are
+     * recycled oldest-first, so a long burnout costs exactly what a short one
+     * does and there is no allocation in the frame loop.
+     */
+    max: 260,
+    /** Puffs per second per wheel at full slip. */
+    rate: 34,
+    /** Seconds a puff lives. */
+    life: 1.5,
+    /** Radius at birth and at death, metres. Smoke expands as it entrains air. */
+    size: [0.30, 2.1],
+    /** Rise rate and how fast a puff sheds the wheel's velocity, m/s and 1/s. */
+    rise: 1.25,
+    drag: 1.9,
+    /** Peak opacity. Reached early in the life, then decays to nothing. */
+    opacity: 0.34,
+
+    /**
+     * Below this much slip nothing is emitted at all.
+     *
+     * Deliberately well above zero. A tyre carrying a little slip is a tyre
+     * working, not a tyre burning, and smoke off every corner turns the whole
+     * game into a drift video.
+     */
+    minSlip: 0.35,
+
+    /**
+     * The "wheelspin, not speed" gate, m/s.
+     *
+     * Tyre smoke is rubber being erased, and that happens when the CONTACT
+     * PATCH is moving relative to the road — a standing burnout, a bad launch,
+     * a lit-up second gear. At 200 km/h a sliding tyre is doing the same thing
+     * per second but it is also leaving the smoke a hundred metres behind, so
+     * there is never a cloud to see. Emission therefore fades out across this
+     * range, which is also exactly the behaviour asked for: smoke when the
+     * revs are up and the car is not.
+     */
+    speedFade: [14, 34],
+
+    /** Where a puff is born relative to the contact patch: back and up, metres. */
+    offset: [0.25, 0.12],
+  },
+
+  marks: {
+    enabled: true,
+    /**
+     * Ring buffer of quads, shared across all four wheels.
+     *
+     * A ring rather than a growing trail: an infinite road would otherwise
+     * accumulate an infinite mesh, and the oldest marks are behind the camera
+     * by the time they are overwritten. 3,000 quads at a 0.35 m step is roughly
+     * 260 m of continuous mark per wheel, which no drift lasts.
+     */
+    maxQuads: 3000,
+    /** Minimum distance the wheel must travel before another quad is laid, m. */
+    step: 0.35,
+    /** Seconds a mark takes to fade out completely. */
+    life: 16,
+    /** Darkest a mark gets. */
+    opacity: 0.5,
+    /**
+     * Above this much slip a mark is laid. LOWER than the smoke's threshold:
+     * rubber is left on the road long before there is enough of it in the air
+     * to see, which is why a racetrack has black lines through every corner and
+     * not just where the cars smoke.
+     */
+    minSlip: 0.18,
+    /** Lift above the contact patch, metres. Enough to clear the terrain mesh. */
+    lift: 0.035,
+    /** Mark width as a fraction of the tyre's own width. */
+    widthScale: 0.85,
+  },
 };
 
 export const VEHICLE = {
@@ -911,9 +1297,14 @@ export const SHOWROOM = {
   /** The pool of light thrown on the wall behind the car. */
   glowColor: 0x3a4560,
 
+  /**
+   * Half-extent of the invisible shadow catcher, metres. There is no plate any
+   * more — see `showroom.js:shadowFloor` — but the car still needs something
+   * under it for its shadow to land on, or it hovers.
+   */
   plateRadius: 3.6,
-  plateColor: 0x1b1e25,
-  ringColor: 0xffb457,
+  /** How dark that shadow is. It is the only thing the floor draws. */
+  shadowOpacity: 0.42,
 
   // ---- three-point lighting, fixed ------------------------------------
   keyColor: 0xfff2e0,
@@ -930,11 +1321,14 @@ export const SHOWROOM = {
   /**
    * Fraction of the free band the car is allowed to fill.
    *
-   * 0.6, not 0.8. The band is measured to the EDGES of the interface, and a car
-   * filling it edge to edge touches the panel and the wordmark — it needs air
-   * around it to read as a subject rather than as a crop.
+   * The band is measured to the EDGES of the free area, and a car filling it
+   * edge to edge touches the panel and the wordmark — it needs air around it to
+   * read as a subject rather than as a crop. This was 0.6 when the free area was
+   * whatever the interface had not used; now that it is a dedicated half of the
+   * screen with nothing else in it, the car can afford to be the size of the
+   * thing you are choosing.
    */
-  fill: 0.60,
+  fill: 0.74,
   /** Never closer than this, whatever the arithmetic says. */
   minDistance: 6.0,
   /** Camera distance as a multiple of the solved distance, and its lift. */
@@ -1030,11 +1424,39 @@ export const SCORE = {
   passWindow: 14,
 };
 
-/** Lighter and less saturated than natural, to sit with the flatter lighting. */
+/**
+ * The ground palette. Lighter and less saturated than natural, to sit with the
+ * flatter lighting.
+ *
+ * Nine entries where there were five, and the four new ones are all doing the
+ * same job: the world was one green. `grassLow` to `grassHigh` is a hue ramp of
+ * about fifteen degrees, which over a hillside is not a variation, it is a
+ * gradient — and a gradient across smoothly interpolated vertices metres apart
+ * is exactly the flat wash this is meant to break up.
+ *
+ * What actually makes ground look like ground is DIFFERENT MATERIALS next to
+ * each other, not one material shading. So:
+ *
+ * - `grassDeep` — the damp green of a hollow or a north face
+ * - `grassDry`  — sun-bleached straw, on a shoulder or a south-facing bank
+ * - `scrub`     — the olive of heather and low bush, which is what covers
+ *                 ground too steep or too high for grass
+ * - `snow`      — above the tree line. Worth having now that a peak reaches a
+ *                 kilometre over the valley it stands in
+ *
+ * `chunks.js:_groundColor` mixes between them by altitude ABOVE THE LOCAL BASE
+ * — see `noise.js:continent` — rather than by absolute height, which stopped
+ * meaning anything the moment the whole map started rising and falling by
+ * hundreds of metres under the landforms.
+ */
 export const TERRAIN_COLORS = {
-  grassLow: 0x7d9663,
-  grassHigh: 0x94a06d,
-  rock: 0x968b7e,
-  peak: 0xc9c3b8,
+  grassLow: 0x74915c,
+  grassHigh: 0x8e9a68,
+  grassDeep: 0x546b45,
+  grassDry: 0xb0a473,
+  scrub: 0x6e7350,
+  rock: 0x8f867b,
   dirt: 0x9d8e75,
+  peak: 0xa9a29a,
+  snow: 0xe8ebee,
 };

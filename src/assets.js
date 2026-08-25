@@ -176,7 +176,7 @@ export async function loadFoliage(names, onProgress) {
           radius: Math.max(b.max.x - b.min.x, b.max.z - b.min.z) / 2,
         });
       } catch (err) {
-        console.warn(`[fastroads] foliage "${name}" failed to load:`, err.message);
+        console.warn(`[highroads] foliage "${name}" failed to load:`, err.message);
       } finally {
         if (onProgress) onProgress(++done, names.length);
       }

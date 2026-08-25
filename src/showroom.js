@@ -15,7 +15,7 @@
  * bug to fix; it is what a road looks like, and a road is the wrong backdrop
  * for a product shot.
  *
- * So this is a studio: a seamless cyclorama, a turntable, and three lights that
+ * So this is a studio: a seamless cyclorama, a slow turn, and three lights that
  * do not move. Nothing here is procedural and nothing depends on the seed. The
  * car is the same model with the same materials — so paint, trim and the engine
  * bay are all still live — it is simply somewhere the lighting was chosen.
@@ -79,33 +79,29 @@ function cyclorama() {
   return mesh;
 }
 
-/** The turntable the car stands on. */
-function turntable() {
-  const group = new THREE.Group();
-
-  const disc = new THREE.Mesh(
-    new THREE.CylinderGeometry(SHOWROOM.plateRadius, SHOWROOM.plateRadius * 1.02, 0.22, 64),
-    new THREE.MeshStandardMaterial({
-      color: SHOWROOM.plateColor, roughness: 0.42, metalness: 0.15,
-    })
+/**
+ * An invisible floor, purely to catch the car's shadow.
+ *
+ * There used to be a turntable here — a dark disc with a lit rim, which is what
+ * a motor show puts a car on. It is also a second object competing with the one
+ * thing this screen exists to show, and at the framing the camera solves for it
+ * takes up as much of the picture as the car does.
+ *
+ * What the plate was actually doing that mattered is CATCHING THE SHADOW. The
+ * cyclorama is drawn from the inside with `depthWrite` off, so it cannot receive
+ * one, and a car with no shadow under it does not stand anywhere — it hovers.
+ * `ShadowMaterial` is exactly this: a surface that draws nothing except what is
+ * shadowed onto it, so the car keeps its contact with the ground and the ground
+ * itself is not there.
+ */
+function shadowFloor() {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(SHOWROOM.plateRadius * 4, SHOWROOM.plateRadius * 4),
+    new THREE.ShadowMaterial({ opacity: SHOWROOM.shadowOpacity })
   );
-  disc.position.y = -0.11;
-  disc.receiveShadow = true;
-  group.add(disc);
-
-  // A brighter ring around the rim, which is what stops the plate reading as a
-  // dark hole in a dark floor from a low camera.
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(SHOWROOM.plateRadius * 0.985, SHOWROOM.plateRadius * 1.03, 96),
-    new THREE.MeshBasicMaterial({
-      color: SHOWROOM.ringColor, side: THREE.DoubleSide, transparent: true, opacity: 0.55,
-    })
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.005;
-  group.add(ring);
-
-  return group;
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.receiveShadow = true;
+  return mesh;
 }
 
 export function createShowroom() {
@@ -113,7 +109,7 @@ export function createShowroom() {
   const camera = new THREE.PerspectiveCamera(SHOWROOM.fov, 1, 0.1, SHOWROOM.radius * 3);
 
   scene.add(cyclorama());
-  scene.add(turntable());
+  scene.add(shadowFloor());
 
   /**
    * Three-point lighting, fixed.
@@ -161,13 +157,15 @@ export function createShowroom() {
   /** Where the camera is aiming, in world units above the plate. */
   const aim = new THREE.Vector3();
   const eye = new THREE.Vector3();
+  const camRight = new THREE.Vector3();
+  const camUp = new THREE.Vector3();
 
   return {
     scene,
     camera,
 
     /**
-     * Puts a car on the turntable.
+     * Puts a car on the stand.
      *
      * Takes the model's `body` and `wheels` groups directly — the same objects
      * the driving vehicle uses, so materials are shared and a paint click is
@@ -181,9 +179,8 @@ export function createShowroom() {
       plate.add(model.body);
       for (const k of ['FL', 'FR', 'BL', 'BR']) {
         const w = model.wheels[k];
-        // The vehicle parks its wheels by suspension travel; on the plate they
-        // sit at their own rolling radius, which is where the FBX author drew
-        // them.
+        // The vehicle parks its wheels by suspension travel; here they sit at
+        // their own rolling radius, which is where the FBX author drew them.
         w.position.set(0, 0, 0);
         w.quaternion.identity();
         plate.add(w);
@@ -197,7 +194,7 @@ export function createShowroom() {
       const len = (m.bodyHalfLength || 2.2) * 2;
       const wid = (m.bodyHalfWidth || 1.0) * 2;
       const hgt = m.bodyHeight || 1.5;
-      // The DIAGONAL, not the longer side: the turntable shows the car at every
+      // The DIAGONAL, not the longer side: the stand shows the car at every
       // angle, and three-quarter on is where its silhouette is widest. Framing
       // to the length alone fits it beautifully side-on and runs it off both
       // edges of the screen a second and a half later.
@@ -215,54 +212,60 @@ export function createShowroom() {
      * Fits the car into the part of the screen the interface is NOT using.
      *
      * This is the whole answer to "make sure the car is visible on a phone and
-     * on a desktop". A fixed camera distance cannot be: the dock is a panel
-     * whose height depends on the viewport, the safe area and how many rows the
-     * garage has, and the old rig was tuned by hand against one of those and
-     * put the car behind the panel the moment a row was added.
+     * on a desktop". A fixed camera distance cannot be: the free area is a half
+     * of the viewport whose SHAPE changes with the orientation — tall and narrow
+     * on a phone held upright, short and wide on the same phone on its side,
+     * and something else again on a monitor. The old rig was tuned by hand
+     * against one of those and put the car behind the panel the moment another
+     * changed.
      *
-     * So the free band is MEASURED — from the bottom of the wordmark to the top
-     * of the dock — and the camera solves for the distance that fits the car
-     * into it and the aim that centres it there. Add a row, rotate the phone,
-     * open on a tablet: the framing follows, because it is derived from the
-     * thing that actually changed.
+     * So the free area is MEASURED — `index.html` marks it out as `#stage` and
+     * `main.js` reads its rectangle every frame — and the camera solves for the
+     * distance that fits the car into it and the aim that centres it there. Add
+     * a garage row, rotate the phone, open it on a tablet: the framing follows,
+     * because it is derived from the thing that actually changed.
      *
-     * @param {number} vw,vh   viewport, CSS pixels
-     * @param {number} topPx   bottom of the brand block, CSS pixels from the top
-     * @param {number} botPx   top of the dock, CSS pixels from the top
+     * BOTH AXES, and that is what changed when the title screen became a
+     * half-and-half split. A vertical band could be centred by tilting the
+     * camera up or down about a fixed point; a rectangle off to one side needs
+     * the same correction horizontally, and it has to be applied along the
+     * CAMERA's right and up vectors rather than the world's, because the rig
+     * orbits.
+     *
+     * @param {number} vw,vh  viewport, CSS pixels
+     * @param {{left:number,top:number,right:number,bottom:number}} rect
+     *        the free area, CSS pixels from the top-left
      */
-    frame(vw, vh, topPx, botPx) {
+    frame(vw, vh, rect) {
       camera.aspect = vw / Math.max(1, vh);
       camera.updateProjectionMatrix();
 
-      // Fall back to the middle half of the screen if the panels have not been
-      // laid out yet — on the very first frame they have zero height.
-      let top = topPx;
-      let bottom = botPx;
-      if (!(bottom - top > vh * 0.12)) {
-        top = vh * 0.18;
-        bottom = vh * 0.72;
+      // Fall back to the middle of the screen if the panels have not been laid
+      // out yet — on the very first frame they have zero size.
+      let { left, top, right, bottom } = rect || {};
+      if (!(right - left > vw * 0.1 && bottom - top > vh * 0.1)) {
+        left = vw * 0.1; right = vw * 0.9;
+        top = vh * 0.14; bottom = vh * 0.62;
       }
+      const bandW = right - left;
       const bandH = bottom - top;
-      const centre = (top + bottom) * 0.5;
+      const midX = (left + right) * 0.5;
+      const midY = (top + bottom) * 0.5;
 
       const vFov = (camera.fov * Math.PI) / 180;
       const tanV = Math.tan(vFov * 0.5);
       const tanH = tanV * camera.aspect;
 
-      // Distance so the car fits the band vertically AND the viewport
-      // horizontally, whichever is the binding constraint.
+      // Distance so the car fits the free area on BOTH axes, whichever is the
+      // binding constraint. Each need is expressed against the fraction of the
+      // viewport the area occupies, so a half-width panel halves the horizontal
+      // room and the camera backs off accordingly.
       const fill = SHOWROOM.fill;
       const needV = (height * 1.25) / (2 * tanV * (bandH / vh) * fill);
-      const needH = (radius * 2) / (2 * tanH * fill);
+      const needH = (radius * 2) / (2 * tanH * (bandW / vw) * fill);
       const dist = Math.max(needV, needH, SHOWROOM.minDistance);
 
-      // Aim so the car's centre lands at `centre` rather than at the middle of
-      // the screen. A point offset by `o` world units vertically projects
-      // (o / (dist * tanV)) of a half-screen away from centre.
-      const offset = ((centre - vh * 0.5) / (vh * 0.5)) * tanV * dist;
-
       const cy = height * 0.45;
-      aim.set(0, cy + offset, 0);
       eye.set(
         Math.sin(orbit) * dist * SHOWROOM.orbitRadius,
         cy + dist * SHOWROOM.eyeLift,
@@ -270,10 +273,25 @@ export function createShowroom() {
       );
       camera.position.copy(eye);
       camera.up.set(0, 1, 0);
+      aim.set(0, cy, 0);
+      camera.lookAt(aim);
+      camera.updateMatrixWorld();
+
+      // Now slide the aim so the car lands at the free area's centre rather than
+      // the screen's. A point offset by `o` along the camera's own right or up
+      // axis projects `o / (dist * tan)` of a half-screen away from centre — and
+      // aiming one way moves the subject the other, which is why the horizontal
+      // term is negated and the vertical one is not (screen Y counts downward
+      // while world Y counts up, so that sign has already been paid).
+      camRight.setFromMatrixColumn(camera.matrixWorld, 0);
+      camUp.setFromMatrixColumn(camera.matrixWorld, 1);
+      const dx = -((midX - vw * 0.5) / (vw * 0.5)) * tanH * dist;
+      const dy = ((midY - vh * 0.5) / (vh * 0.5)) * tanV * dist;
+      aim.addScaledVector(camRight, dx).addScaledVector(camUp, dy);
       camera.lookAt(aim);
     },
 
-    /** Spins the turntable. */
+    /** Spins the car. */
     update(dt) {
       orbit += SHOWROOM.spin * dt;
       plate.rotation.y = -orbit;

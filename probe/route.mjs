@@ -30,7 +30,7 @@ const LOD = CONFIG.ROUTE ? CONFIG.ROUTE.lod : 90;
 import { createTerrain } from '../src/noise.js';
 import { RoadPath } from '../src/path.js';
 
-const SEEDS = process.argv[2] ? [process.argv[2]] : ['fastroads-01', 'bravo', 'charlie', 'delta'];
+const SEEDS = process.argv[2] ? [process.argv[2]] : ['highroads-01', 'bravo', 'charlie', 'delta'];
 const S_MAX = Number(process.argv[3] || 6000);
 const STEP = 12;
 /** Half-width the cross-section is read at, metres. Beyond the cut/fill ramps. */

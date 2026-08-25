@@ -1,11 +1,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#0e0d12" />
-<title>FastRoads — infinite procedural driving</title>
+<title>HighRoads — infinite procedural driving</title>
 
 <style>
   /* ==========================================================================
-     FASTROADS — interface
+     HIGHROADS — interface
      ==========================================================================
 
      ONE SCALE, NOT A SET OF BREAKPOINTS.
@@ -367,34 +367,64 @@
   /* ------------------------------------------------------------ overlay -- */
 
   /**
-   * The middle of the title screen is TRANSPARENT. The car being chosen is the
-   * real vehicle, sitting on the real road in the real scene, with the camera
-   * orbiting it — so the picker shows exactly what will be driven, and paint
-   * changes are simply a live material property rather than a preview of one.
+   * THE TITLE SCREEN IS HALF CAR AND HALF CONTROLS, AT EVERY SIZE.
+   *
+   * It used to be a column with the panel pinned to the bottom and the car
+   * showing through whatever was left. That works on a tall screen and fails
+   * completely on a short one: with 390 px of height the dock is 80% of it and
+   * the car it is there to help you choose is behind the panel. Every fix for
+   * that is a different layout for a different screen, which is the road back
+   * to bug #45.
+   *
+   * So the screen is split in two, and the SPLIT RUNS ACROSS THE LONG AXIS.
+   * Portrait puts the car above the controls; landscape — which is a phone on
+   * its side and also every desktop monitor — puts them side by side. Both are
+   * the same rule, stated once: half the screen is the subject and half is the
+   * interface, so the car is never behind the panel and the panel never has to
+   * be told how tall it may be.
+   *
+   * The showroom camera is handed `#stage`'s measured rectangle and solves for
+   * the framing that fits the car into it (`showroom.js:frame`), so this is the
+   * only place the proportion is written down. Change the 50% and the car
+   * follows.
    */
   #overlay {
     position: fixed;
     inset: 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--s3);
-    background:
-      linear-gradient(to bottom, rgba(12, 11, 16, 0.94) 0%, rgba(12, 11, 16, 0.5) 14%, rgba(12, 11, 16, 0) 30%),
-      linear-gradient(to top,    rgba(12, 11, 16, 0.9) 0%, rgba(12, 11, 16, 0.62) 26%, rgba(12, 11, 16, 0) 56%);
     z-index: 15;
     transition: opacity 0.7s ease, visibility 0s;
     text-align: center;
     padding: var(--edge-t) var(--edge-r) var(--edge-b) var(--edge-l);
+    gap: var(--s2);
     pointer-events: none;
+  }
+  @media (orientation: landscape) {
+    #overlay { flex-direction: row; align-items: stretch; }
   }
   #overlay.gone {
     opacity: 0;
     visibility: hidden;
     transition: opacity 0.7s ease, visibility 0s linear 0.7s;
   }
-  /* Only the two panels take input; the gap between them is the car. */
+
+  /**
+   * The half the car is in. Empty by design — it holds only the wordmark, and
+   * it exists so the camera has a rectangle to measure rather than a gap
+   * inferred from where two other things happen to have landed.
+   */
+  #stage {
+    flex: 1 1 50%;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+  }
+
+  /* Only the two panels take input; the rest of the stage is the car. */
   #brand, #dock { pointer-events: auto; }
 
   #brand {
@@ -438,8 +468,12 @@
     flex-direction: column;
     align-items: stretch;
     gap: var(--s2);
+    /* Its half, and no more. The 50% is the whole layout rule — see #overlay. */
+    flex: 1 1 50%;
+    min-width: 0;
+    min-height: 0;
     width: min(940px, 100%);
-    max-height: 58dvh;
+    align-self: center;
     /* The DOCK does not scroll — the garage inside it does. Scrolling the whole
        panel put "Drive" below the fold on a landscape phone, which is the one
        control that must never need looking for. */
@@ -950,6 +984,28 @@
    * trip readout moves to the top-left where nothing else is.
    */
   @media (orientation: landscape) {
+    /**
+     * The title screen's split runs left-to-right here — see #overlay.
+     *
+     * In a row the flex basis is a WIDTH, so the panel's height is not
+     * constrained by it at all: left alone it centred at its own content size
+     * and ran off both the top and the bottom of a landscape phone, taking the
+     * mode row and the Drive button with it. `max-height: 100%` is the cap that
+     * was missing — the panel is as tall as it needs to be and never taller
+     * than its half, so a desktop gets a compact card and a phone on its side
+     * gets a full-height one that scrolls inside. Stretching instead would give
+     * the desktop a panel with 400 px of empty floor under the keys.
+     *
+     * This rule has to come AFTER `#dock`'s own block or it loses the cascade
+     * to it, which is exactly what happened the first time.
+     */
+    #dock {
+      align-self: center;
+      max-height: 100%;
+      width: auto;
+      max-width: min(940px, 50vw);
+    }
+
     body.touch #cluster {
       right: auto;
       left: 50%;
@@ -974,21 +1030,16 @@
    * 900 px of height and no such problem, and put the brand in the corner there
    * for no reason. Height is the constraint, so height is the question.
    */
+  /**
+   * Short screens — a phone on its side, not a desktop.
+   *
+   * This is a HEIGHT query, and it is the one axis a query can honestly ask
+   * about: "is there room for a wordmark at full size?". The brand no longer
+   * has to be lifted out of the flow — the split gives it a half of its own —
+   * so what is left is the type scale. A subtitle is the first thing that
+   * should go when there is 390 px of screen to spend.
+   */
   @media (max-height: 620px) {
-    #brand {
-      position: absolute;
-      top: var(--edge-t);
-      left: var(--edge-l);
-      align-items: flex-start;
-      text-align: left;
-    }
-    /* With the brand out of flow the dock is the only child left, so it needs
-       telling which end of the overlay to sit at. */
-    #overlay { justify-content: flex-end; }
-    #dock { max-height: 80dvh; }
-    /* Wordmark down a size and the tagline gone: at full size the title ran
-       under the top edge of the panel, and a subtitle is the first thing that
-       should go when there is 393 px of screen to spend. */
     #title { font-size: clamp(19px, 5.2vmin, 30px); }
     #tagline { display: none; }
   }
@@ -1078,9 +1129,11 @@
 </div>
 
 <div id="overlay">
-  <div id="brand">
-    <h1 id="title">FASTROADS</h1>
-    <p id="tagline">endless procedural roads</p>
+  <div id="stage">
+    <div id="brand">
+      <h1 id="title">HIGHROADS</h1>
+      <p id="tagline">endless procedural roads</p>
+    </div>
   </div>
 
   <div id="dock">

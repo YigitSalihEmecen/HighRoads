@@ -28,6 +28,8 @@ import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { createScene } from './scene.js';
 import { createShowroom } from './showroom.js';
+import { Wind } from './wind.js';
+import { TyreFX } from './fx.js';
 import { Settings } from './settings.js';
 import { ScoreRun } from './score.js';
 
@@ -93,7 +95,7 @@ export async function boot() {
       try {
         models.set(spec.id, await loadCarModel(spec.file, carTexture));
       } catch (err) {
-        console.warn(`[fastroads] car "${spec.id}" unavailable:`, err.message);
+        console.warn(`[highroads] car "${spec.id}" unavailable:`, err.message);
       }
     })
   );
@@ -144,7 +146,7 @@ export async function boot() {
   document.getElementById('go-again').addEventListener('click', () => game.startRun());
   document.getElementById('go-garage').addEventListener('click', () => game.enterGarage());
 
-  window.__fastroads = game;
+  window.__highroads = game;
   return game;
 }
 
@@ -372,6 +374,16 @@ class Game {
     this.input = new Input();
     this.hud = new HUD();
     this.powertrain = new Powertrain();
+    /**
+     * Wind noise. It shares the powertrain's AudioContext rather than making
+     * its own — one clock, one output bus — so it can only be started once
+     * engine_sim has built that, which is inside the Drive click.
+     */
+    this.wind = new Wind();
+    /** Tyre smoke and rubber. Lives in the world scene, not the showroom's. */
+    this.fx = new TyreFX(gfx.scene, {
+      anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
+    });
     this.cam = new ChaseCamera(gfx.camera);
 
     this.active = false;
@@ -494,6 +506,10 @@ class Game {
     this.input.bindTouch(document);
     this.vehicle.setParked(false);
     this.respawn(this.carS);
+    // A previous run's rubber has nothing to do with this one, and respawn puts
+    // the car somewhere the old marks are not.
+    this.fx.reset();
+    this.wind.start(this.powertrain.sim && this.powertrain.sim.ctx);
     if (this.traffic) this.traffic.setEnabled(this.mode === 'traffic');
     this.run.reset();
     this._impactMark = this.traffic ? this.traffic.impacts : 0;
@@ -531,7 +547,7 @@ class Game {
       if (!this.powertrain.sim) await this.powertrain.start(this.car());
       else this.powertrain.setCar(this.car());
     } catch (err) {
-      console.warn('[fastroads] engine preview unavailable:', err && err.message);
+      console.warn('[highroads] engine preview unavailable:', err && err.message);
       return;
     }
     this.previewing = true;
@@ -658,6 +674,13 @@ class Game {
     this.chunks.advanceTime(dt);
     this.chunks.update(this.carS);
 
+    // Tyre effects read the wheel state the substeps above just wrote, so they
+    // have to come after the loop and before anything renders. They are inert
+    // on the title screen: the car is parked, nothing is slipping, and the
+    // world scene is not what is on screen anyway.
+    this.fx.update(dt, this.vehicle);
+    this.wind.update(dt, this.active ? this.vehicle.forwardSpeed : 0);
+
     if (this.active && this.traffic) {
       this.traffic.update(dt, {
         s: this.carS,
@@ -728,27 +751,33 @@ class Game {
   /**
    * Hands the showroom the slice of screen the interface is not using.
    *
-   * Measured from the DOM every frame rather than assumed, because the dock's
-   * height depends on the viewport, the safe area and how many rows the garage
-   * has — and a camera tuned by hand against one of those puts the car behind
-   * the panel the moment another changes. That is bug #53 exactly. A layout
-   * query per frame would be indefensible in the driving loop and costs nothing
-   * on a menu that is not moving anything else.
+   * Measured from the DOM every frame rather than assumed. `#stage` is the half
+   * of the title screen the interface is not using — see the layout note in
+   * `index.html` — and its shape changes with the orientation, the safe area
+   * and how many rows the garage has. A camera tuned by hand against one of
+   * those puts the car behind the panel the moment another changes; that is bug
+   * #53 exactly. A layout query per frame would be indefensible in the driving
+   * loop and costs nothing on a menu that is not moving anything else.
    */
   _frameShowroom() {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    if (!this._brandEl) {
+    if (!this._stageEl) {
+      this._stageEl = document.getElementById('stage');
       this._brandEl = document.getElementById('brand');
-      this._dockEl = document.getElementById('dock');
     }
+    const stage = this._stageEl ? this._stageEl.getBoundingClientRect() : null;
+    if (!stage) { this.showroom.frame(vw, vh, null); return; }
+    // The wordmark sits at the top of the stage, so the car gets what is below
+    // it. Everything else about the free area is the stage's own rectangle —
+    // which is half the screen, on whichever axis the screen is longer.
     const brand = this._brandEl ? this._brandEl.getBoundingClientRect() : null;
-    const dock = this._dockEl ? this._dockEl.getBoundingClientRect() : null;
-    this.showroom.frame(
-      vw, vh,
-      brand ? brand.bottom : vh * 0.18,
-      dock ? dock.top : vh * 0.72
-    );
+    this.showroom.frame(vw, vh, {
+      left: stage.left,
+      right: stage.right,
+      top: brand && brand.height > 0 ? brand.bottom : stage.top,
+      bottom: stage.bottom,
+    });
   }
 
   _handleActions() {
@@ -764,7 +793,9 @@ class Game {
       }
     }
     if (this.input.consume('KeyM')) {
-      this.hud.toast(this.powertrain.toggleMute() ? 'audio muted' : 'audio on');
+      const muted = this.powertrain.toggleMute();
+      this.wind.setMuted(muted);
+      this.hud.toast(muted ? 'audio muted' : 'audio on');
     }
 
     // ---- gearbox ---------------------------------------------------------

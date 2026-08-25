@@ -1,4 +1,4 @@
-# FASTROADS — complete project context
+# HIGHROADS — complete project context
 
 Written for an agent picking this project up cold. It assumes you can read the
 code; what it gives you is the shape of the thing, the reasons behind decisions
@@ -33,7 +33,7 @@ No build step. No bundler. ES modules and an import map, served statically.
 ## 1. Workspace layout
 
 ```
-fastroads/
+highroads/
 ├── index.html            shell, import map, garage UI, HUD, touch controls
 ├── package.json          scripts only; the game itself has no dependencies
 ├── README.md             architecture essay
@@ -1005,4 +1005,4 @@ Any static server works. It must be served over HTTP, not opened as a `file://`
 URL, because of ES module and WASM loading rules.
 
 Note: port **8000 is usually taken by `engine_sim`'s own dev server**. Use a
-different port for fastroads so both can run side by side.
+different port for highroads so both can run side by side.

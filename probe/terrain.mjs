@@ -18,7 +18,7 @@ import { createTerrain } from '../src/noise.js';
 
 const BANDS = [[0, 80, 'near   0-80 m'], [80, 200, 'mid   80-200 m'],
                [200, 420, 'far  200-420 m'], [420, 700, 'edge 420-700 m']];
-const seeds = ['fastroads-01', 'bravo', 'charlie'];
+const seeds = ['highroads-01', 'bravo', 'charlie'];
 const acc = BANDS.map(() => []);
 
 for (const seed of seeds) {
