@@ -193,7 +193,9 @@ if (process.env.SKID === '1') {
     const marks=[...g.fx.marks.mark.array].filter((v,i)=>i%2===0&&v>g.fx.time-16).length/4;
     return \`slip \${slip}, puffs \${puffs}, marks \${marks}, \` +
       \`\${Math.round(Math.abs(g.vehicle.forwardSpeed)*3.6)} km/h, \${Math.round(g.powertrain.rpm)} rpm, \` +
-      \`drive \${Math.round(g.vehicle.driveForce)} N, thr \${g.input.throttle}\`;})()`));
+      \`drive \${Math.round(g.vehicle.driveForce)} N, thr \${g.input.throttle}, \` +
+      \`fxT \${g.fx.time.toFixed(1)}, debt \${g.fx.smoke.debt.map(d=>d.toFixed(2)).join('/')}, \` +
+      \`cursor \${g.fx.smoke.cursor}\`;})()`));
 }
 
 await shot('game-drive');

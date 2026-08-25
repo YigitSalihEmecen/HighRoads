@@ -168,5 +168,82 @@ check(rTris / rChunks < 40000, 'stone triangle budget',
 check(rBatches / rChunks < 16, 'draw batches per chunk', `${(rBatches / rChunks).toFixed(1)}`);
 check(rCost / rChunks < 8, 'stone scatter cost', `${(rCost / rChunks).toFixed(1)} ms per chunk`);
 
+/* ------------------------------------------------------------ tyre effects -- */
+
+/**
+ * Smoke and rubber, driven directly rather than through a browser.
+ *
+ * `fx.js` has no dependency on the renderer beyond building meshes, so the whole
+ * emission path can be exercised against a stub vehicle. That matters more than
+ * it sounds: the effects are keyed to `wheel.slipAmount`, and what that number
+ * actually REACHES is a property of the tyre model, not of anything visible. A
+ * threshold set above it produces an effect that silently never happens, which
+ * is exactly what the first tuning did — and a screenshot cannot tell you that,
+ * because a screenshot of no smoke looks like a screenshot taken at the wrong
+ * moment.
+ */
+const { TyreFX } = await import('../src/fx.js');
+const { FX } = await import('../src/config.js');
+
+const fxScene = new THREE.Scene();
+const fx = new TyreFX(fxScene);
+
+/** A car doing a standing burnout: rears well past their peak, barely moving. */
+const stub = {
+  forwardSpeed: 1.2,
+  fwd: new THREE.Vector3(0, 0, 1),
+  V: { wheelWidth: 0.28 },
+  wheels: [0, 1, 2, 3].map((i) => ({
+    grounded: true,
+    rear: i >= 2,
+    // Measured on the real car at full throttle from rest — see FX.smoke.minSlip.
+    slipAmount: i >= 2 ? 0.44 : 0.0,
+    contact: new THREE.Vector3(i === 2 ? -0.8 : 0.8, 0, 0),
+    normal: new THREE.Vector3(0, 1, 0),
+    pointVel: new THREE.Vector3(0, 0, -6),
+  })),
+};
+
+// Two seconds at 60 Hz, rolling forward at walking pace so marks have somewhere
+// to go.
+for (let f = 0; f < 120; f++) {
+  for (const w of stub.wheels) w.contact.z += stub.forwardSpeed / 60;
+  fx.update(1 / 60, stub);
+}
+
+const livePuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
+const liveMarks = [...fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.marks.life).length / 4;
+
+check(livePuffs > 0, 'a burnout makes smoke',
+  `${livePuffs} puffs alive after 2 s at slip ${stub.wheels[2].slipAmount} ` +
+  `(threshold ${FX.smoke.minSlip})`);
+check(livePuffs <= FX.smoke.max, 'the puff pool is a pool',
+  `${livePuffs} of ${FX.smoke.max}, cursor wraps`);
+check(liveMarks > 0, 'a burnout leaves rubber',
+  `${liveMarks} quads over ${(stub.forwardSpeed * 2).toFixed(1)} m of travel`);
+// The marks are laid between the previous contact point and this one, so two
+// wheels 1.6 m apart must produce two separate lines and not one wide one.
+check(liveMarks >= 2, 'both driven wheels mark separately', `${liveMarks} quads`);
+
+// Nothing at all when the tyres are gripping — which is most of the time.
+fx.reset();
+for (const w of stub.wheels) w.slipAmount = 0.05;
+for (let f = 0; f < 60; f++) fx.update(1 / 60, stub);
+const quietPuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
+check(quietPuffs === 0, 'a gripping tyre makes nothing', `${quietPuffs} puffs`);
+
+// And nothing at speed: the cloud would be a hundred metres behind by the time
+// it existed. See FX.smoke.speedFade.
+fx.reset();
+for (const w of stub.wheels) w.slipAmount = 0.6;
+stub.forwardSpeed = 50;
+for (let f = 0; f < 60; f++) fx.update(1 / 60, stub);
+const fastPuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
+const fastMarks = [...fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.marks.life).length / 4;
+check(fastPuffs === 0, 'no smoke at speed', `${fastPuffs} puffs at 180 km/h`);
+check(fastMarks > 0, 'but rubber at speed', `${fastMarks} quads — a high-speed slide still marks`);
+
+fx.dispose();
+
 console.log(`\n  [${bad ? 'FAIL' : ' ok '}] procedural environment\n`);
 process.exit(bad ? 1 : 0);
