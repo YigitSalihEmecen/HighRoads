@@ -1065,7 +1065,7 @@ export class ChunkManager {
       // Drop a regular station that a boundary already covers.
       if (!st.mark && i > 0 && Math.abs(st.s - stations[i - 1].s) < EPS) continue;
       if (st.mark && i + 1 < stations.length && Math.abs(stations[i + 1].s - st.s) < EPS
-          && !stations[i + 1].mark) stations[i + 1].s = st.s;
+        && !stations[i + 1].mark) stations[i + 1].s = st.s;
 
       if (st.mark) {
         rows.push({ s: st.s, dash: dashOn(st.s - half * 0.5, half) });
@@ -1505,9 +1505,9 @@ export class ChunkManager {
       const yaw = rng() * Math.PI * 2;
       const cy = Math.cos(yaw), sy = Math.sin(yaw);
       const o16 = placed * 16;
-      mats[o16] = cy * wid;      mats[o16 + 2] = -sy * wid;
+      mats[o16] = cy * wid; mats[o16 + 2] = -sy * wid;
       mats[o16 + 5] = height;
-      mats[o16 + 8] = sy * wid;  mats[o16 + 10] = cy * wid;
+      mats[o16 + 8] = sy * wid; mats[o16 + 10] = cy * wid;
       mats[o16 + 12] = p.x; mats[o16 + 13] = p.y; mats[o16 + 14] = p.z;
       mats[o16 + 15] = 1;
 
@@ -1628,13 +1628,11 @@ export class ChunkManager {
       const gu = (positions[c * 3 + 1] - ya) / rowLen;
       const slope = Math.sqrt(gu * gu + gv * gv);
 
-      // The one rule. Flat ground gets the occasional stone; a cut face gets
-      // talus. `smoothstep` rather than a threshold so a bank does not have a
-      // visible line across it where the rocks start.
+      // The one rule: stone clusters densely along the road shoulder-to-grass verge
+      // and on cuttings/banks.
       const scree = smoothstep(ROCKS.screeSlope * 0.55, ROCKS.screeSlope, slope);
-      const chance = lerp(0.06, 0.92, scree)
-        // Thin out with distance from the road: this is roadside dressing.
-        * (1 - smoothstep(inner, outer, av) * 0.75);
+      const vergeWeight = 1 - smoothstep(inner, inner + 5.5, av);
+      const chance = lerp(0.40, 0.96, Math.max(scree, vergeWeight * 0.85));
       if (rng() > chance) continue;
 
       // Which class. Scree dominates on a face, boulders only on open ground.
@@ -1664,9 +1662,8 @@ export class ChunkManager {
       );
 
       const size = lerp(cls.spec.size[0], cls.spec.size[1], rng() * rng());
-      // Bedded, not dropped: a stone sits partly in the ground it came out of,
-      // and one resting exactly on the surface reads as a prop placed there.
-      p.y -= size * lerp(0.10, 0.30, rng());
+      // Firmly bedded into the ground (38% to 58% of height buried) so no rock floats or perches on a corner
+      p.y -= size * lerp(0.38, 0.58, rng());
 
       const key = name + ':' + variant;
       let bucket = buckets.get(key);
@@ -1679,22 +1676,50 @@ export class ChunkManager {
         };
         buckets.set(key, bucket);
       }
+
+      // Orient rock along the ground slope normal so its bottom rests naturally against the hill
+      const slopeLen = Math.hypot(gu, gv, 1.0) || 1.0;
+      const ny = 1.0 / slopeLen, nx = -gu / slopeLen, nz = -gv / slopeLen;
       const yaw = rng() * Math.PI * 2;
-      const cy = Math.cos(yaw) * size;
-      const sy = Math.sin(yaw) * size;
+      const cy = Math.cos(yaw), sy = Math.sin(yaw);
+
+      // Orthonormal basis tilted with terrain slope
+      const upX = nx, upY = ny, upZ = nz;
+      // Project horizontal direction onto plane perpendicular to normal
+      let fwdX = cy - (cy * upX + sy * upZ) * upX;
+      let fwdY = -(cy * upX + sy * upZ) * upY;
+      let fwdZ = sy - (cy * upX + sy * upZ) * upZ;
+      const fwdLen = Math.hypot(fwdX, fwdY, fwdZ) || 1.0;
+      fwdX /= fwdLen; fwdY /= fwdLen; fwdZ /= fwdLen;
+      // right = up x fwd
+      const rX = upY * fwdZ - upZ * fwdY;
+      const rY = upZ * fwdX - upX * fwdZ;
+      const rZ = upX * fwdY - upY * fwdX;
+
       bucket.mats.push(
-        cy, 0, -sy, 0,
-        0, size, 0, 0,
-        sy, 0, cy, 0,
+        rX * size, rY * size, rZ * size, 0,
+        upX * size, upY * size, upZ * size, 0,
+        fwdX * size, fwdY * size, fwdZ * size, 0,
         p.x, p.y, p.z, 1
       );
-      // The ground's own colour, darkened: stone is the same rock the hillside
-      // is painted from, and it is never brighter than the soil around it.
-      const shade = lerp(0.72, 0.98, rng());
+
+      // Dedicated natural mineral stone palette: granite greys, slates, earthy warm browns, basalt.
+      // Zero green tint from terrain grass.
+      const STONE_HUES = [
+        [0.55, 0.55, 0.55], // Medium granite grey
+        [0.62, 0.60, 0.58], // Light warm granite
+        [0.46, 0.46, 0.47], // Cool slate grey
+        [0.52, 0.47, 0.40], // Earthy warm stone brown
+        [0.43, 0.39, 0.34], // Dark earth stone
+        [0.64, 0.61, 0.55], // Sandy limestone
+        [0.35, 0.34, 0.33], // Dark charcoal basalt
+      ];
+      const pal = STONE_HUES[Math.floor(rng() * STONE_HUES.length)];
+      const bright = lerp(0.85, 1.15, rng());
       bucket.cols.push(
-        (colors[i0 * 3] * w0 + colors[i1 * 3] * w1 + colors[i2 * 3] * w2) * shade,
-        (colors[i0 * 3 + 1] * w0 + colors[i1 * 3 + 1] * w1 + colors[i2 * 3 + 1] * w2) * shade,
-        (colors[i0 * 3 + 2] * w0 + colors[i1 * 3 + 2] * w1 + colors[i2 * 3 + 2] * w2) * shade
+        pal[0] * bright,
+        pal[1] * bright,
+        pal[2] * bright
       );
     }
 

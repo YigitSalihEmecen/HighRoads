@@ -271,7 +271,8 @@ function grassMaterial(map, fadeOut, fadeIn) {
         float fr_d = distance( cameraPosition, fr_inst ) + ( fr_hash - 0.5 ) * 12.0;
         float fr_fade = smoothstep( uFadeIn.x, uFadeIn.y, fr_d )
                       * ( 1.0 - smoothstep( uFade.x, uFade.y, fr_d ) );
-        transformed *= fr_fade;
+        transformed.y *= fr_fade;
+        transformed.xz *= clamp(fr_fade * 1.4, 0.0, 1.0);
       `)
       // Wind, in WORLD space — see the file header. This is the stock
       // project_vertex with the world-space displacement spliced in.

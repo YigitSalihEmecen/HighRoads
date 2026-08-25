@@ -14,8 +14,10 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE } from './config.js';
 import { loadFoliage, loadCarTexture, loadCarModel } from './assets.js';
 import { foliageModelNames } from './foliage.js';
-import { CARS, CAR_COLORS, CAR_TRIM_COLORS, ENGINE_OPTIONS, DEFAULT_CAR, DEFAULT_TRIM,
-         carById, colorById, trimColorById, buildCarParams } from './cars.js';
+import {
+  CARS, CAR_COLORS, CAR_TRIM_COLORS, ENGINE_OPTIONS, DEFAULT_CAR, DEFAULT_TRIM,
+  carById, colorById, trimColorById, buildCarParams
+} from './cars.js';
 import { smoothstep } from './util.js';
 import { createTerrain } from './noise.js';
 import { RoadPath } from './path.js';
@@ -32,6 +34,7 @@ import { Wind } from './wind.js';
 import { TyreFX } from './fx.js';
 import { Settings } from './settings.js';
 import { ScoreRun } from './score.js';
+import { drawTerrainMap } from './terrain-preview.js';
 
 /**
  * The two ways to play. Zen is the original brief — an empty road, going
@@ -116,7 +119,7 @@ export async function boot() {
   // against freshly created colliders return null until one has run.
   world.step();
 
-  const game = new Game({ gfx, world, path, chunks, models, roster });
+  const game = new Game({ gfx, world, path, terrain, chunks, models, roster });
   game.seed = startSeed;
   game.input.bindTouch(document);
   // No world, no RAPIER: traffic owns no physics objects at all. See traffic.js.
@@ -160,6 +163,15 @@ function buildSeedBox(game) {
   const input = document.getElementById('seed-input');
   const apply = document.getElementById('seed-apply');
   const random = document.getElementById('seed-random');
+  const terrainBox = document.getElementById('terrain-box');
+  const terrainCanvas = document.getElementById('terrain-canvas');
+
+  if (terrainCanvas && game.terrain && game.path && game.gfx) {
+    requestAnimationFrame(() => {
+      drawTerrainMap(terrainCanvas, game.terrain, game.path, game.seed, game.gfx, game.chunks);
+    });
+  }
+
   if (!input) return;
 
   input.value = game.seed;
@@ -176,6 +188,12 @@ function buildSeedBox(game) {
     input.value = Math.random().toString(36).slice(2, 10);
     go(input.value);
   });
+  if (terrainBox) {
+    terrainBox.addEventListener('click', () => {
+      input.value = Math.random().toString(36).slice(2, 10);
+      go(input.value);
+    });
+  }
   input.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Enter') go(input.value);
@@ -337,10 +355,11 @@ function buildGarage(game, roster) {
 /* ------------------------------------------------------------------------- */
 
 class Game {
-  constructor({ gfx, world, path, chunks, models, roster }) {
+  constructor({ gfx, world, path, terrain, chunks, models, roster }) {
     this.gfx = gfx;
     this.world = world;
     this.path = path;
+    this.terrain = terrain;
     this.chunks = chunks;
     this.models = models;
     this.roster = roster;
@@ -767,19 +786,14 @@ class Game {
     const vh = window.innerHeight;
     if (!this._stageEl) {
       this._stageEl = document.getElementById('stage');
-      this._brandEl = document.getElementById('brand');
     }
     const stage = this._stageEl ? this._stageEl.getBoundingClientRect() : null;
     if (!stage) { this.showroom.frame(vw, vh, null); return; }
-    // The wordmark sits at the top of the stage, so the car gets what is below
-    // it. Everything else about the free area is the stage's own rectangle —
-    // which is half the screen, on whichever axis the screen is longer.
-    const brand = this._brandEl ? this._brandEl.getBoundingClientRect() : null;
     this.showroom.frame(vw, vh, {
-      left: stage.left,
-      right: stage.right,
-      top: brand && brand.height > 0 ? brand.bottom : stage.top,
-      bottom: stage.bottom,
+      left: stage.left + 20,
+      right: stage.right - 20,
+      top: stage.top + 30,
+      bottom: stage.bottom - 60,
     });
   }
 

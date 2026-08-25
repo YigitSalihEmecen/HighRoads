@@ -510,7 +510,7 @@ export const GRASS = {
    * resolve is detail nobody needs: the count per unit area is divided by the
    * square of this, so coverage extends while the triangle budget does not.
    */
-  farScale: 2.4,
+  farScale: 1.0,
 
   /** Chunks either side of the car that carry grass. 1 = three chunks, 360 m. */
   chunkRadius: 1,
@@ -523,13 +523,13 @@ export const GRASS = {
    * scattered spikes standing on the ground rather than as a surface, because
    * you see the gap between them before you see them.
    */
-  height: [0.55, 1.40],
+  height: [0.55, 1.25],
   /**
    * Width as a fraction of height. A square-ish card is what makes neighbours
    * overlap into a continuous field; taller-than-wide leaves visible gaps at
    * any density a browser can afford.
    */
-  widthRatio: 1.0,
+  widthRatio: 0.95,
 
   /**
    * Steepest ground grass grows on. Higher than the trees' limits on purpose:
@@ -549,29 +549,6 @@ export const GRASS = {
 
   /**
    * The SECOND tier: the middle distance.
-   *
-   * The block above describes grass you can look at. This describes grass you
-   * can see, which is a different problem and does not have the same answer.
-   * Extending the near field outward fails twice over — the instance count goes
-   * up with the area, and at 200 m a 1 m card is four pixels tall, so the count
-   * buys a faint dusting rather than a field. What reads at that distance is a
-   * LAYER: something with a broken top edge standing proud of the ground.
-   *
-   * So: the same card, `scale` times bigger, at `coverage` of the density that
-   * would preserve ground cover. Cards that size are far too coarse to look at,
-   * which is what `fadeIn` is for — they grow in behind the near tier's own
-   * fade-out, so the two hand over between 55 m and 110 m and no card is ever
-   * both close and large.
-   *
-   * The budget, and it is the reason for every number here: area per chunk is
-   * 120 m x 2 x `halfExtent`, so at scale 3.6 and coverage 0.30 that is about
-   * 3,600 instances a chunk against the near tier's 30,000, over seven chunks
-   * instead of three. Roughly 25,000 more instances and 100,000 more triangles
-   * for thirty times the covered ground.
-   *
-   * `behind`/`ahead` rather than a radius, because this tier exists to fill the
-   * view and the view is in front. Three quarters of a symmetric window would
-   * be spent on ground the camera has already passed.
    */
   far: {
     enabled: true,
@@ -580,23 +557,12 @@ export const GRASS = {
     /** Lateral band, metres. Past this the terrain's detail texture takes over. */
     halfExtent: 185,
     /**
-     * Card size, as a multiple of the near tier's — WIDTH and HEIGHT separately.
-     *
-     * This is the difference between a hillside covered in vegetation and a
-     * hillside covered in spikes. Scaling a grass card uniformly by 3.6 makes it
-     * five metres tall, and five metres of grass is a tree: rendered, the far
-     * tier read as a field of dark spines standing off the slope. What the
-     * middle distance needs from it is COVERAGE — a broken, slightly fuzzy top
-     * edge over a lot of ground — so the card grows mostly sideways and only
-     * enough upward to stand proud of the sheet.
-     *
-     * The instance count is divided by the product of the two, not by the square
-     * of one, so the ground covered per instance is what it says.
+     * Card size: exactly 1.0x so distant grass blades match foreground grass.
      */
-    widthScale: 4.2,
-    heightScale: 1.55,
+    widthScale: 1.0,
+    heightScale: 1.0,
     /** Density, as a fraction of what would preserve ground cover at that scale. */
-    coverage: 0.26,
+    coverage: 0.05,
     /** Grows in over this camera-distance window, behind the near tier's fade. */
     fadeIn: [55, 110],
     /** And shrinks out again here — matched to the fog, not to the band. */
@@ -622,34 +588,18 @@ export const GROUND = {
 
   /**
    * Metres of world per tile, near and far.
-   *
-   * Not a round ratio, and that is the point: two samples of one tiling map at
-   * frequencies that do not divide give a beat pattern whose period is their
-   * product — 154 metres here — for the cost of one extra texture fetch. Round
-   * numbers line the two tiles up and the repeat becomes visible again.
    */
   tileNear: 5.5,
   tileFar: 28,
 
   /**
    * How hard each scale modulates the ground colour, 0..1.
-   *
-   * The near tile carries the grain and most of the contrast; the far tile is
-   * what survives to the horizon. Both are multiplies about 1.0, so a channel
-   * at its mean leaves the palette untouched — turning this block off must not
-   * change how bright the world is.
    */
   contrastNear: 0.34,
   contrastFar: 0.30,
 
   /**
    * Distance over which the near tile fades out, metres.
-   *
-   * A 5.5 m tile at 120 m is under a pixel a tile, and a sub-pixel pattern is
-   * not detail, it is noise — it aliases into a shimmer that crawls as the car
-   * moves. Mipmapping greys it out on its own, but fading it explicitly means
-   * the far tile is not fighting a wash of mid-grey for the last of the
-   * contrast.
    */
   nearFade: [45, 130],
 };
@@ -657,45 +607,31 @@ export const GROUND = {
 /**
  * Procedural stone — see `env/rocks.js`.
  *
- * The brief is texture, not landmarks: chips along a verge, scree spilling out
- * of a cut face, an occasional boulder in the grass. Anything bigger belongs to
- * the terrain field, which is where mountains are made.
+ * The brief is texture: chips and stones concentrated along the road shoulder-to-grass
+ * transition verge, and talus spilling from cuttings.
  */
 export const ROCKS = {
   enabled: true,
 
   /**
-   * Chunks either side of the car that carry stone. Rocks are small and the
-   * scatter is cheap, but a 40 cm chip is invisible past about 90 m, so paying
-   * for it across the whole streaming window buys nothing.
+   * Chunks either side of the car that carry stone.
    */
   behind: 1,
-  ahead: 2,
+  ahead: 4,
 
-  /** Scatter attempts per chunk. Most are rejected — see the placement rules. */
-  samples: 2600,
+  /** Scatter attempts per chunk. Concentrated on the road-to-grass verge. */
+  samples: 4000,
 
   /**
    * How many of each class's variants any ONE chunk may use.
-   *
-   * Every distinct geometry in a chunk is another InstancedMesh and another
-   * draw call. With the full library in play a chunk was touching eleven
-   * geometries for a hundred-odd rocks, which is a draw call per nine
-   * instances — the cost model of not instancing at all. Two per class caps it
-   * at six, and since which two is seeded per chunk the whole library still
-   * turns up across a drive.
    */
   variantsPerChunk: 2,
 
   /**
    * Where stone is allowed, in metres of lateral offset from the centreline.
-   *
-   * It starts INSIDE the grass band and ends well short of it. Two reasons, and
-   * both are about the verge rather than about rocks: the gravel shoulder is
-   * where a real road sheds its stone, and it is the one strip of ground the
-   * player passes within touching distance of at 200 km/h.
+   * Tightened strictly to the road shoulder / grass transition strip.
    */
-  band: [9.5, 120],
+  band: [9.8, 16.0],
 
   /**
    * Cut faces. Where the terrain is steeper than this, stone is far more likely
@@ -1335,20 +1271,13 @@ export const SHOWROOM = {
   // ---- framing ---------------------------------------------------------
   /**
    * Fraction of the free band the car is allowed to fill.
-   *
-   * The band is measured to the EDGES of the free area, and a car filling it
-   * edge to edge touches the panel and the wordmark — it needs air around it to
-   * read as a subject rather than as a crop. This was 0.6 when the free area was
-   * whatever the interface had not used; now that it is a dedicated half of the
-   * screen with nothing else in it, the car can afford to be the size of the
-   * thing you are choosing.
    */
-  fill: 0.74,
+  fill: 0.58,
   /** Never closer than this, whatever the arithmetic says. */
-  minDistance: 6.0,
+  minDistance: 5.5,
   /** Camera distance as a multiple of the solved distance, and its lift. */
-  orbitRadius: 0.92,
-  eyeLift: 0.30,
+  orbitRadius: 0.95,
+  eyeLift: 0.32,
 
   /** Turntable rate, radians per second, and where it starts. */
   spin: 0.22,
