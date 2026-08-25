@@ -811,7 +811,7 @@ export const FX = {
      */
     max: 260,
     /** Puffs per second per wheel at full slip. */
-    rate: 34,
+    rate: 55,
     /** Seconds a puff lives. */
     life: 1.5,
     /** Radius at birth and at death, metres. Smoke expands as it entrains air. */
@@ -828,8 +828,16 @@ export const FX = {
      * Deliberately well above zero. A tyre carrying a little slip is a tyre
      * working, not a tyre burning, and smoke off every corner turns the whole
      * game into a drift video.
+     *
+     * But not much above it either, and this is worth knowing before tuning it
+     * up again: the tyre model resolves an over-driven wheel by CLAMPING the
+     * combined impulse to the friction circle, and `slipAmount` is how much it
+     * had to take away. A full-throttle standing start in the Sport measures
+     * 0.39 to 0.46 on the driven wheels — that is a car lighting up its rear
+     * tyres, and it is nowhere near 1. A threshold set by imagining what "full
+     * slip" ought to mean lands above everything the model ever produces.
      */
-    minSlip: 0.35,
+    minSlip: 0.22,
 
     /**
      * The "wheelspin, not speed" gate, m/s.
@@ -859,8 +867,15 @@ export const FX = {
      * 260 m of continuous mark per wheel, which no drift lasts.
      */
     maxQuads: 3000,
-    /** Minimum distance the wheel must travel before another quad is laid, m. */
-    step: 0.35,
+    /**
+     * Minimum distance the wheel must travel before another quad is laid, m.
+     *
+     * Short, because a mark has to start early: the most interesting moment is
+     * a standing start, where the car covers very little ground while the tyres
+     * are doing the most. At 0.35 m the first quad did not appear until the car
+     * was already moving and the wheelspin was over.
+     */
+    step: 0.20,
     /** Seconds a mark takes to fade out completely. */
     life: 16,
     /** Darkest a mark gets. */
