@@ -367,26 +367,11 @@
   /* ------------------------------------------------------------ overlay -- */
 
   /**
-   * THE TITLE SCREEN IS HALF CAR AND HALF CONTROLS, AT EVERY SIZE.
-   *
-   * It used to be a column with the panel pinned to the bottom and the car
-   * showing through whatever was left. That works on a tall screen and fails
-   * completely on a short one: with 390 px of height the dock is 80% of it and
-   * the car it is there to help you choose is behind the panel. Every fix for
-   * that is a different layout for a different screen, which is the road back
-   * to bug #45.
-   *
-   * So the screen is split in two, and the SPLIT RUNS ACROSS THE LONG AXIS.
-   * Portrait puts the car above the controls; landscape — which is a phone on
-   * its side and also every desktop monitor — puts them side by side. Both are
-   * the same rule, stated once: half the screen is the subject and half is the
-   * interface, so the car is never behind the panel and the panel never has to
-   * be told how tall it may be.
-   *
-   * The showroom camera is handed `#stage`'s measured rectangle and solves for
-   * the framing that fits the car into it (`showroom.js:frame`), so this is the
-   * only place the proportion is written down. Change the 50% and the car
-   * follows.
+   * TITLE SCREEN: TWO HALVES (Left: Preview Column, Right: Settings / Garage).
+   * Left column is split vertically into:
+   *   - TOP BOX: 2D procedural topographic terrain preview map (clickable to re-roll seed).
+   *   - BOTTOM BOX: 3D showroom car preview.
+   * Right column holds the Garage, vehicle configuration, and start controls.
    */
   #overlay {
     position: fixed;
@@ -397,11 +382,15 @@
     transition: opacity 0.7s ease, visibility 0s;
     text-align: center;
     padding: var(--edge-t) var(--edge-r) var(--edge-b) var(--edge-l);
-    gap: var(--s2);
+    gap: var(--s3);
     pointer-events: none;
   }
   @media (orientation: landscape) {
-    #overlay { flex-direction: row; align-items: stretch; }
+    #overlay {
+      flex-direction: row;
+      align-items: stretch;
+      justify-content: space-between;
+    }
   }
   #overlay.gone {
     opacity: 0;
@@ -409,29 +398,157 @@
     transition: opacity 0.7s ease, visibility 0s linear 0.7s;
   }
 
-  /**
-   * The half the car is in. Empty by design — it holds only the wordmark, and
-   * it exists so the camera has a rectangle to measure rather than a gap
-   * inferred from where two other things happen to have landed.
-   */
-  #stage {
+  /* ---- LEFT COLUMN: Preview column (50%) -------------------------------- */
+  #preview-col {
     flex: 1 1 50%;
     min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
+    gap: var(--s3);
+    pointer-events: none;
+  }
+  @media (orientation: landscape) {
+    #preview-col {
+      max-width: 50%;
+      height: 100%;
+    }
   }
 
-  /* Only the two panels take input; the rest of the stage is the car. */
-  #brand, #dock { pointer-events: auto; }
+  /* TOP BOX: Terrain / Map Preview Box */
+  #terrain-box {
+    flex: 1 1 45%;
+    min-height: 130px;
+    background: var(--panel);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    pointer-events: auto;
+    transition: transform 0.18s, border-color 0.18s, box-shadow 0.18s;
+  }
+  #terrain-box:hover {
+    border-color: var(--accent-dim);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 28px rgba(255, 180, 87, 0.22);
+  }
+  #terrain-box:active {
+    transform: scale(0.99);
+  }
+
+  .box-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--s2) var(--s3);
+    background: rgba(14, 13, 18, 0.75);
+    border-bottom: 1px solid var(--line);
+    z-index: 2;
+  }
+  .box-title {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.18em;
+    color: var(--accent);
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .seed-badge {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.12em;
+    color: var(--dim);
+    background: rgba(244, 234, 217, 0.08);
+    padding: 2px var(--s2);
+    border-radius: var(--r-sm);
+    border: 1px solid rgba(244, 234, 217, 0.12);
+  }
+
+  #terrain-canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .terrain-overlay {
+    position: absolute;
+    inset: auto 0 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--s2) var(--s3);
+    background: linear-gradient(0deg, rgba(14, 13, 18, 0.92) 0%, rgba(14, 13, 18, 0.6) 70%, transparent 100%);
+    z-index: 2;
+    pointer-events: none;
+  }
+  .reroll-tag {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    font-weight: 600;
+    text-transform: uppercase;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
+  }
+  .terrain-info {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.1em;
+    color: var(--dim);
+    text-transform: uppercase;
+  }
+
+  /* BOTTOM BOX: Car Preview Box (#stage) */
+  #stage {
+    flex: 1 1 55%;
+    min-width: 0;
+    min-height: 140px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    position: relative;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow);
+    padding: var(--s2) var(--s3);
+    overflow: hidden;
+    pointer-events: auto;
+  }
+
+  #stage-car {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 60px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: var(--s2);
+    position: relative;
+  }
+  .car-hint-tag {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.18em;
+    color: var(--faint);
+    text-transform: uppercase;
+    background: rgba(14, 13, 18, 0.6);
+    padding: 2px var(--s2);
+    border-radius: var(--r-sm);
+    border: 1px solid rgba(244, 234, 217, 0.08);
+  }
 
   #brand {
     display: flex;
     flex-direction: column;
     align-items: center;
     flex: 0 0 auto;
+    z-index: 2;
   }
 
   #title {
@@ -453,30 +570,16 @@
     text-transform: uppercase;
   }
 
-  /* ------------------------------------------------------------- garage -- */
-
-  /**
-   * The dock is a panel at every size, not only on a phone.
-   *
-   * It used to be a bare column on a desktop and a blurred card on mobile, and
-   * keeping those two in step is exactly the kind of drift that made the
-   * interface look assembled rather than designed. One panel, one set of rules,
-   * scaled by the same tokens as everything else.
-   */
+  /* ---- RIGHT COLUMN: Dock & Settings (50%) ------------------------------- */
   #dock {
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: var(--s2);
-    /* Its half, and no more. The 50% is the whole layout rule — see #overlay. */
     flex: 1 1 50%;
     min-width: 0;
     min-height: 0;
-    width: min(940px, 100%);
-    align-self: center;
-    /* The DOCK does not scroll — the garage inside it does. Scrolling the whole
-       panel put "Drive" below the fold on a landscape phone, which is the one
-       control that must never need looking for. */
+    width: 100%;
     overflow: hidden;
     padding: var(--s3) var(--s4);
     background: var(--panel);
@@ -485,15 +588,34 @@
     border: 1px solid var(--line);
     border-radius: var(--r-lg);
     box-shadow: var(--shadow);
-    scrollbar-width: thin;
+    pointer-events: auto;
   }
+  @media (orientation: landscape) {
+    #dock {
+      max-width: 50%;
+      height: 100%;
+    }
+  }
+
+  .dock-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(244, 234, 217, 0.09);
+    padding-bottom: var(--s2);
+  }
+  .dock-title {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.24em;
+    color: var(--accent);
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
   #garage {
     display: none;
     flex-direction: column;
     gap: var(--s2);
-    /* min-height: 0 is what lets a flex item actually shrink and scroll;
-       without it the item refuses to go below its content height and the
-       overflow reappears on the panel. */
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -1129,14 +1251,35 @@
 </div>
 
 <div id="overlay">
-  <div id="stage">
-    <div id="brand">
-      <h1 id="title">HIGHROADS</h1>
-      <p id="tagline">endless procedural roads</p>
+  <!-- LEFT COLUMN: Preview Column (Terrain Preview on top, Car Preview on bottom) -->
+  <div id="preview-col">
+    <!-- TOP BOX: Procedural Route Perspective Preview -->
+    <div id="terrain-box" role="button" tabindex="0" title="Click to generate a new world seed">
+      <div class="box-header">
+        <span class="box-title">ROUTE PREVIEW</span>
+        <span id="seed-badge" class="seed-badge">SEED: highroads-01</span>
+      </div>
+      <canvas id="terrain-canvas" width="380" height="200"></canvas>
+      <div class="terrain-overlay">
+        <span class="reroll-tag">CLICK TO RE-ROLL ROUTE</span>
+        <div id="terrain-info" class="terrain-info">ROUTE PERSPECTIVE</div>
+      </div>
+    </div>
+
+    <!-- BOTTOM BOX: Car Preview & Wordmark -->
+    <div id="stage">
+      <div id="brand">
+        <h1 id="title">HIGHROADS</h1>
+        <p id="tagline">endless procedural driving</p>
+      </div>
     </div>
   </div>
 
+  <!-- RIGHT COLUMN: Settings & Garage Dock -->
   <div id="dock">
+    <div class="dock-header">
+      <span class="dock-title">CONFIGURATION & GARAGE</span>
+    </div>
     <div id="garage">
       <div class="garage-row">
         <span class="garage-label">Mode</span>
