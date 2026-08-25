@@ -26,6 +26,8 @@ npm run probe
 | `tunmesh.mjs` | Coincident faces (z-fighting) and portal rings emitted where a bore was merely clipped by a chunk boundary. |
 | `score.mjs` | The near-miss mechanic: reward curve, oncoming bonus, chain build and decay, cooldown. |
 | `ui.mjs` | Every DOM id a module reads exists in `index.html`, and every class it toggles is actually styled. With no browser, this is what stands between a typo and a dead button. |
+| `uishot.mjs` | **What the interface looks like.** Screenshots twelve real device viewports over CDP and reports any element overflowing its box. Not in `npm run probe` — it needs a local Chrome and writes images. `node probe/uishot.mjs`. |
+| `paint.mjs` | Both paint slots and both lamp pairs actually got triangles, on every car. The split is discovered from the atlas at load rather than declared, so a car whose second colour does nothing would otherwise fail silently. |
 | `drive.mjs` | End to end: real car, real physics, real engine_sim, real traffic, for a given number of seconds. |
 
 Each takes an optional seed as the first argument.
@@ -43,6 +45,21 @@ lateral offset through `foldSafeOffset` before placing anything, so recovering
 a second time. That reported trees floating 3.97 m above the ground; measured
 against the actual collider, the same trees are at 0 mm. If you want to know
 where something is, ask the collider.
+
+**A headless screenshot is not the viewport you asked for.** Chrome's
+`--window-size` is clamped to a 500 px minimum, so `--screenshot` on a 375 px
+phone lays the page out at 500 and crops the image to 375 — which looks exactly
+like a layout that overflows, and is not. `uishot.mjs` drives
+`Emulation.setDeviceMetricsOverride` over the DevTools protocol instead, which
+is the only way to get a real small viewport.
+
+**`handling.mjs` used to charge the car for the test's own cornering.** The
+slide-recovery test holds full opposite lock and half throttle for four seconds.
+A car that recovers early then spends the rest of that time obeying the input
+and driving a circle the other way, and the probe integrated heading straight
+through it — so a tune that caught the slide in 0.82 s after 62° was reported as
+"240 deg, WENT ROUND" *because it recovered in time to start turning*. Heading
+is now integrated only until the yaw is arrested.
 
 **An autopilot is a controller and can be unstable on its own.** A bare
 proportional term on lateral position — worse, one with the sign inverted —

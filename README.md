@@ -339,17 +339,54 @@ Two smaller changes carry the rest of the feel:
   moment it lets go. At 1.25 it keeps 92%, and a slide becomes something you
   steer rather than something that happens to you. Speed retained through a
   drift went from 15 to **51 km/h**.
-- A yaw damper fades in between 36° and 72° of chassis slip. Below 36° it does
-  literally nothing. It was tried at 23° and a strength of 3.0, which caught a
-  spin in 0.68 s — excellent, and completely obvious: 23° is an ordinary slide,
-  so the car was being straightened out from under the driver every time they
-  provoked one. Late and gentle, it is a net that catches a genuine spin rather
-  than a hand on the wheel.
+- A yaw damper fades in between 29° and 60° of chassis slip. Below 29° it does
+  literally nothing, and the tyres peak around 7° of slip, so ordinary cornering
+  and a held drift never reach it. It was tried at 23° and a strength of 3.0,
+  which caught a spin in 0.68 s — excellent, and completely obvious: 23° is an
+  ordinary slide, so the car was being straightened out from under the driver
+  every time they provoked one. It was then moved to 36°, which was one stop too
+  far the other way: the net only caught a car already most of the way round, so
+  the whole range between an ordinary slide and a spin was unassisted.
 
-Measured end to end: a handbrake turn at 108 km/h leaves the car yawing at
-3.2 rad/s. Untouched it takes 3.45 s to arrest and rotates 286° — very nearly
-all the way round. With the assist it is 2.54 s and 135°. The assist is doing
-real work without doing the driving.
+### Grip, and giving the car mass
+
+The car was too easy to lose, and that turned out to be four things pulling
+together rather than one:
+
+- **The tyre fell off a cliff past its peak.** A shape factor of 1.32 keeps 89%
+  of peak grip once the slip angle is large; the rear axle reaches its peak
+  first under power, so that loss arrives as the back of the car leaving. 1.22
+  keeps 94%.
+- **The rear axle answered late.** Cornering stiffness was 14 front against 11.5
+  rear, so the car kept rotating past where it was aimed before the rear tyres
+  had built the force to stop it. 15 / 13 closes the gap.
+- **The body had no yaw inertia.** A solid-box tensor implies a yaw radius of
+  gyration around 0.29 of the car's length; real cars measure 0.35–0.40, because
+  the heavy items are at the ends. That is 1.6× more yaw inertia, and it is the
+  single biggest lever on whether a car feels like it has mass — a body that can
+  be rotated for free can be spun for free.
+- **The steering was instant.** 6.2 rad/s put full lock 94 ms from a keypress,
+  which with a digital input is indistinguishable from twitchiness. 5.0 puts it
+  200 ms away, about where a real driver's hands are.
+
+Grip itself went up about 12% across the roster, with each car's centre of mass
+dropped two points of body height to pay for it — that keeps the tall vehicles
+exactly as unlikely to roll as they were, because the anti-roll bar is sized
+from the roll moment each car will actually see and follows the change on its
+own.
+
+Measured end to end, on the same test before and after: a handbrake turn at
+108 km/h left the car yawing at **3.22 rad/s**, and now leaves it at **2.27** —
+it is harder to throw in the first place. Countersteer took **2.54 s** and 169°
+of rotation to arrest it, leaving **5 km/h** on the clock; it now takes
+**0.82 s** and 62°, leaving **41 km/h**. A three-second power-on drift used to
+end at 26 km/h and now ends at **56**. Crucially, with the yaw damper switched
+off entirely the catch is 0.98 s — so almost all of that improvement is the
+tyres, the inertia and the steering rather than the assist, which now accounts
+for 0.16 s of it against 0.91 s before.
+
+None of it costs rollover safety: monster truck, van, military and pickup all
+still finish a 6 s slalom at 90 km/h with zero frames near rolled.
 
 ### Depth of field was the wrong tool
 
@@ -401,6 +438,26 @@ The title screen leaves the middle of the screen transparent and orbits the
 actual vehicle, sitting on the actual road, in the actual scene. Nothing is a
 preview: paint is a live material property, so a colour click is immediate, and
 switching car rebuilds the same vehicle the player is about to drive.
+
+There are **two** paint colours, and the second one exists because of a bug you
+could see. `assets.js` finds the car's paint by looking for the atlas cell
+covering the most surface area and moving those triangles onto their own plain
+material. Everything else keeps the shared texture — including the *second*
+largest flat colour, which on most of these models is a real two-tone feature:
+the Hatchback's upper body, the Van's roof, the Interceptor's panels, the Muscle
+car's trim. Those stayed exactly as the artist left them no matter what the
+player picked, which reads as the colour control being broken rather than as a
+design. The cell ranking now returns a list, the top two get materials, and the
+second one defaults to the colour sampled out of the atlas so a car still
+arrives looking as it always did.
+
+Ranking by raw surface area does count interior trim and floor pans nobody sees,
+so it was checked against the honest alternative — six orthographic z-buffers
+per model, counting only what is visible from outside. The two agree on the top
+cell for all nine cars and on the second for seven of nine, so the cheap metric
+stands. `probe/paint.mjs` counts the triangles that land in each slot, because
+a car whose second colour silently controls nothing looks exactly like one whose
+second colour is set to its stock value.
 
 Picking a car or an engine also blips the throttle, with the gearbox forced to
 neutral so the engine revs freely instead of bogging against a stopped

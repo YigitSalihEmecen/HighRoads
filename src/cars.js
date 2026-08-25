@@ -23,6 +23,23 @@
  * sensible to do with it.
  */
 
+/**
+ * Grip, roll and weight — the character numbers.
+ *
+ * The roster's `grip` values were raised by about 12% across the board and each
+ * car's centre of mass dropped two points of body height. Both pull the same
+ * way and neither is a fudge: the cars corner harder, and because `comHeight`
+ * feeds both the roll moment and the Static Stability Factor, a lower CoM buys
+ * that extra cornering without the tall vehicles becoming any more likely to
+ * lie down — the anti-roll bar is sized from the roll moment this car will
+ * actually see, so it follows the change automatically.
+ *
+ * Downforce went up with them on the road cars. It only exists above about
+ * 30 m/s, so it is the one lever that steadies a fast sweeper without making a
+ * car-park manoeuvre feel like it is on rails; the van, military and monster
+ * keep almost none, because nothing that shape should feel planted.
+ */
+
 /** Static sag as a fraction of total suspension travel. */
 const SAG_FRACTION = 0.28;
 /** Body roll at the vehicle's own cornering limit, radians (~4.9 deg). */
@@ -47,11 +64,11 @@ export const CARS = [
     gearRatios: [-3.3, 0, 3.62, 2.24, 1.58, 1.19, 0.96, 0.79],
     finalDrive: 3.8,
     drive: 'rwd',
-    grip: 1.3,
-    comHeight: 0.40,
+    grip: 1.44,
+    comHeight: 0.38,
     travelScale: 1.05,
     dragCoefficient: 0.52,
-    downforce: 2.6,
+    downforce: 3.2,
   },
   {
     id: 'muscle',
@@ -68,11 +85,11 @@ export const CARS = [
     gearRatios: [-2.9, 0, 3.06, 1.92, 1.4, 1.0, 0.78],
     finalDrive: 3.4,
     drive: 'rwd',
-    grip: 1.18,
-    comHeight: 0.42,
+    grip: 1.32,
+    comHeight: 0.4,
     travelScale: 1.15,
     dragCoefficient: 0.62,
-    downforce: 1.6,
+    downforce: 2.1,
   },
   {
     id: 'classic',
@@ -89,11 +106,11 @@ export const CARS = [
     gearRatios: [-3.4, 0, 3.4, 2.0, 1.35, 1.0],
     finalDrive: 3.9,
     drive: 'rwd',
-    grip: 1.02,
-    comHeight: 0.46,
+    grip: 1.16,
+    comHeight: 0.44,
     travelScale: 1.35,
     dragCoefficient: 0.78,
-    downforce: 0.8,
+    downforce: 1.1,
   },
   {
     id: 'hatchback',
@@ -110,11 +127,11 @@ export const CARS = [
     gearRatios: [-3.5, 0, 3.55, 2.05, 1.42, 1.06, 0.86],
     finalDrive: 4.1,
     drive: 'fwd',
-    grip: 1.16,
-    comHeight: 0.44,
+    grip: 1.3,
+    comHeight: 0.42,
     travelScale: 1.1,
     dragCoefficient: 0.6,
-    downforce: 1.0,
+    downforce: 1.4,
   },
   {
     id: 'police',
@@ -131,11 +148,11 @@ export const CARS = [
     gearRatios: [-3.2, 0, 3.4, 2.1, 1.5, 1.12, 0.9, 0.74],
     finalDrive: 3.6,
     drive: 'rwd',
-    grip: 1.24,
-    comHeight: 0.43,
+    grip: 1.38,
+    comHeight: 0.41,
     travelScale: 1.15,
     dragCoefficient: 0.66,
-    downforce: 1.8,
+    downforce: 2.3,
   },
   {
     id: 'pickup',
@@ -152,11 +169,11 @@ export const CARS = [
     gearRatios: [-3.1, 0, 3.8, 2.2, 1.5, 1.08, 0.84],
     finalDrive: 3.7,
     drive: 'awd',
-    grip: 1.12,
-    comHeight: 0.48,
+    grip: 1.26,
+    comHeight: 0.46,
     travelScale: 1.35,
     dragCoefficient: 0.95,
-    downforce: 0.6,
+    downforce: 0.9,
   },
   {
     id: 'van',
@@ -173,8 +190,8 @@ export const CARS = [
     gearRatios: [-3.6, 0, 4.0, 2.3, 1.5, 1.05, 0.82],
     finalDrive: 4.0,
     drive: 'fwd',
-    grip: 1.0,
-    comHeight: 0.55,
+    grip: 1.14,
+    comHeight: 0.53,
     travelScale: 1.3,
     dragCoefficient: 1.2,
     downforce: 0.3,
@@ -194,8 +211,8 @@ export const CARS = [
     gearRatios: [-3.8, 0, 4.6, 2.6, 1.7, 1.2, 0.9],
     finalDrive: 4.3,
     drive: 'awd',
-    grip: 1.14,
-    comHeight: 0.5,
+    grip: 1.28,
+    comHeight: 0.48,
     travelScale: 1.5,
     dragCoefficient: 1.5,
     downforce: 0.2,
@@ -215,8 +232,8 @@ export const CARS = [
     gearRatios: [-3.4, 0, 4.2, 2.4, 1.6, 1.15, 0.88],
     finalDrive: 4.0,
     drive: 'awd',
-    grip: 1.2,
-    comHeight: 0.46,
+    grip: 1.32,
+    comHeight: 0.44,
     // Long and soft — it should wallow — but not so much that the body has more
     // vertical travel than a road car has total height.
     travelScale: 1.6,
@@ -247,6 +264,33 @@ export const CAR_COLORS = [
 export function colorById(id) {
   return CAR_COLORS.find((c) => c.id === id) || CAR_COLORS[0];
 }
+
+/**
+ * The second paint colour.
+ *
+ * Every model in the pack has a large flat block of colour that is not its
+ * bodywork — the Hatchback's upper half, the Van's roof, the Interceptor's
+ * panels, the Muscle car's trim — and it used to be fixed whatever paint the
+ * player chose. `assets.js` now puts that swatch on its own material slot, so
+ * it is a second colour rather than a permanent one.
+ *
+ * `stock` is first and is the default: `hex: null` means "leave the artist's
+ * colour alone", so a car looks exactly as it always did until asked otherwise.
+ * The rest of the list is the paint palette plus two neutrals that read as
+ * contrast trim rather than as a second body colour.
+ */
+export const CAR_TRIM_COLORS = [
+  { id: 'stock', name: 'Stock', hex: null },
+  ...CAR_COLORS,
+  { id: 'graphite', name: 'Graphite', hex: 0x3a3d44 },
+  { id: 'cream',    name: 'Cream',    hex: 0xe6dcc4 },
+];
+
+export function trimColorById(id) {
+  return CAR_TRIM_COLORS.find((c) => c.id === id) || CAR_TRIM_COLORS[0];
+}
+
+export const DEFAULT_TRIM = 'stock';
 
 /**
  * The engine roster from engine_sim. Any engine can go in any car — the

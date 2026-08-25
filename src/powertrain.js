@@ -57,6 +57,59 @@ const STALL_TIME = 0.7;     // s it must persist
 const STALL_COOLDOWN = 1.2; // s before it may fire again
 
 /**
+ * Launch authority.
+ *
+ * engine_sim's launch controller models a driver feeding a clutch: it slips,
+ * watches ROAD SPEED catch the crank, and takes the slip out as the car gets
+ * going. That is right for a car, and it is exactly wrong for the one case this
+ * game creates constantly — a car that cannot get going. `_stepVehicle` is
+ * overridden here, so the drivetrain never sees the load on the wheels; it only
+ * sees that wheel speed is not rising. A stationary car therefore leaves
+ * `geared` pinned at zero, the demanded rpm never moves, and the clutch sits
+ * half open transmitting a fraction of what the engine makes — forever.
+ *
+ * Measured with the drivetrain stepped against a pinned wheel speed, full
+ * throttle, first gear, on the nine-car roster:
+ *
+ *     manual / DCT cars   5.0 – 8.4 m/s^2 for the first 0.6 s
+ *     torque-converter autos  12 – 17 m/s^2 essentially at once
+ *
+ * and at a third throttle the manual cars plateau at 1.3 – 2.8 m/s^2 and stay
+ * there. Gravity here is 16 m/s^2, so a 10% grade costs 1.6 m/s^2: that plateau
+ * is a car that cannot pull away up a slope, which is the reported symptom, and
+ * the difference between the two rows is the clutch model rather than the
+ * engine.
+ *
+ * The fix is on this side of the bridge, where it belongs. Below `LAUNCH_FADE`
+ * the host asserts a floor on drive force: what first gear can actually deliver
+ * at the engine's own torque, scaled by the pedal. It is a FLOOR, not a
+ * replacement — above it the simulator's number wins, so gear ratios, boost,
+ * lash and engine braking all still come from the drivetrain — and it fades out
+ * completely by walking-to-jogging speed, so nothing above a standing start is
+ * touched. The tyres still have the last word: the force goes through the same
+ * friction circle and traction control as any other, so this cannot conjure
+ * grip, only stop the clutch model from being the thing that limits a launch.
+ */
+/** Road speed, m/s, by which the floor has faded to nothing. */
+const LAUNCH_FADE = 7.0;
+/**
+ * Fraction of peak engine torque the floor assumes is available. Peak torque is
+ * not on tap at idle; 0.72 is roughly what `torqueFactor` returns a little above
+ * idle for the roster's engines, so the floor stays inside what the engine could
+ * really make rather than inventing torque.
+ */
+const LAUNCH_TORQUE_FRAC = 0.72;
+/**
+ * Wind-up rate cap for the simulator's own launch ramp, as a multiple of the
+ * rate the car will sustain in first. engine_sim derives this once in its
+ * constructor from the preset it was built with and never revisits it, so
+ * across the roster it was out by up to 2x in both directions — the Muscle car
+ * was being wound up at twice the rate it could pull and the Hatchback at three
+ * quarters of it. `setCar` recomputes it for the car actually on screen.
+ */
+const LAUNCH_RATE_FRAC = 0.9;
+
+/**
  * Builds a drivetrain profile from a car's own derived parameters, so the
  * simulator's inertias and ratios describe the vehicle actually on screen
  * rather than one of its five built-in presets.
@@ -122,9 +175,19 @@ export class Powertrain {
     /** Gearbox mode. Manual holds the gear until the driver asks. */
     this.autoShift = true;
     /** Mix levels, mirrored so the UI can read them back. */
-    // Gearbox whine and the mechanical layer are the two that go shrill at
-    // high rpm, so both come down; sub and exhaust carry the weight instead.
-    this.mix = { exhaust: 1.0, intake: 0.6, mechanical: 0.34, transmission: 0.22,
+    //
+    // `mechanical` is OFF, and deliberately so. That layer is engine_sim's
+    // MechanicalLayer — valvetrain clatter, injector clicks, timing-chain
+    // chordal action and block bending modes, all of it built from pink noise
+    // through band-passes. On a real car those are quiet details you notice
+    // standing beside the bonnet; through a chase camera at 200 km/h, over a
+    // whole session, the band-passed noise is just a broadband hiss sitting on
+    // top of the note. Nothing else depends on it: the clunks, lash impacts and
+    // shift bangs are the `transients` bus, which stays.
+    //
+    // Gearbox whine also goes shrill at high rpm, so it stays low; sub and
+    // exhaust carry the weight instead.
+    this.mix = { exhaust: 1.0, intake: 0.6, mechanical: 0.0, transmission: 0.22,
                  turbo: 0.5, transients: 0.4, sub: 1.0 };
     this.tone = { rumble: 1.1, brightness: 0.72 };
     /** Three-band compressor amount: 0 bypasses it, 1 is the simulator's tune. */
@@ -268,6 +331,35 @@ export class Powertrain {
     // now that the engine is a real profile with its own redline.
     const p = this.sim.profile;
     if (p && p.redlineRpm) this.maxRpm = p.redlineRpm;
+
+    this._retuneLaunch();
+  }
+
+  /**
+   * Re-derives the drivetrain's launch constants for the car and engine now
+   * fitted. See LAUNCH_RATE_FRAC: engine_sim computes `launchRate` once, in its
+   * constructor, from whichever preset it happened to be built with, and
+   * neither `setVehicle` nor `setEngine` revisits it — so every car after the
+   * first was being launched to somebody else's schedule. Both fields are read
+   * live inside its launch controller, so writing them is enough; engine_sim
+   * itself stays untouched, as with `_stepVehicle`.
+   */
+  _retuneLaunch() {
+    const p = this.sim && this.sim.physics;
+    const eng = this.sim && this.sim.profile;
+    if (!p || !eng || !p.ratios || !p.ratios.length) return;
+
+    //   F = T·ratio1·eff/r ,  a = F/m ,  d(gearedRpm)/dt = (a/r)·ratio1·60/2pi
+    const ratio1 = Math.abs(p.ratios[0] * p.fd) || 1;
+    const accel = (eng.peakTorque * ratio1 * p.eff) / p.r / Math.max(1, p.vehicle.mass);
+    const gearedRate = (accel / p.r) * ratio1 * (60 / (2 * Math.PI));
+    p.launchRate = Math.min(12000, Math.max(400, gearedRate * LAUNCH_RATE_FRAC));
+
+    // How far above idle the driver holds it while the clutch takes up. A flat
+    // 2400 rpm is most of the usable range on a 4600 rpm diesel and a third of
+    // it on a 9500 rpm twin — scaling it off the engine's own span makes a
+    // launch sound like the engine doing it rather than like one number.
+    p.launchFlareRpm = Math.max(900, (eng.redlineRpm - eng.idleRpm) * 0.45);
   }
 
   /**
@@ -323,10 +415,40 @@ export class Powertrain {
     if (this.reverse) {
       // Neutral transmits nothing, so reverse gets its own simple term.
       force = -state.throttle * V.mass * 3.2;
+    } else if (!state.neutral) {
+      force = Math.max(force, this._launchFloor(p, state.throttle, state.wheelSpeed));
     }
 
     this.force = Number.isFinite(force) ? force : 0;
     return this.force;
+  }
+
+  /**
+   * Floor on drive force at a standing start. See LAUNCH_FADE for the whole
+   * argument; the short version is that the drivetrain's clutch model cannot
+   * see the load on the wheels, so left alone it is what limits a launch.
+   *
+   * Returns 0 the moment the car is moving, or out of first, or off the pedal —
+   * so this is a launch aid and nothing else. It also cannot exceed what the
+   * engine makes: the ceiling is `LAUNCH_TORQUE_FRAC` of peak torque through
+   * the gear actually selected.
+   *
+   * @returns {number} newtons at the contact patch, never negative
+   */
+  _launchFloor(p, throttle, wheelSpeed) {
+    if (!(throttle > 0.02) || p.gear !== 1 || p.shifting) return 0;
+
+    const speed = Math.abs(wheelSpeed);
+    if (speed >= LAUNCH_FADE) return 0;
+    // Linear fade: at rest the floor is fully in, by LAUNCH_FADE it is gone.
+    const fade = 1 - speed / LAUNCH_FADE;
+
+    const eng = this.sim.profile;
+    const ratio = Math.abs(p.ratios[0] * p.fd);
+    if (!eng || !(ratio > 0)) return 0;
+
+    const torque = eng.peakTorque * LAUNCH_TORQUE_FRAC * throttle;
+    return (torque * ratio * p.eff) / p.r * fade;
   }
 
   /**

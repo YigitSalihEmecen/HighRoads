@@ -224,12 +224,22 @@ export class RaycastVehicle {
       .setCanSleep(false)
       .setCcdEnabled(true);
 
-    // Solid-box inertia, with the roll axis inflated: a real car carries mass
-    // high (engine, occupants, roof) so it resists roll more than a uniform
-    // slab of the same footprint would.
+    // Solid-box inertia, with two axes inflated.
+    //
+    // ROLL (Iz) — a real car carries mass high (engine, occupants, roof), so it
+    // resists roll more than a uniform slab of the same footprint would.
+    //
+    // YAW (Iy) — a uniform box is the wrong model in the other direction here.
+    // The heavy items are at the ends, not spread evenly: engine ahead of the
+    // front axle, fuel and boot behind the rear one. Real cars measure a yaw
+    // radius of gyration around 0.35–0.40 of their length against the 0.29 a
+    // solid box implies, which is (0.37/0.29)^2 ≈ 1.6x more yaw inertia. This
+    // is the single biggest lever on whether a car feels like it has mass: a
+    // slab-inertia body changes heading the instant a tyre asks it to, and a
+    // car that can be rotated for free is a car that can be spun for free.
     const w = hx * 2, h = hy * 2, l = hz * 2;
     const Ix = (m / 12) * (h * h + l * l);
-    const Iy = (m / 12) * (w * w + l * l);
+    const Iy = (m / 12) * (w * w + l * l) * 1.6;
     const Iz = (m / 12) * (w * w + h * h) * 1.6;
 
     desc.setAdditionalMassProperties(
@@ -580,6 +590,11 @@ export class RaycastVehicle {
   /** Repaints the bodywork. */
   setColor(hex) {
     if (this.model && this.model.setColor) this.model.setColor(hex);
+  }
+
+  /** Repaints the second colour. `null` restores the model's own swatch. */
+  setTrimColor(hex) {
+    if (this.model && this.model.setTrimColor) this.model.setTrimColor(hex);
   }
 
   // ---------------------------------------------------------------- tyres --

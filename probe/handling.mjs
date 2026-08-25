@@ -103,18 +103,32 @@ console.log('\n=== provoke a slide, then try to catch it (Sport, 30 m/s) ===');
   // Countersteer and feed power, the way a driver would.
   // "Spun" means the car went round, not that it was yawing fast at the instant
   // the handbrake came off — the provocation itself guarantees that.
-  let caught = -1, maxYaw = Math.abs(peak), heading = 0;
+  //
+  // Heading is integrated ONLY UNTIL THE YAW IS ARRESTED, and that is not a
+  // detail. The test holds full opposite lock and half throttle for the whole
+  // four seconds, because that is what a driver catching a slide does — but a
+  // car that recovers early then spends the remaining three seconds obeying
+  // that input and driving a steady circle the other way. Integrating through
+  // it charged the car for the test's own cornering: measured, a tune that
+  // caught the slide in 0.82 s after 62 deg was reported as "240 deg, WENT
+  // ROUND" purely because it recovered in time to start turning. The question
+  // being asked is how far the SLIDE carried the car round, so the answer stops
+  // when the slide does.
+  let caught = -1, maxYaw = Math.abs(peak), heading = 0, keptSpeed = 0;
   for (let i = 0; i < Math.round(4.0 / h); i++) {
     step(sim, IN(-1, 0.5, 0, false), 3000);
     const y = yawAt();
-    heading += y * h;
     maxYaw = Math.max(maxYaw, Math.abs(y));
-    if (caught < 0 && Math.abs(y) < 0.35 && i > 20) caught = i * h;
+    if (caught < 0) {
+      heading += y * h;
+      if (Math.abs(y) < 0.35 && i > 20) { caught = i * h; keptSpeed = sim.v.speed * 3.6; }
+    }
   }
   const spun = Math.abs(heading) > Math.PI;
   console.log(`  yaw rate at release ${Math.abs(peak).toFixed(2)} rad/s, peak during recovery ${maxYaw.toFixed(2)}`);
   console.log(`  countersteer ${caught >= 0 ? `arrested it in ${caught.toFixed(2)} s` : 'NEVER arrested it'}` +
-    `, total rotation ${((Math.abs(heading) * 180) / Math.PI).toFixed(0)} deg${spun ? '  (WENT ROUND)' : ''}`);
+    `, rotation while sliding ${((Math.abs(heading) * 180) / Math.PI).toFixed(0)} deg${spun ? '  (WENT ROUND)' : ''}` +
+    (caught >= 0 ? `, ${keptSpeed.toFixed(0)} km/h left` : ''));
 }
 
 // Tall vehicles: opening the lock in a slide bypasses the rollover limit, so
@@ -159,12 +173,15 @@ console.log('\n=== how much of the catch is the assist? ===');
     VEHICLE.spinRecovery = strength;
     const sim = atSpeed('sport', 30);
     for (let i = 0; i < Math.round(0.7 / h); i++) step(sim, IN(1, 0.4, 0, true), 4000);
+    // Same rule as above: stop integrating once the slide is over, or the
+    // held countersteer's own cornering lands on the car's bill.
     let caught = -1, heading = 0;
     for (let i = 0; i < Math.round(5.0 / h); i++) {
       step(sim, IN(-1, 0.5, 0, false), 3000);
       const y = sim.v.body.angvel().y;
+      if (caught >= 0) continue;
       heading += y * h;
-      if (caught < 0 && Math.abs(y) < 0.35 && i > 20) caught = i * h;
+      if (Math.abs(y) < 0.35 && i > 20) caught = i * h;
     }
     console.log(`  spinRecovery ${strength.toFixed(1)}: caught in ` +
       `${caught >= 0 ? caught.toFixed(2) + ' s' : 'never'}, rotated ${((Math.abs(heading) * 180) / Math.PI).toFixed(0)} deg`);

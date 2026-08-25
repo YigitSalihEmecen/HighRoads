@@ -2,7 +2,7 @@
  * settings.js — the in-game settings drawer.
  *
  * A collapsible panel on the left exposing the parts of the engine simulator
- * worth touching while driving: master level, the seven voice buses it mixes
+ * worth touching while driving: master level, the six voice buses it mixes
  * independently, and the two tone controls. Plus the gearbox mode, which is a
  * driving setting rather than an audio one but belongs with the other toggles.
  *
@@ -13,10 +13,17 @@
  * swallows key events that reach it.
  */
 
+/**
+ * The buses worth a slider.
+ *
+ * `mechanical` is not one of them. It is band-passed pink noise standing in for
+ * valvetrain clatter and block resonance, and at driving volume it reads as
+ * hiss rather than as detail, so it is mixed to zero in powertrain.js. A slider
+ * whose only useful position is the one it already sits at is clutter.
+ */
 const BUSES = [
   ['exhaust', 'Exhaust', 'the pipe — combustion pulses through the waveguides'],
   ['intake', 'Intake', 'induction roar on the other side of the engine'],
-  ['mechanical', 'Mechanical', 'valvetrain, injectors, chain, block resonance'],
   ['transmission', 'Gearbox', 'mesh whine, pitched per gear'],
   ['turbo', 'Turbo', 'spool whistle, wastegate chatter, blow-off'],
   ['transients', 'Transients', 'bangs, clunks, lash impacts'],
