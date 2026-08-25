@@ -77,7 +77,10 @@ for (const opt of ENGINE_OPTIONS) {
     maxRpm = Math.max(maxRpm, pt.rpm);
     gears.add(pt.gear);
   }
-  const label = pt.sim.profile.label;
+  // `presetLabel` since engine_sim gained its preset system; `profile.label` is
+  // the older field and is undefined for a preset-loaded engine. Neither is
+  // guaranteed, and a missing label is a cosmetic detail in a row about torque.
+  const label = pt.sim.presetLabel || (pt.sim.profile && pt.sim.profile.label) || opt.id;
   // Gear count is a property of the COMBINATION, not of the bridge: a 1.2 litre
   // V-twin in a 1180 kg car really does spend a long time in first, and that is
   // the engine-swap feature behaving correctly rather than a fault. What the

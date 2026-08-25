@@ -1,15 +1,204 @@
 /**
- * input.js — keyboard + gamepad, normalised into one analogue-ish state.
+ * input.js — keyboard, gamepad, touch and tilt, normalised into one
+ * analogue-ish state.
  *
  * Keys are ramped rather than binary. A digital key jammed straight into a
  * steering angle feels awful; a short ramp with a faster release gives most of
- * the feel of an analogue stick, and the gamepad path simply overrides it.
+ * the feel of an analogue stick, and the two ANALOGUE sources — a gamepad stick
+ * and the phone's own attitude — simply override it. Overriding rather than
+ * blending is the right call for a reason worth stating: an analogue axis
+ * already carries the player's intent at every instant, and mixing a ramp into
+ * it can only add lag to something that had none.
+ *
+ * ── tilt ────────────────────────────────────────────────────────────────────
+ *
+ * The two arrow buttons are a digital steering input on a device that has a
+ * perfectly good analogue one in it. `TiltSteering` below reads
+ * `deviceorientation` and turns it into the same -1..+1 the stick produces.
+ *
+ * Three things about it are not obvious and all three have to be right:
+ *
+ *   WHICH AXIS depends on how the phone is being held. `gamma` is roll about
+ *   the screen's long axis and `beta` is pitch about its short one, and which
+ *   of those means "steer" swaps when the device rotates — so the axis and its
+ *   sign come from `screen.orientation.angle`, not from an assumption about
+ *   landscape.
+ *
+ *   THE ZERO IS WHEREVER THE PLAYER IS HOLDING IT. Nobody holds a phone flat,
+ *   and a game that assumes they do steers left forever. The neutral attitude
+ *   is captured when tilt is switched on and can be recaptured at any time.
+ *
+ *   iOS NEEDS PERMISSION, FROM INSIDE A TAP. Safari has gated motion and
+ *   orientation behind `DeviceOrientationEvent.requestPermission()` since iOS
+ *   13, it requires transient activation, and it requires HTTPS. That is the
+ *   same constraint the audio has (`Powertrain.start`, trap #12) and it is why
+ *   `enable()` returns a promise and is called from a click handler.
  */
 
 import { clamp, moveTowards } from './util.js';
 
 const KEY_RISE = 4.2;   // per second, toward the pressed value
 const KEY_FALL = 6.5;   // per second, back to neutral
+
+/**
+ * Degrees of tilt either side of neutral for full lock, and the dead band in
+ * the middle.
+ *
+ * TWENTY-TWO is a wrist, not an arm. Measured against a phone held in two
+ * hands in landscape, a comfortable roll without moving the elbows is about
+ * twenty-five degrees each way; asking for more means the player has to choose
+ * between steering and being able to see the screen.
+ *
+ * The dead band is small — one and a half degrees — because a car that will not
+ * hold a straight line is the failure mode everyone remembers about tilt
+ * steering, and it is nearly always a missing dead band rather than a noisy
+ * sensor.
+ */
+const TILT_RANGE = 22;
+const TILT_DEAD = 1.5;
+/**
+ * Curve applied inside the range. `x * |x|^(k-1)` with k = 1.7, which keeps the
+ * middle of the travel fine for lane corrections and still reaches full lock at
+ * the ends. Linear tilt feels twitchy on centre and short at the extremes,
+ * because a wrist does not move linearly.
+ */
+const TILT_EXPO = 1.7;
+/** A sample older than this is stale: the sensor stopped, so let go of the car. */
+const TILT_TIMEOUT = 0.5;
+const STORE_KEY = 'highroads.tilt';
+
+/**
+ * The phone's attitude, as a steering axis.
+ *
+ * Deliberately its own object rather than four more fields on `Input`: it owns
+ * a listener, a permission state and a calibration, and none of those have
+ * anything to say to the keyboard.
+ */
+export class TiltSteering {
+  constructor() {
+    this.on = false;
+    /** -1..+1, or 0 while there is no fresh sample. */
+    this.value = 0;
+    /** The attitude the player is actually holding the device at. */
+    this.zero = null;
+    /** Seconds since the last event, so a dead sensor releases the wheel. */
+    this.age = TILT_TIMEOUT;
+    this._raw = 0;
+    this._onOrient = (e) => this._read(e);
+  }
+
+  /** True where the API exists at all. False on a desktop, and in Node. */
+  static get supported() {
+    return typeof window !== 'undefined' && 'DeviceOrientationEvent' in window;
+  }
+
+  /** True where iOS's permission gate is in the way. */
+  static get needsPermission() {
+    return TiltSteering.supported &&
+      typeof DeviceOrientationEvent.requestPermission === 'function';
+  }
+
+  /** What the player last chose, or null if they never have. Best-effort. */
+  static get remembered() {
+    try {
+      const v = localStorage.getItem(STORE_KEY);
+      return v === null ? null : v === '1';
+    } catch (err) {
+      return null;
+    }
+  }
+
+  static remember(on) {
+    try { localStorage.setItem(STORE_KEY, on ? '1' : '0'); } catch (err) { /* private window */ }
+  }
+
+  /**
+   * Switches tilt on. MUST BE CALLED FROM A USER GESTURE on iOS.
+   *
+   * Resolves false rather than throwing when the player declines, when the page
+   * is not on HTTPS, or when there is no sensor — every one of those is a
+   * perfectly ordinary thing for a browser to do and none of them should take
+   * the game down. The caller shows the state it got back.
+   */
+  async enable() {
+    if (!TiltSteering.supported) return false;
+    if (TiltSteering.needsPermission) {
+      try {
+        if (await DeviceOrientationEvent.requestPermission() !== 'granted') return false;
+      } catch (err) {
+        return false;
+      }
+    }
+    if (!this.on) {
+      window.addEventListener('deviceorientation', this._onOrient);
+      this.on = true;
+    }
+    // Capture the neutral attitude on the next sample, not on this one — there
+    // is no sample yet, and zeroing against a stale reading is worse than not
+    // zeroing at all.
+    this.zero = null;
+    this.age = TILT_TIMEOUT;
+    this.value = 0;
+    return true;
+  }
+
+  disable() {
+    if (this.on) window.removeEventListener('deviceorientation', this._onOrient);
+    this.on = false;
+    this.value = 0;
+    this.zero = null;
+  }
+
+  /** Takes the current attitude as straight ahead. */
+  recentre() {
+    this.zero = null;
+  }
+
+  /**
+   * Picks the steering axis out of the event, in screen space.
+   *
+   * `gamma` rolls about the screen's long axis and `beta` pitches about its
+   * short one; rotating the device swaps which of the two the player thinks of
+   * as "tipping it left". `screen.orientation.angle` is how far the page has
+   * been rotated to stay upright, so it is exactly the correction needed.
+   */
+  _read(e) {
+    if (e.gamma === null && e.beta === null) return;
+    const angle = (typeof screen !== 'undefined' && screen.orientation &&
+      typeof screen.orientation.angle === 'number') ? screen.orientation.angle : 0;
+    const beta = e.beta || 0;
+    const gamma = e.gamma || 0;
+    let axis;
+    if (angle === 90) axis = beta;
+    else if (angle === 270 || angle === -90) axis = -beta;
+    else if (angle === 180) axis = -gamma;
+    else axis = gamma;
+
+    if (this.zero === null) this.zero = axis;
+    this._raw = axis;
+    this.age = 0;
+  }
+
+  /** Advances the staleness clock and recomputes the axis. */
+  update(dt) {
+    if (!this.on) { this.value = 0; return; }
+    this.age += dt;
+    if (this.age > TILT_TIMEOUT || this.zero === null) { this.value = 0; return; }
+
+    // Wrap into -180..180 before subtracting, so a zero captured near the wrap
+    // does not send the wheel hard over.
+    let d = this._raw - this.zero;
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+
+    const mag = Math.abs(d);
+    if (mag <= TILT_DEAD) { this.value = 0; return; }
+    const t = Math.min(1, (mag - TILT_DEAD) / (TILT_RANGE - TILT_DEAD));
+    // Positive `steer` is LEFT (see Input), and tipping the device left is a
+    // negative roll, so the sign flips here and nowhere else.
+    this.value = -Math.sign(d) * Math.pow(t, TILT_EXPO);
+  }
+}
 
 export class Input {
   constructor(target = window) {
@@ -39,6 +228,9 @@ export class Input {
 
     /** Set by the on-screen controls; merged with the keyboard each update. */
     this.touch = { left: 0, right: 0, throttle: 0, brake: 0, handbrake: 0, flash: 0 };
+
+    /** The phone's attitude as a steering axis. Off until the player asks. */
+    this.tilt = new TiltSteering();
 
     target.addEventListener('keydown', this._onKeyDown, { passive: false });
     target.addEventListener('keyup', this._onKeyUp);
@@ -148,6 +340,16 @@ export class Input {
     this.handbrake = this.held('Space') || !!this.touch.handbrake;
 
     this._pollGamepad();
+
+    // Tilt LAST, and it wins. It is the most analogue source on the device and
+    // it is only ever on because the player switched it on; anything that
+    // blended it with the arrow ramp would be adding lag to the one input that
+    // has none. A held arrow button still overrides it, so the buttons remain a
+    // usable override if the sensor misbehaves mid-corner.
+    this.tilt.update(dt);
+    if (this.tilt.on && !left && !right && this.tilt.age <= 0.5) {
+      this.steer = this.tilt.value;
+    }
 
     this.steer = clamp(this.steer, -1, 1);
     this.throttle = clamp(this.throttle, 0, 1);

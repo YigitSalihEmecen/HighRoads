@@ -55,6 +55,13 @@ const SAMPLES_PER_SEGMENT = Math.max(2, Math.round(ROAD.ctrlSpacing / ROAD.sampl
 const CURV_WINDOW = 4;
 const FOLD_WINDOW = 10;
 
+/**
+ * Half-width of the average taken BEFORE the running maximum, in road samples.
+ * See `ROUTE.foldSmooth` for why it exists, what it is worth, and why it is not
+ * larger (bug #64).
+ */
+const FOLD_SMOOTH = ROUTE.foldSmooth;
+
 export class RoadPath {
   constructor(terrain, seed) {
     this.terrain = terrain;
@@ -510,31 +517,63 @@ export class RoadPath {
     const last = this.framedUpTo;
     if (last < 1) return;
 
-    // Frame-to-frame turn rate, signed. Positive turns left, which compresses
-    // negative `v` — the same convention `curv` uses.
-    if (!this._rowCurv) this._rowCurv = [];
-    const row = this._rowCurv;
+    // Turn ANGLE across each step, signed, and the arc length it took. Positive
+    // turns left, which compresses negative `v` — the same convention `curv`
+    // uses. Kept as an angle rather than as a rate so the smoothing below can
+    // sum them: the total turn across a window is the sum of its steps' turns,
+    // exactly, for any shape.
+    if (!this._rowTurn) { this._rowTurn = []; this._rowDs = []; }
+    const turn = this._rowTurn;
+    const step = this._rowDs;
     const cross = _foldCross;
-    for (let i = Math.max(0, row.length - 1); i < last; i++) {
+    for (let i = Math.max(0, turn.length - 1); i < last; i++) {
       const a = frames[i];
       const b = frames[i + 1];
-      if (!a || !b) { row[i] = 0; continue; }
+      if (!a || !b) { turn[i] = 0; step[i] = 1; continue; }
       cross.crossVectors(a.tan, b.tan);
-      const ds = Math.max(1e-3, pts[i + 1].s - pts[i].s);
-      row[i] = Math.asin(clamp(cross.y, -1, 1)) / ds;
+      turn[i] = Math.asin(clamp(cross.y, -1, 1));
+      step[i] = Math.max(1e-3, pts[i + 1].s - pts[i].s);
     }
-    row.length = last;
+    turn.length = last;
+    step.length = last;
 
-    // Running maximum either side. Recomputed from `foldFrom` so that extending
-    // the road revisits the frames whose window now reaches further.
-    const from = Math.max(0, (this.foldFrom || 0) - FOLD_WINDOW);
+    // Prefix sums, so the windowed rate below is two subtractions rather than a
+    // second nested loop over `FOLD_SMOOTH`.
+    if (!this._turnSum) { this._turnSum = [0]; this._dsSum = [0]; }
+    const turnSum = this._turnSum;
+    const dsSum = this._dsSum;
+    for (let i = turnSum.length - 1; i < last; i++) {
+      turnSum[i + 1] = turnSum[i] + turn[i];
+      dsSum[i + 1] = dsSum[i] + step[i];
+    }
+    turnSum.length = last + 1;
+    dsSum.length = last + 1;
+
+    /**
+     * Turn rate at step `i`, averaged over `ROUTE.foldSmooth` steps either side.
+     *
+     * The single-step difference this replaces was reaching twice the design
+     * curvature on roughness alone, and the guard turned that straight into a
+     * terrain sheet that stopped 57 m from the road — bug #64. See
+     * `ROUTE.foldSmooth`.
+     */
+    const rateAt = (i) => {
+      const lo = Math.max(0, i - FOLD_SMOOTH);
+      const hi = Math.min(last, i + FOLD_SMOOTH + 1);
+      const ds = dsSum[hi] - dsSum[lo];
+      return ds > 1e-6 ? (turnSum[hi] - turnSum[lo]) / ds : 0;
+    };
+
+    // Running maximum either side, capped. Recomputed from `foldFrom` so that
+    // extending the road revisits the frames whose window now reaches further.
+    const from = Math.max(0, (this.foldFrom || 0) - FOLD_WINDOW - FOLD_SMOOTH);
     for (let i = from; i <= last; i++) {
       let l = 0;
       let r = 0;
       const lo = Math.max(0, i - FOLD_WINDOW);
-      const hi = Math.min(row.length - 1, i + FOLD_WINDOW);
+      const hi = Math.min(turn.length - 1, i + FOLD_WINDOW);
       for (let j = lo; j <= hi; j++) {
-        const k = row[j];
+        const k = rateAt(j);
         if (k > l) l = k;
         else if (-k > r) r = -k;
       }
@@ -542,6 +581,24 @@ export class RoadPath {
       if (f) { f.foldL = l; f.foldR = r; }
     }
     this.foldFrom = last;
+  }
+
+  /**
+   * How far the terrain sheet reaches either side at arc length `s`, metres.
+   *
+   * The inverse of the fold guard, and the honest answer to "where does the
+   * world end here" — which is a question with a different answer every few
+   * metres, and one that nothing used to ask. `CHUNK.recoverLateral` assumed a
+   * flat 300 m; measured across five seeds the sheet delivers anything from
+   * 73 m to `CHUNK.halfExtent`, depending on how hard the road is turning.
+   *
+   * @returns {{left: number, right: number}} distances from the centreline
+   */
+  corridorAt(s, out = { left: 0, right: 0 }) {
+    const f = this.frameAt(s, _reachFrame);
+    out.left = f.foldL > 1e-7 ? ROUTE.foldMargin / f.foldL : Infinity;
+    out.right = f.foldR > 1e-7 ? ROUTE.foldMargin / f.foldR : Infinity;
+    return out;
   }
 
 
@@ -689,6 +746,7 @@ export function makeFrame() {
 
 /** Scratch for `_buildFoldLimits`, which runs once per sample per extension. */
 const _foldCross = new THREE.Vector3();
+const _reachFrame = makeFrame();
 
 const _scratchFrame = makeFrame();
 const _v = new THREE.Vector3();

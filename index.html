@@ -694,55 +694,6 @@
   }
   #seed-input:focus { border-color: var(--accent-dim); }
 
-  /* ---- the route preview, now inside the World drawer -------------------- */
-
-  #terrain-box {
-    position: relative;
-    border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    overflow: hidden;
-    cursor: pointer;
-    background: rgba(8, 8, 12, 0.5);
-    transition: border-color 0.18s, box-shadow 0.18s;
-  }
-  #terrain-box:hover {
-    border-color: var(--accent-dim);
-    box-shadow: 0 6px 22px rgba(255, 180, 87, 0.18);
-  }
-  #terrain-canvas {
-    display: block;
-    width: 100%;
-    aspect-ratio: 16 / 7;
-    object-fit: cover;
-  }
-  .terrain-overlay {
-    position: absolute;
-    inset: auto 0 0 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: var(--s2);
-    padding: var(--s2) var(--s3);
-    background: linear-gradient(0deg, rgba(10, 9, 13, 0.92) 0%, transparent 100%);
-    pointer-events: none;
-  }
-  .reroll-tag {
-    font-size: var(--fs-xs);
-    letter-spacing: 0.14em;
-    color: var(--accent);
-    text-transform: uppercase;
-  }
-  .terrain-info,
-  .seed-badge {
-    font-size: var(--fs-xs);
-    letter-spacing: 0.1em;
-    color: var(--dim);
-    text-transform: uppercase;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
   /* ---- the commit row --------------------------------------------------- */
 
   #launch {
@@ -1135,6 +1086,19 @@
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
     transition: background 0.08s, transform 0.08s, border-color 0.08s, box-shadow 0.08s;
   }
+  /**
+   * TILT MODE. The two steering arrows go, and the recentre tap appears.
+   *
+   * Hidden rather than disabled, and the left pad collapses with them: two dead
+   * buttons under the player's left thumb are two buttons they will press, and
+   * a control that does nothing is worse than no control. `body.tilt` is set by
+   * `Game.toggleTilt` only after the sensor has actually been granted, so the
+   * arrows never disappear on a device that cannot replace them.
+   */
+  .tbtn-tilt { display: none; }
+  body.tilt .tbtn-tilt { display: grid; }
+  body.tilt .pad-left { visibility: hidden; pointer-events: none; }
+
   .tbtn:active, .tbtn.on {
     background: rgba(255, 180, 87, 0.38);
     border-color: rgba(255, 180, 87, 0.85);
@@ -1346,6 +1310,9 @@
     <button class="tbtn tbtn-sm" data-tap="KeyL" aria-label="Headlights">LT</button>
     <button class="tbtn tbtn-sm" data-hold="flash" aria-label="Flash">FL</button>
     <button class="tbtn tbtn-sm" data-tap="KeyR" aria-label="Respawn">RST</button>
+    <!-- Shown only while tilt steering is on: takes the phone's current
+         attitude as straight ahead. See input.js:TiltSteering. -->
+    <button class="tbtn tbtn-sm tbtn-tilt" data-tap="KeyT" aria-label="Centre tilt">&#8982;</button>
   </div>
 </div>
 
@@ -1455,13 +1422,6 @@
             <span id="mode-list" class="row-scroll"></span>
           </div>
           <div id="mode-hint" class="row-hint"></div>
-          <div id="terrain-box" role="button" tabindex="0" title="Click to generate a new world seed">
-            <canvas id="terrain-canvas" width="380" height="200"></canvas>
-            <div class="terrain-overlay">
-              <span class="reroll-tag">Re-roll route</span>
-              <span id="seed-badge" class="seed-badge"></span>
-            </div>
-          </div>
           <div class="garage-row">
             <span class="garage-label">Seed</span>
             <span class="row-wrap">

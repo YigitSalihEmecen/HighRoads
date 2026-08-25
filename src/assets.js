@@ -1,14 +1,11 @@
 /**
  * assets.js — loading and conditioning of the external art.
  *
- * Two very different pipelines meet here:
- *
- *   FOLIAGE (Quaternius Ultimate Nature Pack, OBJ).  The pack ships 150 models
- *   with an .mtl beside each one, but those .mtl files carry nothing except a
- *   flat diffuse colour drawn from a palette of ~18 names. Fetching 150 of them
- *   to recover 18 colours is pure latency, so the palette is inlined below and
- *   a small dedicated OBJ parser bakes `usemtl` straight into a vertex-colour
- *   attribute. One geometry, one material, no texture, ready to instance.
+ * CARS, AND NOTHING ELSE. There used to be a second pipeline in here — an OBJ
+ * parser and an inlined 18-colour palette for the Quaternius nature pack — and
+ * it is gone, along with the models. Everything the world is dressed with is
+ * now generated from code in `src/env/`, which means the whole of the external
+ * art in this project is the car pack in `assets/`.
  *
  *   CARS (FBX).  Every model is one body mesh plus four tyres named
  *   `*_FL_Tire` … `*_BR_Tire`, sharing a 512x512 palette atlas. The tyres are
@@ -21,170 +18,8 @@ import * as THREE from 'three';
 
 const CAR_DIR = 'assets/car_models/Fbx';
 const CAR_TEXTURE = 'assets/car_models/Fbx/Texture/Color.png';
-const FOLIAGE_DIR = 'assets/Forest_Assets/Ultimate Nature Pack by Quaternius/OBJ';
-
-/**
- * The pack's entire material vocabulary, lifted from the .mtl files and
- * converted from linear Kd to sRGB hex. Blender's exporter appends `.001`-style
- * suffixes to duplicate slots, so names are stripped before lookup.
- */
-const PALETTE = {
-  Berry: 0xa42830,
-  Black: 0x3b3b3b,
-  Coconuts: 0x7c554e,
-  Cyan: 0x007a7c,
-  DarkGreen: 0x3a4c30,
-  Green: 0x4a613d,
-  Leaves: 0x61574c,
-  LightOrange: 0xb08c51,
-  LightWood: 0x7c554c,
-  Mushroom_Bottom: 0x957f77,
-  Mushroom_Top: 0x61534e,
-  Orange: 0xa96f44,
-  Pink: 0xa45481,
-  Rock: 0x7a7d87,
-  Snow: 0xaaa1ad,
-  White: 0xbfc3bb,
-  Wood: 0x62433d,
-  Yellow: 0xa19154,
-};
-
-const FALLBACK_COLOR = 0x8a8a8a;
-const _c = new THREE.Color();
-
-function paletteColor(name) {
-  const base = String(name || '').replace(/\.\d+$/, '');
-  return PALETTE[base] !== undefined ? PALETTE[base] : FALLBACK_COLOR;
-}
-
-/* --------------------------------------------------------------- OBJ ----- */
-
-/**
- * Minimal OBJ reader, deliberately not three's OBJLoader: it produces a single
- * non-indexed geometry with the material colour already baked per-vertex, so a
- * whole tree is one draw call and one InstancedMesh regardless of how many
- * material groups the artist used.
- *
- * Handles the subset the pack actually emits: v / vn / usemtl / f, with faces
- * as `v`, `v/vt`, `v//vn` or `v/vt/vn`, triangles or quads.
- */
-export function parseOBJ(text) {
-  const V = [];
-  const N = [];
-  const pos = [];
-  const nrm = [];
-  const col = [];
-  let color = { r: 0.5, g: 0.5, b: 0.5 };
-
-  const pushVertex = (token) => {
-    // OBJ indices are 1-based and may be negative (relative to the end).
-    const parts = token.split('/');
-    let vi = parseInt(parts[0], 10);
-    vi = vi < 0 ? V.length / 3 + vi : vi - 1;
-    pos.push(V[vi * 3], V[vi * 3 + 1], V[vi * 3 + 2]);
-
-    if (parts[2]) {
-      let ni = parseInt(parts[2], 10);
-      ni = ni < 0 ? N.length / 3 + ni : ni - 1;
-      nrm.push(N[ni * 3], N[ni * 3 + 1], N[ni * 3 + 2]);
-    } else {
-      nrm.push(0, 0, 0);
-    }
-    col.push(color.r, color.g, color.b);
-  };
-
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.trim();
-    if (!line || line[0] === '#') continue;
-    const sp = line.indexOf(' ');
-    if (sp < 0) continue;
-    const key = line.slice(0, sp);
-    const rest = line.slice(sp + 1).trim();
-
-    if (key === 'v') {
-      const p = rest.split(/\s+/);
-      V.push(+p[0], +p[1], +p[2]);
-    } else if (key === 'vn') {
-      const p = rest.split(/\s+/);
-      N.push(+p[0], +p[1], +p[2]);
-    } else if (key === 'usemtl') {
-      // Convert through THREE.Color so the value lands in the renderer's
-      // working colour space rather than being written as raw sRGB.
-      _c.setHex(paletteColor(rest), THREE.SRGBColorSpace);
-      color = { r: _c.r, g: _c.g, b: _c.b };
-    } else if (key === 'f') {
-      const tokens = rest.split(/\s+/);
-      // Fan-triangulate: the pack uses triangles and quads only.
-      for (let i = 2; i < tokens.length; i++) {
-        pushVertex(tokens[0]);
-        pushVertex(tokens[i - 1]);
-        pushVertex(tokens[i]);
-      }
-    }
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  if (N.length) geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
-  else geo.computeVertexNormals();
-  return geo;
-}
-
-/**
- * Re-origins a prop so instancing is predictable: centred on X/Z, base sitting
- * exactly on y = 0. Without this, models with an arbitrary pivot float above
- * the terrain or sink into it.
- */
-function groundGeometry(geo) {
-  geo.computeBoundingBox();
-  const b = geo.boundingBox;
-  geo.translate(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2);
-  geo.computeBoundingBox();
-  geo.computeBoundingSphere();
-  return geo;
-}
 
 /* ------------------------------------------------------------- loaders --- */
-
-async function fetchText(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${url}`);
-  return res.text();
-}
-
-/**
- * Loads foliage models by name (no extension). Returns a Map of
- * name -> { geometry, height, radius }.
- *
- * Failures are tolerated per-model: a missing prop should thin the forest, not
- * stop the game from starting.
- */
-export async function loadFoliage(names, onProgress) {
-  const out = new Map();
-  let done = 0;
-
-  await Promise.all(
-    names.map(async (name) => {
-      try {
-        const text = await fetchText(`${FOLIAGE_DIR}/${encodeURIComponent(name)}.obj`);
-        const geo = groundGeometry(parseOBJ(text));
-        const b = geo.boundingBox;
-        out.set(name, {
-          geometry: geo,
-          height: b.max.y - b.min.y,
-          radius: Math.max(b.max.x - b.min.x, b.max.z - b.min.z) / 2,
-        });
-      } catch (err) {
-        console.warn(`[highroads] foliage "${name}" failed to load:`, err.message);
-      } finally {
-        if (onProgress) onProgress(++done, names.length);
-      }
-    })
-  );
-
-  return out;
-}
 
 /** The shared car atlas. Nearest filtering — it is a palette, not a picture. */
 export async function loadCarTexture() {

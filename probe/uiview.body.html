@@ -37,23 +37,10 @@ document.getElementById('v-world').textContent = 'Traffic · highroads-01';
 document.getElementById('v-settings').textContent = 'Auto · 62%';
 document.getElementById('v-pause-settings').textContent = 'Auto · 62%';
 document.getElementById('mode-hint').textContent = 'Points for near misses. One crash ends the run.';
-document.getElementById('seed-badge').textContent = 'highroads-01';
 document.getElementById('seed-input').value = 'highroads-01';
 document.getElementById('start').disabled = false;
 document.getElementById('start').textContent = 'Drive';
 document.getElementById('boot').textContent = '26 plants · 9 vehicles';
-// The route snapshot is a WebGL read-back in the real thing; stand it in.
-{
-  const c = document.getElementById('terrain-canvas');
-  const g = c.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, 0, c.height);
-  grad.addColorStop(0, '#7ba4ce'); grad.addColorStop(0.5, '#8e9a68'); grad.addColorStop(1, '#546b45');
-  g.fillStyle = grad; g.fillRect(0, 0, c.width, c.height);
-  g.strokeStyle = '#2a2a2e'; g.lineWidth = 14; g.beginPath();
-  g.moveTo(c.width * 0.42, c.height); g.quadraticCurveTo(c.width * 0.62, c.height * 0.5, c.width * 0.5, c.height * 0.36);
-  g.stroke();
-}
-
 // The settings panel, built the same way settings.js builds it.
 const body = document.getElementById('settings-body');
 const sec = (t) => { const d=document.createElement('div'); d.className='set-section'; d.textContent=t; body.append(d); };

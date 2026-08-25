@@ -182,8 +182,27 @@ export class ChaseCamera {
 
   cycle() {
     this.mode = (this.mode + 1) % CAM_MODES.length;
-    this.initialised = false; // snap position rather than sweep across the world
+    this.snap();
     return CAM_MODES[this.mode];
+  }
+
+  /**
+   * Cut to wherever the rig belongs, on the next frame.
+   *
+   * For DISCONTINUOUS car motion — a respawn, a recovery, a teleport — and it is
+   * not a nicety. The chase rig damps, and `dampTrack` reads the goal's own
+   * travel as a velocity to lead: a 12 m jump inside a 16 ms frame is a goal
+   * moving at 750 m/s, so the damper computes 79 m of lead and then spends the
+   * best part of a second crawling back from it. What that looks like on screen
+   * is a long sweeping move into place — which is to say, exactly like the
+   * title screen's fly-in, played every time the player presses R.
+   *
+   * A teleport has no travel to follow, so the honest answer is to stop
+   * following. `_seedGoals` runs on the next update and clears the bogus
+   * history with it.
+   */
+  snap() {
+    this.initialised = false;
   }
 
   update(dt, vehicle) {

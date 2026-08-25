@@ -78,7 +78,6 @@ highroads/
 | `util.js` | clamp/lerp/damp, PRNGs, `smin`/`smax`, string hash |
 | `score.js` | Near-miss scoring for Traffic mode — pure logic, no DOM |
 | `camera.js` | Three chase modes, FOV-by-speed |
-| `terrain-preview.js` | The route perspective drawn on the title screen |
 
 ### `src/env/` — everything the world is dressed with
 

@@ -12,8 +12,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 
 import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE } from './config.js';
-import { loadFoliage, loadCarTexture, loadCarModel } from './assets.js';
-import { foliageModelNames } from './foliage.js';
+import { loadCarTexture, loadCarModel } from './assets.js';
 import {
   CARS, CAR_COLORS, CAR_TRIM_COLORS, ENGINE_OPTIONS, DEFAULT_CAR, DEFAULT_TRIM,
   carById, colorById, trimColorById, buildCarParams
@@ -26,14 +25,13 @@ import { Traffic } from './traffic.js';
 import { RaycastVehicle } from './vehicle.js';
 import { ChaseCamera } from './camera.js';
 import { Powertrain } from './powertrain.js';
-import { Input } from './input.js';
+import { Input, TiltSteering } from './input.js';
 import { HUD } from './hud.js';
 import { createScene } from './scene.js';
 import { Wind } from './wind.js';
 import { TyreFX } from './fx.js';
 import { Settings } from './settings.js';
 import { ScoreRun } from './score.js';
-import { drawTerrainMap } from './terrain-preview.js';
 
 /**
  * The two ways to play. Zen is the original brief — an empty road, going
@@ -58,6 +56,13 @@ const START_S = 90;
 
 const IDLE_INPUT = { steer: 0, throttle: 0, brake: 0, handbrake: false };
 
+/**
+ * How far inside the terrain sheet's own edge the car is turned back, metres.
+ * See `_checkRecovery` — the corridor narrows as the road bends into a corner,
+ * so the boundary is moving toward a car driving beside it.
+ */
+const RECOVER_MARGIN = 12;
+
 export async function boot() {
   const bootEl = document.getElementById('boot');
   const startBtn = document.getElementById('start');
@@ -79,16 +84,12 @@ export async function boot() {
   const path = new RoadPath(terrain, startSeed);
 
   // ---- art -----------------------------------------------------------------
-  const names = foliageModelNames();
-  bootEl.textContent = `loading foliage 0/${names.length}…`;
-  const [foliage, carTexture] = await Promise.all([
-    loadFoliage(names, (done, total) => {
-      bootEl.textContent = `loading foliage ${done}/${total}…`;
-    }),
-    loadCarTexture(),
-  ]);
-
+  // The only art that is FETCHED is the cars. Everything the world is dressed
+  // with — ground cover, stone, the canopy, the understorey — is generated from
+  // code inside the ChunkManager's constructor; see `src/env/README.md`.
   bootEl.textContent = 'loading vehicles…';
+  const carTexture = await loadCarTexture();
+
   // All models up front — under a megabyte in total, and it means switching
   // cars in the menu is instant rather than a stall on every click.
   const models = new Map();
@@ -105,7 +106,7 @@ export async function boot() {
   if (!roster.length) throw new Error('no car models could be loaded');
 
   const chunks = new ChunkManager({
-    scene: gfx.scene, world, RAPIER, path, terrain, foliage,
+    scene: gfx.scene, world, RAPIER, path, terrain,
     // Grass cards are seen at a very grazing angle down the verge, which is the
     // one case anisotropic filtering exists for.
     anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
@@ -141,7 +142,9 @@ export async function boot() {
   buildDrawers(game);
   buildPauseMenu(game);
 
-  bootEl.textContent = `${foliage.size} plants · ${roster.length} vehicles`;
+  const plants = chunks.trees ? chunks.trees.library.size : 0;
+  const shrubs = chunks.bushes ? chunks.bushes.library.size : 0;
+  bootEl.textContent = `${plants} trees · ${shrubs} shrubs · ${roster.length} vehicles`;
   startBtn.disabled = false;
   startBtn.textContent = 'Drive';
 
@@ -150,6 +153,21 @@ export async function boot() {
   const begin = async () => {
     if (game.active) return;
     await game.powertrain.start(game.car());
+    /**
+     * Restore tilt steering, if the player had it last time.
+     *
+     * It has to happen HERE and not at boot: iOS only grants the orientation
+     * sensor inside a gesture, and this click is one. A player who has already
+     * granted it sees nothing — `requestPermission` resolves straight to
+     * "granted" for the rest of the session — and one who has since revoked it
+     * simply gets the buttons back, which is why the result is applied rather
+     * than assumed.
+     */
+    if (TiltSteering.remembered && !game.input.tilt.on) {
+      const ok = await game.input.tilt.enable();
+      document.body.classList.toggle('tilt', ok);
+      if (game.settings) game.settings.refresh();
+    }
     game.startRun();
   };
   window.addEventListener('resize', () => game.refreshTitleFraming());
@@ -171,22 +189,6 @@ function buildSeedBox(game) {
   const input = document.getElementById('seed-input');
   const apply = document.getElementById('seed-apply');
   const random = document.getElementById('seed-random');
-  const terrainBox = document.getElementById('terrain-box');
-  const terrainCanvas = document.getElementById('terrain-canvas');
-
-  /**
-   * The route snapshot is rendered ON DEMAND, not at boot.
-   *
-   * It lives inside a folded drawer now, and a canvas inside a collapsed grid
-   * row measures zero — `drawTerrainMap` sizes itself from the element's
-   * rectangle, so drawing it while the drawer is shut produces a picture at the
-   * fallback resolution that is then stretched over whatever size the drawer
-   * turns out to be. `buildDrawers` calls this when World is first opened.
-   */
-  game.drawRoutePreview = () => {
-    if (!terrainCanvas || !game.terrain || !game.path || !game.gfx) return;
-    drawTerrainMap(terrainCanvas, game.terrain, game.path, game.seed, game.gfx, game.chunks);
-  };
 
   if (!input) return;
 
@@ -204,12 +206,6 @@ function buildSeedBox(game) {
     input.value = Math.random().toString(36).slice(2, 10);
     go(input.value);
   });
-  if (terrainBox) {
-    terrainBox.addEventListener('click', () => {
-      input.value = Math.random().toString(36).slice(2, 10);
-      go(input.value);
-    });
-  }
   input.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Enter') go(input.value);
@@ -394,14 +390,7 @@ function wireDrawers(root, onOpen) {
 function buildDrawers(game) {
   const host = document.getElementById('drawers');
   if (!host) return;
-  let drewRoute = false;
-  wireDrawers(host, (key) => {
-    if (key === 'world' && !drewRoute) {
-      drewRoute = true;
-      // One frame, so the fold has a size to measure.
-      requestAnimationFrame(() => requestAnimationFrame(() => game.drawRoutePreview()));
-    }
-  });
+  wireDrawers(host, null);
 
   // The settings panel writes its own values; the drawer header mirrors them.
   // One delegated listener rather than a callback per control — every slider in
@@ -504,6 +493,8 @@ class Game {
     this.trip = 0;
 
     this._tmp = new THREE.Vector3();
+    /** Reused by `_checkRecovery`; see `path.corridorAt`. */
+    this._reach = { left: 0, right: 0 };
 
     /**
      * The pause key is bound here rather than going through `Input`.
@@ -646,14 +637,17 @@ class Game {
     this.setPaused(false);
     this.inGarage = false;
     this.cam.setTitle(false);
-    this.cam.beginIntro();
     this.hud.show();
     document.body.classList.add('driving');
     this.hud.setMode(this.mode);
     this.mountSettings('pause-settings-host');
     this.input.bindTouch(document);
     this.vehicle.setParked(false);
+    // BEFORE the fly-in. `respawn` snaps the camera (see there), and `update`
+    // tests `initialised` ahead of the fly-in — so a respawn afterwards would
+    // cut to the chase pose for one frame and then start the shot from it.
     this.respawn(this.carS);
+    this.cam.beginIntro();
     // A previous run's rubber has nothing to do with this one, and respawn puts
     // the car somewhere the old marks are not.
     this.fx.reset();
@@ -831,6 +825,21 @@ class Game {
 
   // -------------------------------------------------------------- respawn --
 
+  /**
+   * Puts the car back on the road, and CUTS the camera there.
+   *
+   * The cut is the point. A respawn moves the car by anything from twelve
+   * metres to half a kilometre in one frame, and the chase rig is a damper that
+   * reads the goal's own travel as a velocity to lead — so a teleport used to
+   * send it swooping across the world into place over the best part of a
+   * second. That move is the title screen's fly-in, and the fly-in belongs to
+   * one thing only: the Drive button. See `camera.snap`.
+   *
+   * `startRun` therefore respawns BEFORE it calls `beginIntro`, because
+   * `update` tests `initialised` before it tests the fly-in, and a snap
+   * requested afterwards would eat the first frame of the shot and then start
+   * it from the wrong place.
+   */
   respawn(atS = this.carS) {
     // Never behind the start of the spline — there is no terrain back there.
     const s = Math.max(START_S, atS);
@@ -847,6 +856,7 @@ class Game {
       this.powertrain.reset(this.inGarage ? 0 : 1);
     }
     this.carS = s;
+    if (this.cam) this.cam.snap();
   }
 
   // ----------------------------------------------------------------- loop --
@@ -1058,10 +1068,50 @@ class Game {
       else if (!this.powertrain.shiftDown()) this.hud.toast('would over-rev');
     }
     if (this.input.consume('KeyG')) this.setAutoShift(!this.powertrain.autoShift);
+    if (this.input.consume('KeyT')) {
+      // Recentre: whatever attitude the phone is at right now is straight
+      // ahead. Nobody holds a phone at the angle they started at five minutes
+      // in, and without this the only cure for a drifting neutral is to turn
+      // tilt off and on again.
+      if (this.input.tilt.on) {
+        this.input.tilt.recentre();
+        this.hud.toast('tilt centred');
+      }
+    }
     if (this.input.consume('KeyL')) {
       this.headlights = !this.headlights;
       this.hud.toast(this.headlights ? 'headlights on' : 'headlights off');
     }
+  }
+
+  /**
+   * Turns tilt steering on or off, and remembers the choice.
+   *
+   * Called from the Settings button, which is the tap iOS needs — see
+   * `input.js:TiltSteering.enable`. Everything here has to survive the player
+   * saying no, the page not being on HTTPS, and the device having no sensor,
+   * because all three come back as the same "false" and none of them is an
+   * error worth a stack trace.
+   */
+  async toggleTilt() {
+    const tilt = this.input.tilt;
+    if (tilt.on) {
+      tilt.disable();
+      document.body.classList.remove('tilt');
+      this.hud.toast('button steering');
+    } else {
+      const ok = await tilt.enable();
+      document.body.classList.toggle('tilt', ok);
+      this.hud.toast(ok ? 'tilt steering — hold the phone level' : 'tilt unavailable');
+      if (!ok) {
+        if (this.settings) this.settings.refresh();
+        this.refreshSummaries();
+        return;
+      }
+    }
+    TiltSteering.remember(tilt.on);
+    if (this.settings) this.settings.refresh();
+    this.refreshSummaries();
   }
 
   setAutoShift(on) {
@@ -1080,8 +1130,29 @@ class Game {
     if (!this.active) return;
     const v = this.vehicle;
 
-    const lateral = Math.abs(this.path.lateralOffset(v.pos, this.carS));
+    const offset = this.path.lateralOffset(v.pos, this.carS);
+    const lateral = Math.abs(offset);
     const groundY = this.chunks.groundAt(this.carS, 0, this._tmp).y;
+
+    /**
+     * Where the world ACTUALLY ends on this side, here.
+     *
+     * `CHUNK.recoverLateral` is a flat 300 m and the terrain sheet is not: the
+     * fold guard pulls its outer edge in wherever the road turns, to as little
+     * as `ROUTE.foldMinReach`. Recovering at the constant meant the car reached
+     * the edge, drove off it, and then had to fall ninety metres before
+     * anything noticed — bug #64, and it is the reason the ground appeared to
+     * have holes in it. Asking the road how wide its own corridor is here costs
+     * one frame lookup and catches the car on the right side of the edge.
+     *
+     * `RECOVER_MARGIN` is slack for the car's own length and for the fact that
+     * the corridor narrows as you drive into a bend: without it, a car running
+     * parallel to the edge crosses it before the check next reads a smaller
+     * number.
+     */
+    const reach = this.path.corridorAt(this.carS, this._reach);
+    const edge = offset < 0 ? reach.left : reach.right;
+    const bound = Math.min(CHUNK.recoverLateral, edge - RECOVER_MARGIN);
 
     // Beached: full throttle, no progress. Happens when the car ends up on a
     // cut face too steep to climb, where nothing else in this check fires — it
@@ -1094,7 +1165,7 @@ class Game {
 
     const flipped = v.upsideDownFor > 2.5;
     const stuck = this.stuckFor > 4;
-    const offWorld = lateral > CHUNK.recoverLateral || v.pos.y < groundY - 90;
+    const offWorld = lateral > bound || v.pos.y < groundY - 90;
 
     if (flipped || offWorld || stuck) {
       this.respawn(this.carS - 12);

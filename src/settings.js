@@ -21,6 +21,8 @@
  * swallows key events that reach it.
  */
 
+import { TiltSteering } from './input.js';
+
 /**
  * The buses worth a slider.
  *
@@ -115,6 +117,19 @@ export class Settings {
     this.camBtn = this._button('Camera: chase', () => {
       this.camBtn.textContent = 'Camera: ' + this.game.cam.cycle();
     });
+    /**
+     * Tilt steering, and this button is the PERMISSION GESTURE.
+     *
+     * iOS Safari will only hand over the orientation sensor from inside a tap
+     * (see `input.js:TiltSteering`), which is the same rule the audio lives
+     * under. Doing it here rather than on the Drive button is deliberate: a
+     * first-time player should not meet an operating-system permission dialog
+     * on their way into the game, and a control they chose to press is a much
+     * better place to ask.
+     */
+    if (TiltSteering.supported) {
+      this.tiltBtn = this._button('Steering: buttons', () => this.game.toggleTilt());
+    }
 
     this._section('Audio');
     this.master = this._slider('Master', 'overall level', 0, 1, pt.volume, (v) => pt.setVolume(v));
@@ -145,6 +160,11 @@ export class Settings {
     if (this.autoBtn) {
       this.autoBtn.textContent = 'Gearbox: ' + (pt.autoShift ? 'auto' : 'manual');
       this.autoBtn.classList.toggle('on', !pt.autoShift);
+    }
+    if (this.tiltBtn) {
+      const on = !!(this.game.input && this.game.input.tilt.on);
+      this.tiltBtn.textContent = 'Steering: ' + (on ? 'tilt' : 'buttons');
+      this.tiltBtn.classList.toggle('on', on);
     }
     if (this.master) {
       this.master.input.value = String(pt.volume);
