@@ -4,24 +4,24 @@ An infinite procedural driving experience in the browser built with **Three.js**
 
 No build step, no bundlers, no dependencies — pure modern ES modules running statically in the browser.
 
-### 🎮 [Play HighRoads in your Browser](https://yigitsalihemecen.github.io/HighRoads/)
+### [Play HighRoads in your Browser](https://yigitsalihemecen.github.io/HighRoads/)
 
 ---
 
-## ✨ Features & What's Implemented
+## Features & What's Implemented
 
-- 🛣️ **Infinite Procedural World** — Seamless road and terrain generation in road space with cut-and-fill carving, dynamic tunnels, and 6 blended biomes (plains, hills, valleys, mountains, canyons, and plateaus) seeded from any string.
-- 🏎️ **Raycast Vehicle Physics** — Rigid-body dynamics powered by Rapier3D (WebAssembly) with 4-wheel independent raycast suspension, Magic Formula tyre friction, anti-roll coupling, downforce, aerodynamic drag, and counter-steer assists.
-- 🔊 **Physical Engine Simulation & Acoustics** — Directly bridged with [`Engine_Sim`](https://github.com/YigitSalihEmecen/Engine_Sim); the engine simulator *is* the actual drivetrain calculating propshaft torque, clutch slip, gearing, and procedural sound synthesis across 16 engine configurations.
-- 🚘 **Vehicle Roster & Swaps** — 9 vehicle types (Sport, Muscle, Classic, Hatchback, Police, Pickup, Van, Military, Monster Truck) with custom paint swatches, engine swaps, and automatic/manual transmissions.
-- 🌲 **Procedural Environment** — Multi-tier ground cover, rock scatter, and biome-aware foliage generation.
-- 🚦 **Traffic & Game Modes** — Choose between a relaxing **Zen** cruise or high-stakes **Traffic** mode with near-miss scoring, multiplier chains, and impact physics.
-- 📱 **Desktop & Mobile Optimized** — Responsive layouts supporting keyboard, gamepad, and touch controls with safe-area support for mobile portrait and landscape.
-- 🌅 **Atmospheric Visuals** — Procedural sky with animated clouds, golden-hour lighting, exponential fog, bloom, and speed blur.
+- **Infinite Procedural World** — Seamless road and terrain generation in road space with cut-and-fill carving, dynamic tunnels, and 6 blended biomes (plains, hills, valleys, mountains, canyons, and plateaus) seeded from any string.
+- **Raycast Vehicle Physics** — Rigid-body dynamics powered by Rapier3D (WebAssembly) with 4-wheel independent raycast suspension, Magic Formula tyre friction, anti-roll coupling, downforce, aerodynamic drag, and counter-steer assists.
+- **Physical Engine Simulation & Acoustics** — Directly bridged with [`Engine_Sim`](https://github.com/YigitSalihEmecen/Engine_Sim); the engine simulator *is* the actual drivetrain calculating propshaft torque, clutch slip, gearing, and procedural sound synthesis across 16 engine configurations.
+- **Vehicle Roster & Swaps** — 9 vehicle types (Sport, Muscle, Classic, Hatchback, Police, Pickup, Van, Military, Monster Truck) with custom paint swatches, engine swaps, and automatic/manual transmissions.
+- **Procedural Environment** — Multi-tier ground cover, rock scatter, and biome-aware foliage generation.
+- **Traffic & Game Modes** — Choose between a relaxing **Zen** cruise or high-stakes **Traffic** mode with near-miss scoring, multiplier chains, and impact physics.
+- **Desktop & Mobile Optimized** — Responsive layouts supporting keyboard, gamepad, and touch controls with safe-area support for mobile portrait and landscape.
+- **Atmospheric Visuals** — Procedural sky with animated clouds, golden-hour lighting, exponential fog, bloom, and speed blur.
 
 ---
 
-## 🕹️ Controls
+## Controls
 
 | Key | Action |
 |---|---|
@@ -41,7 +41,7 @@ No build step, no bundlers, no dependencies — pure modern ES modules running s
 
 ---
 
-## 🚀 Running Locally
+## Running Locally
 
 Because ES modules and WebAssembly require a standard HTTP origin, serve the folder with any static web server:
 
