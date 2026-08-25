@@ -22,13 +22,15 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROUTE, GRASS, GROUND, ROCKS, TERRAIN_COLORS } from './config.js';
+import { CHUNK, ROAD, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, TERRAIN_COLORS } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
-import { FOLIAGE, FOLIAGE_GROUPS, GROUP_OF, suitability } from './foliage.js';
+import { FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability } from './foliage.js';
 import { makeFrame } from './path.js';
 import { createGrassAssets } from './env/grass.js';
 import { createGroundAssets } from './env/ground.js';
 import { createRockAssets } from './env/rocks.js';
+import { createTreeAssets } from './env/trees.js';
+import { createBushAssets } from './env/bushes.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const ROAD_LIFT = 0.035;
@@ -206,12 +208,10 @@ function foldSafeOffset(v, foldL, foldR) {
 /* ------------------------------------------------------------------------- */
 
 export class ChunkManager {
-  constructor({ scene, world, RAPIER, path, terrain, foliage, anisotropy = 1 }) {
+  constructor({ scene, world, RAPIER, path, terrain, anisotropy = 1 }) {
     this.scene = scene;
-    /** Texture filtering budget, from the renderer. Grass is the only user. */
+    /** Texture filtering budget, from the renderer. The plants are the users. */
     this.anisotropy = anisotropy;
-    /** Map of model name -> { geometry, height } from assets.loadFoliage. */
-    this.foliage = foliage || new Map();
     this.world = world;
     this.RAPIER = RAPIER;
     this.path = path;
@@ -257,6 +257,15 @@ export class ChunkManager {
      * list because they ask the same question.
      */
     this._foreign = { s: NaN, n: 0, list: [] };
+    /**
+     * Reused by every call to `foliage.js:vegetation`. The grass scatter asks
+     * it once per terrain cell and there are five thousand cells a chunk, so an
+     * allocation here is tens of thousands of objects handed to the collector
+     * every time a chunk streams in.
+     */
+    this._field = {};
+    /** Coarse field cache, cleared per grass chunk. See `_buildGrass`. */
+    this._coverMemo = new Map();
     // The terrain palette, allocated once — _groundColor runs per vertex on
     // every chunk and per tuft on tens of thousands of tufts.
     this._grassLow = new THREE.Color(TERRAIN_COLORS.grassLow);
@@ -287,6 +296,8 @@ export class ChunkManager {
      */
     /** Chunks waiting for their stone. Same lifetime rule as the grass. */
     this.rockQueue = [];
+    /** And for their grown canopy — shorter still. See `_updateCanopy`. */
+    this.canopyQueue = [];
     this.grassTiers = [];
     if (this.grass) {
       this.grassTiers.push({
@@ -338,6 +349,8 @@ export class ChunkManager {
   advanceTime(dt) {
     this.time += dt;
     if (this.grass) this.grass.setTime(this.time);
+    if (this.trees) this.trees.setTime(this.time);
+    if (this.bushes) this.bushes.setTime(this.time);
   }
 
   // ------------------------------------------------------------- materials --
@@ -361,15 +374,14 @@ export class ChunkManager {
       polygonOffsetUnits: -2,
     });
 
-    // Every Quaternius model carries its colour in a vertex attribute (baked
-    // from the .mtl palette at load), so the entire forest — trunks, leaves,
-    // berries, moss, stone — shares exactly one material.
-    this.matFoliage = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.92,
-      metalness: 0.0,
-      flatShading: false,
-    });
+    /**
+     * The canopy and the understorey. Both are grown from code at boot; see
+     * `env/trees.js`. Null where switched off, and — like the grass — they come
+     * back texture-less rather than throwing where there is no canvas, so the
+     * headless probes run the real scatter without pixels.
+     */
+    this.trees = TREES.enabled ? createTreeAssets({ anisotropy: this.anisotropy }) : null;
+    this.bushes = BUSHES.enabled ? createBushAssets({ anisotropy: this.anisotropy }) : null;
 
 
     /**
@@ -630,17 +642,26 @@ export class ChunkManager {
     // The spline must exist before the chunk that samples it does.
     this.path.ensureLength((hi + 2) * CHUNK.length);
 
+    // Keep queued work scoped to the current window. Stale requests otherwise
+    // survive a fast transition and consume the build budget before the new
+    // window is filled, leaving visible holes behind the car.
+    this.pending = this.pending.filter((i) => i >= lo && i <= hi && !this.chunks.has(i));
     for (let i = lo; i <= hi; i++) {
       if (!this.chunks.has(i) && !this.pending.includes(i)) this.pending.push(i);
     }
 
-    // Nearest-first, so a teleport or a respawn fills the visible gap first.
-    this.pending.sort((a, b) => Math.abs(a - center) - Math.abs(b - center));
+    // Nearest-first, with the current chunk explicitly first. This guarantees
+    // a teleport or recovery gets a collidable surface before filling the
+    // surrounding look-ahead window.
+    this.pending.sort((a, b) => {
+      const da = a === center ? -1 : Math.abs(a - center);
+      const db = b === center ? -1 : Math.abs(b - center);
+      return da - db;
+    });
 
     let built = 0;
     while (this.pending.length && built < budget) {
       const i = this.pending.shift();
-      if (i < lo || i > hi) continue;
       this._build(i);
       built++;
     }
@@ -661,6 +682,8 @@ export class ChunkManager {
         }
         const r = this.rockQueue.indexOf(i);
         if (r >= 0) this.rockQueue.splice(r, 1);
+        const c = this.canopyQueue.indexOf(i);
+        if (c >= 0) this.canopyQueue.splice(c, 1);
       }
     }
 
@@ -669,11 +692,17 @@ export class ChunkManager {
     // landing that in the same frame as a terrain build is the frame spike
     // bug #51 exists to keep the car's motion honest through.
     if (!built) {
+      // The canopy first: it is the tier whose absence is a hole in the world
+      // rather than a patch of missing detail, and it is by far the cheapest of
+      // the three to build — the scatter already ran, so this is only turning
+      // cached matrices into an InstancedMesh.
+      this._updateCanopy(carS, 1);
       this._updateGrass(carS, GRASS.buildPerFrame);
       this._updateRocks(carS, 1);
     } else {
       // Eviction still has to run every frame, or a chunk that left the window
       // keeps its cover until something else happens to trigger a build.
+      this._updateCanopy(carS, 0);
       this._updateGrass(carS, 0);
       this._updateRocks(carS, 0);
     }
@@ -683,7 +712,11 @@ export class ChunkManager {
   preload(carS, count = CHUNK.preload) {
     const center = Math.floor(carS / CHUNK.length);
     this.path.ensureLength((center + count + 2) * CHUNK.length);
-    for (let i = Math.max(0, center - 1); i < center + count; i++) {
+    const lo = Math.max(0, center - CHUNK.behind);
+    const hi = center + CHUNK.ahead;
+    // Preload the same window update() maintains. Loading fewer chunks leaves
+    // large terrain sections absent while the first-frame queue catches up.
+    for (let i = lo; i <= Math.min(hi, lo + count - 1); i++) {
       if (!this.chunks.has(i)) this._build(i);
     }
     // Nothing is on screen yet, so the whole backlog can be paid up front.
@@ -710,9 +743,11 @@ export class ChunkManager {
     this.chunks.clear();
     this.pending.length = 0;
     this.propQueue.length = 0;
+    this.canopyQueue.length = 0;
 
-    for (const m of [this.matRoad, this.matFoliage]) m.dispose();
-    for (const f of this.foliage.values()) f.geometry.dispose();
+    this.matRoad.dispose();
+    if (this.trees) this.trees.dispose();
+    if (this.bushes) this.bushes.dispose();
     if (this.ground) this.ground.dispose();
     if (this.grass) this.grass.dispose();
     if (this.rocks) this.rocks.dispose();
@@ -780,6 +815,13 @@ export class ChunkManager {
         positions: terrainData.positions,
         colors: terrainData.colors,
       },
+      /**
+       * The near canopy's RECIPE — matrices and colours per species, computed
+       * once by `_buildProps` — and the meshes built from it, which come and go
+       * with the car. See `_updateCanopy`.
+       */
+      canopySpec: null,
+      canopy: null,
       /** The live ground-cover meshes, or null. They come and go with the car. */
       grass: null,
       grassFar: null,
@@ -1136,173 +1178,470 @@ export class ChunkManager {
   // ---------------------------------------------------------------- props --
 
   /**
-   * Scatters vegetation across the chunk.
+   * Scatters the canopy and the understorey across one chunk.
    *
-   * Species are chosen per-sample by weighted suitability (see foliage.js),
-   * which reads altitude, slope, distance from the road and the biome mask.
-   * That is what makes a hillside change from willows in the valley through
-   * mixed broadleaf to pines and finally bare rock at the treeline, instead of
-   * scattering one uniform forest everywhere.
+   * ── what "intentional" means here ───────────────────────────────────────────
+   *
+   * The previous scatter drew a point, asked which species could live there,
+   * and placed one. That is a correct ecology and it produces a wash: trees
+   * everywhere the rules allow, at an even density, which reads as a field of
+   * scenery objects rather than as woodland. Three things change that, and none
+   * of them is a density number.
+   *
+   *   STANDS, NOT TREES. Most of what gets placed is drawn near one of a handful
+   *   of cluster seeds rather than independently. Independent draws give a
+   *   Poisson field — statistically even, which is exactly the look being
+   *   avoided. This is the standard density-map-plus-clustering answer and it
+   *   is the single biggest lever in the file.
+   *
+   *   A STAND IS A SPECIES. Each cluster commits to one species and draws
+   *   `TREES.clusterSpecies` of its members from it. This matters more than the
+   *   clumping does: real copses are monocultures at that scale — a birch wood
+   *   is birches — and a clump of six different trees is a clump, not a stand.
+   *
+   *   SEEDS GO WHERE THE FIELD IS STRONG. A cluster centre is rejected unless
+   *   the canopy density there is real, so stands land on the ground that
+   *   suits them instead of being scattered and then thinned.
+   *
+   * The understorey then hangs off the EDGE signal — see `foliage.js` — so a
+   * wood grows its own fringe, which is most of what stops a tree line reading
+   * as a wall.
+   *
+   * ── what it costs ──────────────────────────────────────────────────────────
    *
    * Draw calls are the binding constraint: an InstancedMesh exists per (chunk,
-   * model), so each chunk commits to ONE concrete model per species up front,
-   * seeded from its own index. Neighbouring chunks draw different models, so
-   * the world still varies while the batch count stays bounded.
+   * geometry), so each chunk commits up front to `TREES.picks` species and ONE
+   * variant of each, seeded from its own index. Neighbouring chunks draw
+   * different variants, so the world still varies while the batch count stays
+   * bounded at `picks * 2 + BUSHES.picks`.
+   *
+   * Every tree is placed TWICE — once as grown geometry and once as a
+   * four-triangle impostor — and the shader shrinks whichever one is wrong for
+   * the distance to nothing. That sounds wasteful and is not: the impostor
+   * costs four triangles and one matrix, and the alternative is deciding the
+   * level of detail on the CPU every frame for every instance, per camera
+   * position, which is the thing instancing exists to avoid.
    */
   _buildProps(index, s0, s1, origin) {
-    // Both tests, deliberately. The library is empty when `CHUNK.trees` is off
-    // because `foliageModelNames` returned nothing — but a caller that supplies
-    // its own foliage map (the probes do) would sail straight past that, and
-    // the switch has to mean the same thing everywhere.
-    if (!CHUNK.trees || this.foliage.size === 0) return [];
+    if (!this.trees && !this.bushes) return [];
+    // The scatter reads the chunk's own terrain sheet, so the chunk has to have
+    // one. It always does — `_build` queues the props after writing it — and
+    // returning empty rather than throwing keeps a caller that reorders the two
+    // from taking the world down with it.
+    const chunk = this.chunks.get(index);
+    if (!chunk || !chunk.sheet) return [];
 
     // Seeded per chunk: a chunk unloaded and reloaded comes back identical, so
     // scenery does not reshuffle itself in the mirror.
     const rng = mulberry32(hashInt(index) ^ 0x9e3779b9);
     const out = [];
 
-    // Commit to a handful of species, and one concrete model for each. Both
-    // choices are seeded from the chunk index, so this is stable across reloads
-    // and different for every chunk.
-    const chosen = new Map();
-    for (const def of Object.values(FOLIAGE_GROUPS)) {
-      const pool = def.members.filter((n) =>
-        FOLIAGE[n].models.some((m) => this.foliage.has(m))
+    const p = new THREE.Vector3();
+    const field = this._field;
+
+    /**
+     * Where the ground is, read out of the sheet the renderer draws.
+     *
+     * THIS IS THE 591-MILLISECOND LESSON, and it is worth restating because
+     * this scatter learned it the same way the grass did. The obvious version
+     * asks `meshGroundPoint` — the honest answer, four road frames and four
+     * analytic ground samples, every one an fBm evaluation — and at two
+     * thousand samples a chunk that measured 62 ms. Halving the samples and
+     * halving the probes got it to 33. It is not a slow function; it is the
+     * right function asked far too often, about a surface the chunk builder
+     * answered ten milliseconds earlier and wrote into a buffer.
+     *
+     * So this reads that buffer, exactly as `_buildGrass` does: find the cell,
+     * interpolate its corners over the same diagonal with the same winding, and
+     * take the slope from the corner heights for four subtractions. There is no
+     * noise evaluation left in the loop at all, the result is MORE correct than
+     * the original — a tree is on the surface the renderer draws, by
+     * construction rather than by agreement — and the whole two-phase
+     * cheap-then-exact dance it replaces is unnecessary, because the cheap
+     * answer and the exact answer are now the same answer.
+     *
+     * Positions come back ORIGIN-RELATIVE, because that is how the sheet stores
+     * them. `_setLocalMatrix` is the one that takes them; handing them to
+     * `_setMatrix` subtracts the origin twice and puts the tree a chunk-length
+     * away. Trap #19.
+     */
+    const nv = this.lateral.length;
+    const nu = CHUNK.segmentsU;
+    const rowLen = (s1 - s0) / nu;
+    const lat = this.lateral;
+    const { positions } = chunk.sheet;
+
+    /** @returns {number} slope at (s, v); `p` is left holding the position. */
+    const look = (s, v) => {
+      const fj = clamp((s - s0) / rowLen, 0, nu - 1e-4);
+      const j = Math.floor(fj);
+      const fu = fj - j;
+
+      // Column by binary search — `lateral` is strictly increasing.
+      let lo = 0, hi = nv - 2;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (lat[mid] <= v) lo = mid; else hi = mid - 1;
+      }
+      const i = lo;
+      const width = lat[i + 1] - lat[i];
+      const fv = width > 1e-6 ? clamp((v - lat[i]) / width, 0, 1) : 0;
+
+      const a = j * nv + i;
+      const b = a + 1;
+      const c = a + nv;
+      const d = c + 1;
+
+      // The same split as `_buildTerrain`'s index order: a,b,c then b,d,c.
+      let i0, i1, i2, w0, w1, w2;
+      if (fu + fv <= 1) {
+        i0 = a; i1 = b; i2 = c;
+        w1 = fv; w2 = fu; w0 = 1 - fv - fu;
+      } else {
+        i0 = b; i1 = d; i2 = c;
+        w1 = fu + fv - 1; w2 = 1 - fv; w0 = 1 - w1 - w2;
+      }
+      p.set(
+        positions[i0 * 3] * w0 + positions[i1 * 3] * w1 + positions[i2 * 3] * w2,
+        positions[i0 * 3 + 1] * w0 + positions[i1 * 3 + 1] * w1 + positions[i2 * 3 + 1] * w2,
+        positions[i0 * 3 + 2] * w0 + positions[i1 * 3 + 2] * w1 + positions[i2 * 3 + 2] * w2
       );
-      // Seeded shuffle, then take the group's quota.
+
+      const ya = positions[a * 3 + 1];
+      const gv = (positions[b * 3 + 1] - ya) / Math.max(1e-4, width);
+      const gu = (positions[c * 3 + 1] - ya) / rowLen;
+      return Math.hypot(gu, gv);
+    };
+
+    /**
+     * Picks `count` species from `names`, seeded, and one variant of each.
+     * Returns a Map of species -> proto index.
+     */
+    const commit = (names, library, count) => {
+      const pool = names.filter((n) => library.has(n));
       for (let i = pool.length - 1; i > 0; i--) {
         const j = Math.floor(rng() * (i + 1));
         [pool[i], pool[j]] = [pool[j], pool[i]];
       }
-      for (const name of pool.slice(0, def.picks)) {
-        const models = FOLIAGE[name].models.filter((m) => this.foliage.has(m));
-        chosen.set(name, models[Math.floor(rng() * models.length)]);
+      const chosen = new Map();
+      for (const name of pool.slice(0, count)) {
+        chosen.set(name, Math.floor(rng() * library.get(name).length));
       }
-    }
+      return chosen;
+    };
 
-    /** modelName -> { matrices, canopy } */
+    /** geometryKey -> { geometry, material, matrices, colours, shadow } */
     const batches = new Map();
-    const kinds = Object.entries(FOLIAGE).filter(([n]) => chosen.has(n));
-    // Triangle budget, enforced per group rather than per species.
-    const placed = {};
-    for (const g of Object.keys(FOLIAGE_GROUPS)) placed[g] = 0;
+    /** species -> the near tier's recipe, handed to the chunk record. */
+    const canopy = new Map();
+    const push = (key, geometry, material, matrix, colour, shadow) => {
+      let b = batches.get(key);
+      if (!b) {
+        b = { geometry, material, matrices: [], colours: [], shadow };
+        batches.set(key, b);
+      }
+      b.matrices.push(matrix.clone());
+      b.colours.push(colour.r, colour.g, colour.b);
+    };
 
-    // Cluster seeds for this chunk, placed where the forest field is strong.
-    const clusters = [];
-    for (let i = 0; i < CHUNK.clusterCount; i++) {
-      const cs = lerp(s0, s1, rng());
-      const cv = (rng() < 0.5 ? -1 : 1) * lerp(10, CHUNK.propExtent * 0.75, Math.sqrt(rng()));
-      const cp = this.groundAt(cs, cv, new THREE.Vector3());
-      if (this.terrain.forestDensity(cp.x, cp.z) < 0.25) continue;
-      clusters.push({ s: cs, v: cv, r: lerp(14, 38, rng()) });
+    // ---- the canopy ------------------------------------------------------
+
+    if (this.trees) {
+      const chosen = commit(TREE_NAMES, this.trees.library, TREES.picks);
+      const kinds = [...chosen.keys()];
+
+      /**
+       * Cluster seeds, placed where the canopy field is already strong and each
+       * committed to one species. A seed that lands in a clearing is dropped
+       * rather than moved: the clearings are the point.
+       */
+      const clusters = [];
+      for (let i = 0; i < TREES.clusterCount && kinds.length; i++) {
+        const cs = lerp(s0, s1, rng());
+        const cv = (rng() < 0.5 ? -1 : 1) *
+          lerp(CHUNK.plantClear + 6, 165, Math.sqrt(rng()));
+        const cslope = look(cs, cv);
+        vegetation(this.terrain, p.x + origin.x, p.z + origin.z,
+          p.y + origin.y - this.terrain.continent(p.x + origin.x, p.z + origin.z),
+          cslope, Math.abs(cv), field);
+        if (field.canopy < 0.22) continue;
+        clusters.push({
+          s: cs,
+          v: cv,
+          r: lerp(TREES.clusterRadius[0], TREES.clusterRadius[1], rng()),
+          species: kinds[Math.floor(rng() * kinds.length)],
+        });
+      }
+
+      const weights = new Array(kinds.length);
+      let placed = 0;
+      let far = 0;
+
+      for (let n = 0; n < TREES.samples; n++) {
+        if (placed >= TREES.nearCap && far >= TREES.farCap) break;
+
+        let s, v, home = null;
+        if (clusters.length && rng() < TREES.clusterShare) {
+          home = clusters[Math.floor(rng() * clusters.length)];
+          // Gaussian-ish about the seed: two uniforms averaged. A flat disc has
+          // a hard edge and a stand does not.
+          s = home.s + (rng() + rng() - 1) * home.r;
+          v = home.v + (rng() + rng() - 1) * home.r;
+          if (s < s0 || s > s1) continue;
+        } else {
+          s = lerp(s0, s1, rng());
+          const side = rng() < 0.5 ? -1 : 1;
+          // sqrt biases toward the road: a uniform draw over a 165 m band puts
+          // almost nothing where the player can actually see it.
+          v = side * lerp(CHUNK.plantClear, 165, Math.sqrt(rng()));
+        }
+        const lateral = Math.abs(v);
+        if (lateral < CHUNK.plantClear || lateral > 165) continue;
+
+        const av = lateral;
+        const slope = look(s, v);
+        const wx = p.x + origin.x, wy = p.y + origin.y, wz = p.z + origin.z;
+        const relief = wy - this.terrain.continent(wx, wz);
+        vegetation(this.terrain, wx, wz, relief, slope, av, field);
+        // The stand mask gates the canopy and nothing else, so a clearing keeps
+        // its scrub and its grass.
+        if (rng() > field.canopy) continue;
+
+        // Weighted pick across every committed species that will grow here,
+        // with the cluster's own species heavily favoured.
+        let total = 0;
+        for (let k = 0; k < kinds.length; k++) {
+          const name = kinds[k];
+          let w = suitability(FOLIAGE[name], field, relief, slope, av) *
+            FOLIAGE[name].weight;
+          if (home) {
+            w *= name === home.species
+              ? 1 + TREES.clusterSpecies * 6
+              : 1 - TREES.clusterSpecies * 0.85;
+          }
+          weights[k] = w;
+          total += w;
+        }
+        if (total <= 0) continue;
+
+        let pick = rng() * total;
+        let ki = 0;
+        for (; ki < kinds.length; ki++) {
+          pick -= weights[ki];
+          if (pick <= 0) break;
+        }
+        if (ki >= kinds.length) continue;
+
+        const name = kinds[ki];
+        const kind = FOLIAGE[name];
+        const variant = this.trees.library.get(name)[chosen.get(name)];
+
+        // Height in metres. The protos are normalised to unit height, so the
+        // scale IS the height and nothing has to know how tall the archetype
+        // happened to grow.
+        const height = lerp(kind.height[0], kind.height[1], rng() * rng() + 0.15);
+        // Slight non-uniform squash, so a repeated variant does not read as a
+        // row of clones.
+        const wobble = 0.88 + rng() * 0.24;
+        const yaw = rng() * Math.PI * 2;
+
+        // Tint from the ground it stands in, exactly as the grass does, so a
+        // wood in a dry region goes dry without being told twice. Lifted well
+        // above the terrain's own value: foliage catches more light than the
+        // soil under it, and taking the ground colour raw makes a forest look
+        // like a stain on the hillside.
+        this._groundColor(wx, wz, wy, 1, av, this._color);
+        const lift = 0.92 + rng() * 0.3;
+        this._color.r = Math.min(1, this._color.r * 0.55 * lift + 0.30 * lift);
+        this._color.g = Math.min(1, this._color.g * 0.55 * lift + 0.36 * lift);
+        this._color.b = Math.min(1, this._color.b * 0.55 * lift + 0.22 * lift);
+
+        if (placed < TREES.nearCap) {
+          this._setLocalMatrix(p, height * wobble, height, height * wobble, yaw);
+          // STASHED, not built. The grown mesh has a shorter life than its own
+          // chunk — see `_updateCanopy` — so what a chunk carries is the recipe
+          // and the meshes come and go with the car.
+          let spec = canopy.get(name);
+          if (!spec) {
+            spec = { geometry: variant.geometry, matrices: [], colours: [] };
+            canopy.set(name, spec);
+          }
+          spec.matrices.push(this._mat.clone());
+          spec.colours.push(this._color.r, this._color.g, this._color.b);
+          placed++;
+        }
+        if (far < TREES.farCap) {
+          const imp = this.trees.impostors.get(name);
+          // The impostor is a unit-tall crossed pair, so it takes the same
+          // height — and a little more width, because a painted silhouette has
+          // its canopy inside the card while the grown mesh spreads past it.
+          this._setLocalMatrix(p, height * variant.radius * 2.35, height,
+            height * variant.radius * 2.35, yaw);
+          push(`i:${name}`, imp.geometry, this.trees.impostorMaterial,
+            this._mat, this._color, false);
+          far++;
+        }
+      }
     }
 
-    const frame = makeFrame();
-    const rightFlat = new THREE.Vector3();
-    const p = new THREE.Vector3();
-    const pA = new THREE.Vector3();
-    const pB = new THREE.Vector3();
-    const weights = new Array(kinds.length);
+    // ---- the understorey -------------------------------------------------
 
-    for (let n = 0; n < CHUNK.propSamples; n++) {
-      // Half of everything is drawn near a cluster centre rather than
-      // independently. Independent draws give a Poisson field — statistically
-      // even, and it reads as "scattered to fill space", which is exactly the
-      // look being avoided. Clumping around a handful of seeds produces
-      // thickets, copses and rock groups with open ground between them.
-      let s, v;
-      if (clusters.length && rng() < CHUNK.clusterShare) {
-        const c = clusters[Math.floor(rng() * clusters.length)];
-        s = c.s + (rng() - 0.5) * 2 * c.r;
-        v = c.v + (rng() - 0.5) * 2 * c.r;
-        if (s < s0 || s > s1) continue;
-      } else {
-        s = lerp(s0, s1, rng());
+    if (this.bushes) {
+      const chosen = commit(SHRUB_NAMES, this.bushes.library, BUSHES.picks);
+      const kinds = [...chosen.keys()];
+      const weights = new Array(kinds.length);
+      let placed = 0;
+
+      for (let n = 0; n < BUSHES.samples && kinds.length; n++) {
+        if (placed >= BUSHES.cap) break;
+
+        const s = lerp(s0, s1, rng());
         const side = rng() < 0.5 ? -1 : 1;
-        // sqrt biases toward the road: a uniform draw over a 200 m band puts
-        // almost nothing where the player can actually see it.
-        v = side * lerp(7.5, CHUNK.propExtent, Math.sqrt(rng()));
+        const v = side * lerp(CHUNK.plantClear, 150, Math.sqrt(rng()));
+
+        const av = Math.abs(v);
+        const slope = look(s, v);
+        const wx = p.x + origin.x, wy = p.y + origin.y, wz = p.z + origin.z;
+        const relief = wy - this.terrain.continent(wx, wz);
+        vegetation(this.terrain, wx, wz, relief, slope, av, field);
+        if (rng() > field.understorey) continue;
+
+        let total = 0;
+        for (let k = 0; k < kinds.length; k++) {
+          const kind = SHRUBS[kinds[k]];
+          const w = suitability(kind, field, relief, slope, av) * kind.weight;
+          weights[k] = w;
+          total += w;
+        }
+        if (total <= 0) continue;
+
+        let pick = rng() * total;
+        let ki = 0;
+        for (; ki < kinds.length; ki++) {
+          pick -= weights[ki];
+          if (pick <= 0) break;
+        }
+        if (ki >= kinds.length) continue;
+
+        const name = kinds[ki];
+        const kind = SHRUBS[name];
+        const variant = this.bushes.library.get(name)[chosen.get(name)];
+        const height = lerp(kind.height[0], kind.height[1], rng());
+        const wobble = 0.85 + rng() * 0.3;
+
+        this._groundColor(wx, wz, wy, 1, av, this._color);
+        // The species' own hue, blended halfway toward the ground's — enough
+        // that gorse reads as gorse and not enough that it can disagree with
+        // the hillside it is standing on.
+        this._color.r = this._color.r * 0.5 + kind.tint[0] * 1.35;
+        this._color.g = this._color.g * 0.5 + kind.tint[1] * 1.35;
+        this._color.b = this._color.b * 0.5 + kind.tint[2] * 1.35;
+
+        // Sunk a little, so no shrub is ever seen standing on a stalk.
+        p.y -= height * 0.05;
+        this._setLocalMatrix(p, height * wobble * 1.6, height,
+          height * wobble * 1.6, rng() * Math.PI * 2);
+        push(`b:${name}`, variant.geometry, this.bushes.material,
+          this._mat, this._color, false);
+        placed++;
       }
-      const lateral = Math.abs(v);
-      if (lateral < 7 || lateral > CHUNK.propExtent) continue;
-
-      this.path.frameAt(s, frame);
-      rightFlat.crossVectors(frame.tan, WORLD_UP).normalize();
-      // Sit on the drawn surface, not the analytic one, or props float.
-      this.meshGroundPoint(s, s0, s1, v, p);
-
-      // Local gradient from two lateral probes.
-      this.sampleGround(frame, rightFlat, v - 2.5, pA);
-      this.sampleGround(frame, rightFlat, v + 2.5, pB);
-      const slope = Math.abs(pB.y - pA.y) / 5;
-
-      const region = this.terrain.region(p.x, p.z);
-      const density = this.terrain.forestDensity(p.x, p.z);
-      const ctx = { altitude: p.y, slope, lateral, region };
-
-      // Weighted pick across every species that will grow here.
-      let total = 0;
-      for (let k = 0; k < kinds.length; k++) {
-        const kind = kinds[k][1];
-        const w = suitability(kind, ctx) * kind.weight;
-        weights[k] = w;
-        total += w;
-      }
-      if (total <= 0) continue;
-
-      // Forest density gates canopy only, so clearings still keep their scrub.
-      let pick = rng() * total;
-      let index2 = 0;
-      for (; index2 < kinds.length; index2++) {
-        pick -= weights[index2];
-        if (pick <= 0) break;
-      }
-      if (index2 >= kinds.length) continue;
-
-      const [kindName, kind] = kinds[index2];
-      const group = GROUP_OF[kindName];
-      if (placed[group] >= FOLIAGE_GROUPS[group].cap) continue;
-
-      const isCanopy = group === 'canopy';
-      // Canopy grows in stands, not as an even sprinkle. `forestDensity` is
-      // already two scales multiplied — stands a few hundred metres across,
-      // broken up inside — and squaring it sharpens the edges further, so a
-      // wood has a boundary and a clearing has nothing in it.
-      if (isCanopy && rng() > density * density * CHUNK.standBias) continue;
-      placed[group]++;
-
-      const model = chosen.get(kindName);
-      const proto = this.foliage.get(model);
-      if (!proto) continue;
-
-      // Height in metres -> scale factor for a model authored ~3 units tall.
-      const height = lerp(kind.height[0], kind.height[1], rng());
-      const scale = height / Math.max(0.01, proto.height);
-      // Slight non-uniform squash so a repeated model does not read as clones.
-      const wobble = 0.9 + rng() * 0.2;
-
-      let batch = batches.get(model);
-      if (!batch) {
-        batch = { matrices: [], canopy: isCanopy };
-        batches.set(model, batch);
-      }
-      this._setMatrix(p, origin, scale * wobble, scale, scale * wobble, rng() * Math.PI * 2);
-      batch.matrices.push(this._mat.clone());
     }
 
-    for (const [model, batch] of batches) {
-      const proto = this.foliage.get(model);
-      const mesh = new THREE.InstancedMesh(proto.geometry, this.matFoliage, batch.matrices.length);
-      // Grass and flowers are too small to read in a 78 m shadow cascade; the
-      // shadow pass cost is real and the visual return is nil.
-      mesh.castShadow = batch.canopy;
+    // ---- one InstancedMesh per (chunk, geometry) -------------------------
+
+    for (const batch of batches.values()) {
+      const mesh = new THREE.InstancedMesh(batch.geometry, batch.material, batch.matrices.length);
+      // The shadow cascade is 78 m at 2048 px — four centimetres a texel — so
+      // anything under about a third of a metre casts nothing worth the pass.
+      // Impostors are excluded for a different reason: a shadow cast by two
+      // crossed cards is two crossed cards.
+      mesh.castShadow = batch.shadow;
       mesh.receiveShadow = true;
+      // The material displaces vertices three knows nothing about — the wind,
+      // and the distance fade — so its bounding sphere is a lie and culling
+      // against it pops whole batches in and out at the screen edge.
+      mesh.frustumCulled = false;
       batch.matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
       mesh.instanceMatrix.needsUpdate = true;
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(
+        new Float32Array(batch.colours), 3);
+      mesh.instanceColor.needsUpdate = true;
       out.push(mesh);
     }
 
+    // The near tier travels back as data on the chunk rather than as meshes.
+    chunk.canopySpec = canopy.size ? [...canopy.values()] : null;
+
     return out;
+  }
+
+  /**
+   * Adds and removes the GROWN canopy as the car moves.
+   *
+   * A near tree exists out to `TREES.lodFade[1]` — ninety-five metres — and its
+   * chunk exists out to seven hundred and twenty. Building the grown mesh with
+   * the chunk therefore submitted nine chunks of tree geometry to draw one
+   * chunk's worth of it: measured, 520,000 triangles alive to render about
+   * 110,000 of them, with the rest scaled to nothing by the shader and still
+   * costing a vertex each. That is the same lifetime mistake the ground cover
+   * exists to avoid, and the fix is the same one — see `_updateGrass`.
+   *
+   * The impostors stay with the chunk, because they are four triangles and
+   * because they are the tier that has to be there at five hundred metres.
+   *
+   * The recipe is computed ONCE, at chunk build, and cached on the chunk. Two
+   * tiers derived from two runs of a seeded scatter would agree until the first
+   * time anything about the sampling changed, and then a tree and its own
+   * impostor would stand in different places.
+   */
+  _updateCanopy(carS, budget) {
+    if (!this.trees) return;
+    const center = Math.floor(carS / CHUNK.length);
+    const lo = center - TREES.behind;
+    const hi = center + TREES.ahead;
+
+    for (const [i, chunk] of this.chunks) {
+      const wanted = i >= lo && i <= hi;
+      if (wanted && !chunk.canopy && chunk.canopySpec && !this.canopyQueue.includes(i)) {
+        this.canopyQueue.push(i);
+      } else if (!wanted && chunk.canopy) {
+        for (const mesh of chunk.canopy) {
+          this.scene.remove(mesh);
+          mesh.dispose();
+          const at = chunk.objects.indexOf(mesh);
+          if (at >= 0) chunk.objects.splice(at, 1);
+        }
+        chunk.canopy = null;
+      }
+    }
+
+    this.canopyQueue.sort((a, b) => Math.abs(a - center) - Math.abs(b - center));
+    while (this.canopyQueue.length && budget > 0) {
+      const i = this.canopyQueue.shift();
+      const chunk = this.chunks.get(i);
+      if (!chunk || chunk.canopy || !chunk.canopySpec || i < lo || i > hi) continue;
+      const meshes = [];
+      for (const spec of chunk.canopySpec) {
+        const mesh = new THREE.InstancedMesh(spec.geometry, this.trees.material,
+          spec.matrices.length);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.frustumCulled = false;
+        spec.matrices.forEach((m, k) => mesh.setMatrixAt(k, m));
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.instanceColor = new THREE.InstancedBufferAttribute(
+          new Float32Array(spec.colours), 3);
+        mesh.instanceColor.needsUpdate = true;
+        mesh.position.copy(chunk.origin);
+        mesh.matrixAutoUpdate = false;
+        mesh.updateMatrix();
+        this.scene.add(mesh);
+        chunk.objects.push(mesh);
+        meshes.push(mesh);
+      }
+      chunk.canopy = meshes;
+      budget--;
+    }
   }
 
   // ---------------------------------------------------------------- grass --
@@ -1386,9 +1725,56 @@ export class ChunkManager {
     // One pass over the grid, collecting the cells that can hold grass and the
     // area each contributes. `cum` is the cumulative weight, so a sample is a
     // binary search rather than a scan.
+    //
+    // THE FIELD IS APPLIED HERE, once per cell, and that placement is the whole
+    // trick. Ground cover used to be uniform over every square metre the slope
+    // test allowed, which is what made the verge read as a mown lawn with
+    // objects standing on it — a clearing and a thicket carried exactly the
+    // same sward. `foliage.js:vegetation` returns the density that the canopy
+    // and the understorey were also derived from, so grass thins under a wood
+    // and goes bald on dry ground because the same number said so.
+    //
+    // Per CELL rather than per tuft, and that is not an approximation being
+    // apologised for: cells are 2.4 m wide beside the road, which is finer than
+    // the field's own smallest feature, and the alternative is a noise
+    // evaluation inside a thirty-thousand-iteration loop — the exact cost this
+    // whole function was rewritten to remove.
     const cells = [];
     const cum = [];
+    const field = this._field;
     let total = 0;
+    let bare = 0;
+
+    /**
+     * The field, MEMOISED ON A COARSE GRID.
+     *
+     * Asked per cell it costs 14 ms a chunk — five thousand cells, each an fBm
+     * evaluation or three — and took the grass scatter from 5 ms to 19, which
+     * is straight back into bug #51's territory. Asked per 10 m of road by 6 m
+     * of verge it costs a fifth of a millisecond and gives the same answer,
+     * because the field's own finest feature is `terrain.mask` at 0.0135 — a
+     * wavelength of about seventy metres. Sampling a 70 m signal every 2.4 m
+     * was never buying anything; it was paying for resolution the field does
+     * not have.
+     */
+    const memo = this._coverMemo;
+    memo.clear();
+    const coverAt = (j, a, mid, width) => {
+      const key = (j >> 2) * 512 + Math.round(mid / 6);
+      const hit = memo.get(key);
+      if (hit !== undefined) return hit;
+      // Origin-relative in the sheet, so the origin goes back on before the
+      // field is asked anything about the world — trap #19.
+      const wx = positions[a * 3] + origin.x;
+      const wy = positions[a * 3 + 1] + origin.y;
+      const wz = positions[a * 3 + 2] + origin.z;
+      const gv = (positions[(a + 1) * 3 + 1] - positions[a * 3 + 1]) / Math.max(1e-4, width);
+      const gu = (positions[(a + nv) * 3 + 1] - positions[a * 3 + 1]) / rowLen;
+      vegetation(this.terrain, wx, wz,
+        wy - this.terrain.continent(wx, wz), Math.hypot(gu, gv), mid, field);
+      memo.set(key, field.ground);
+      return field.ground;
+    };
 
     for (let j = 0; j < nu; j++) {
       for (let i = 0; i < nv - 1; i++) {
@@ -1412,7 +1798,11 @@ export class ChunkManager {
 
         const mid = (lo + hi) * 0.5;
         const bz = boost(mid);
-        const w = (rowLen * usable * thin(mid)) / (bz * bz);
+
+        const cover = coverAt(j, a, mid, width);
+        if (cover <= 0.02) { bare++; continue; }
+
+        const w = (rowLen * usable * thin(mid) * cover) / (bz * bz);
         if (w <= 0) continue;
 
         total += w;

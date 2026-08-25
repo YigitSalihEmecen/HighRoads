@@ -1,158 +1,586 @@
 /**
- * foliage.js — which trees exist, how big they are, and where they belong.
+ * foliage.js — what grows, what it looks like, and where it belongs.
  *
- * SCOPE: trees only, deliberately. The Quaternius pack also ships rocks,
- * bushes, plants, flowers, logs and grass tufts, and all of them are currently
- * switched off — the scatter needs designing properly rather than tuning, and
- * a half-populated understorey reads worse than none. The species table below
- * is the whole vocabulary; adding a group back means adding it here and to
- * FOLIAGE_GROUPS, and nothing else changes.
+ * ONE TABLE FOR BOTH HALVES OF A SPECIES, and that is the change this file has
+ * just been through. It used to hold ecology only — altitude bands, slope
+ * limits, which OBJ files to load — because the shapes lived in an asset pack.
+ * The shapes are now grown from code (`env/trees.js`, `env/bushes.js`), and a
+ * pine's form and a pine's habitat are two facts about the same thing. Keeping
+ * them in different files is how a species ends up narrow, dark and needled in
+ * one place and a lowland broadleaf in the other.
  *
- * Placement is driven by three signals already available from the terrain:
- *   altitude   pushes conifers up and broadleaves down, and stops everything
- *              at the treeline;
- *   slope      nothing grows on ground too steep for soil to hold;
- *   region     the biome mask from noise.js, so forest thins out into open
- *              country and back over kilometres rather than metres.
+ * The split that DOES survive is the one `src/env/README.md` describes:
  *
- * Models are authored around 2.5–3.5 units tall, so every entry carries the
- * scale that turns it into a believable real-world height.
+ *   this file    what a species is — its form parameters and its habitat
+ *   env/trees.js how to turn form parameters into triangles
+ *   chunks.js    where the things actually go
+ *
+ * `chunks.js` is the only one of the three that needs the road, the terrain
+ * sheet and the streaming window, which is why placement lives there and why
+ * `probe/props.mjs` can exercise the whole scatter with no canvas and no GL.
+ *
+ * ── the ecology, and why it is one field rather than three ──────────────────
+ *
+ * The old scatter placed trees on a stand mask and then placed grass, entirely
+ * separately, over every square metre of ground that was not too steep. So a
+ * clearing had full grass and a thicket had full grass, the two never agreed
+ * about anything, and the verge read as a lawn with objects standing on it.
+ *
+ * `vegetation()` below is the fix and it is the centre of this file: ONE
+ * evaluation returns the canopy, understorey and ground-cover densities at a
+ * point, derived from the same handful of terrain signals, so they cannot
+ * disagree. Grass thins where the canopy closes over it because it is told to
+ * by the same number that put the canopy there.
+ *
+ * Four signals do the work, and each is a real thing about real vegetation:
+ *
+ *   STAND       `terrain.forestDensity` — two scales of noise multiplied, so
+ *               woodland has stands a few hundred metres across with clearings
+ *               broken through them rather than being a uniform wash.
+ *   MOISTURE    a slow field, biased wet in the hollows: relief below the local
+ *               continental surface is where water goes. It is what separates
+ *               a willow from a pine and lush verge from dry scrub.
+ *   RELIEF      height above local sea level, not absolute height. 400 m is a
+ *               summit in one place and a valley floor two hundred kilometres
+ *               away; a treeline keyed to the absolute number puts bare rock in
+ *               a lowland field.
+ *   EXPOSURE    slope, and the region mask from `noise.js` — how mountainous
+ *               this part of the world is at all.
+ *
+ * And one derived signal that is worth naming because it does more for the look
+ * than any of the four:
+ *
+ *   EDGE        `4c(1 - c)` on the canopy density. It peaks where the canopy is
+ *               half closed — which is the woodland edge, and in real ecology
+ *               the edge is where the scrub is: more light than the forest
+ *               floor, more shelter than the open field. Hanging the bushes on
+ *               it means a wood gets a fringe automatically, and a fringe is
+ *               most of what makes a tree line stop looking like a wall.
  */
 
-import { CHUNK } from './config.js';
+import { CHUNK, TREES } from './config.js';
+
+/* ================================================================= forms == */
+
+/**
+ * How each species is BUILT. Consumed by `env/trees.js:growTree`; see that
+ * file's header for what the parameters mean mechanically.
+ *
+ * The seven are chosen to be distinguishable AT DISTANCE, which is a stronger
+ * requirement than being different up close. Silhouette first: a narrow spire,
+ * a broad dome, a weeping curtain, a bare armature. Two species that differ
+ * only in leaf shape are one species with extra draw calls.
+ *
+ * `bark` and `leaf` are the vertex hues the grey atlas is multiplied by, and
+ * the reason a birch is a birch at fifty metres.
+ */
+export const TREE_FORMS = {
+  /**
+   * PINE — a bare trunk with the crown pushed to the top of it.
+   *
+   * The clear stem is the whole silhouette: in a stand, pines self-prune their
+   * lower limbs and what you see from the road is fifty trunks and a ceiling.
+   * `branches[0].start` at 0.62 is that fact, and it is why a pine wood looks
+   * like a pine wood rather than like a Christmas tree farm.
+   */
+  pine: {
+    levels: 2,
+    sections: 5,
+    segments: 6,
+    segmentDrop: 1,
+    trunk: { length: 1.0, radius: 0.048, lean: 0.10 },
+    branches: [
+      { count: 7, angle: 1.18, start: 0.62, length: 0.30, radius: 0.36, tipShrink: 0.55, leafy: false },
+      { count: 3, angle: 0.85, start: 0.35, length: 0.55, radius: 0.5, tipShrink: 0.3, leafy: false },
+    ],
+    gnarliness: 0.22,
+    taper: 0.42,
+    growth: { dir: { x: 0, y: 0.55, z: 0 }, strength: 0.9 },
+    minRadius: 0.010,
+    maxBranches: 34,
+    leafSize: 0.30,
+    leafFalloff: 0.72,
+    leafDrop: 0.10,
+    cards: 2,
+    leafCell: 'needle',
+    bark: [0.34, 0.24, 0.18],
+    leaf: [0.20, 0.34, 0.21],
+    impostor: {
+      trunk: 0.95, trunkWidth: 0.017, canopyFrom: 0.62,
+      blobs: 26, blobSize: 0.055, blobSquash: 0.75, bias: 0.85,
+      // Narrow cone: wide at the bottom of the crown, a spire at the top.
+      profile: (t) => 0.40 * (1 - t) + 0.03,
+    },
+  },
+
+  /**
+   * SPRUCE — the same conifer idea carried all the way to the ground.
+   *
+   * Branches from low on the stem, drooping (`growth.dir.y` is barely positive
+   * and the limbs are long), giving the dense skirted cone that reads as dark
+   * mass rather than as trunks. Standing next to a pine it is the contrast that
+   * makes both of them legible.
+   */
+  spruce: {
+    levels: 2,
+    sections: 5,
+    segments: 5,
+    segmentDrop: 1,
+    trunk: { length: 1.0, radius: 0.042, lean: 0.05 },
+    branches: [
+      { count: 11, angle: 1.42, start: 0.16, length: 0.34, radius: 0.30, tipShrink: 0.72, leafy: true },
+      { count: 2, angle: 0.9, start: 0.4, length: 0.5, radius: 0.5, tipShrink: 0.3, leafy: false },
+    ],
+    gnarliness: 0.16,
+    taper: 0.36,
+    growth: { dir: { x: 0, y: -0.25, z: 0 }, strength: 0.7 },
+    minRadius: 0.009,
+    maxBranches: 40,
+    leafSize: 0.26,
+    leafFalloff: 0.7,
+    leafDrop: 0.14,
+    cards: 2,
+    leafCell: 'needle',
+    bark: [0.28, 0.21, 0.17],
+    leaf: [0.15, 0.28, 0.19],
+    impostor: {
+      trunk: 0.92, trunkWidth: 0.014, canopyFrom: 0.9,
+      blobs: 34, blobSize: 0.05, blobSquash: 0.7, bias: 0.9,
+      profile: (t) => 0.46 * (1 - t * 0.94) + 0.02,
+    },
+  },
+
+  /**
+   * OAK — short thick stem, hard fork, wide dome.
+   *
+   * `branches[0].angle` at 1.05 rad with only three children is what makes the
+   * fork read: a broadleaf's structure is a few heavy limbs leaving the trunk
+   * at once, not a spiral of small ones. Leaf mass is carried on the limbs as
+   * well as the tips (`leafy`), without which a wide crown is a bare frame with
+   * pom-poms on the ends of it.
+   */
+  oak: {
+    levels: 3,
+    sections: 4,
+    segments: 6,
+    segmentDrop: 1,
+    trunk: { length: 0.55, radius: 0.062, lean: 0.16 },
+    branches: [
+      { count: 3, angle: 1.05, start: 0.55, length: 0.86, radius: 0.62, tipShrink: 0.2, leafy: false },
+      { count: 3, angle: 0.86, start: 0.35, length: 0.78, radius: 0.62, tipShrink: 0.25, leafy: true },
+      { count: 2, angle: 0.75, start: 0.3, length: 0.7, radius: 0.6, tipShrink: 0.3, leafy: false },
+    ],
+    gnarliness: 0.62,
+    taper: 0.52,
+    growth: { dir: { x: 0, y: 0.35, z: 0 }, strength: 0.55 },
+    minRadius: 0.012,
+    maxBranches: 30,
+    leafSize: 0.42,
+    leafFalloff: 0.78,
+    leafDrop: 0.06,
+    cards: 3,
+    leafCell: 'broadleaf',
+    bark: [0.35, 0.29, 0.22],
+    leaf: [0.28, 0.40, 0.20],
+    impostor: {
+      trunk: 0.42, trunkWidth: 0.025, canopyFrom: 0.55,
+      blobs: 30, blobSize: 0.10, blobSquash: 0.9, bias: 0.55,
+      // A dome: widest a third of the way up, closing over the top.
+      profile: (t) => 0.86 * Math.sin(Math.PI * (0.22 + t * 0.72)) * 0.9,
+    },
+  },
+
+  /**
+   * BIRCH — slender, pale, and high-crowned.
+   *
+   * The bark colour is doing most of the work here and it is worth being honest
+   * about that: at any distance where the crown is a few pixels, a birch wood
+   * is white verticals against dark ground, and that is the whole read.
+   */
+  birch: {
+    levels: 2,
+    sections: 5,
+    segments: 5,
+    segmentDrop: 1,
+    trunk: { length: 0.9, radius: 0.028, lean: 0.22 },
+    branches: [
+      { count: 5, angle: 0.72, start: 0.48, length: 0.5, radius: 0.5, tipShrink: 0.35, leafy: false },
+      { count: 3, angle: 0.62, start: 0.3, length: 0.62, radius: 0.55, tipShrink: 0.3, leafy: true },
+    ],
+    gnarliness: 0.5,
+    taper: 0.4,
+    growth: { dir: { x: 0, y: 0.5, z: 0 }, strength: 0.8 },
+    minRadius: 0.009,
+    maxBranches: 26,
+    leafSize: 0.30,
+    leafFalloff: 0.76,
+    leafDrop: 0.09,
+    cards: 2,
+    leafCell: 'broadleaf',
+    bark: [0.82, 0.80, 0.74],
+    leaf: [0.40, 0.50, 0.24],
+    impostor: {
+      trunk: 0.66, trunkWidth: 0.011, canopyFrom: 0.72,
+      blobs: 22, blobSize: 0.07, blobSquash: 0.95, bias: 0.6,
+      profile: (t) => 0.52 * Math.sin(Math.PI * (0.28 + t * 0.68)),
+    },
+  },
+
+  /**
+   * WILLOW — the one species where the growth vector points DOWN.
+   *
+   * That single sign flip is the entire difference between this and a birch,
+   * which is the argument for having a growth vector at all rather than a
+   * per-species shape function. Everything else here — the low fork, the long
+   * limbs, the big drooping leaf cards — is amplification.
+   */
+  willow: {
+    levels: 3,
+    sections: 5,
+    segments: 5,
+    segmentDrop: 1,
+    trunk: { length: 0.5, radius: 0.055, lean: 0.2 },
+    branches: [
+      { count: 4, angle: 0.9, start: 0.45, length: 0.9, radius: 0.6, tipShrink: 0.2, leafy: false },
+      { count: 3, angle: 0.7, start: 0.25, length: 0.85, radius: 0.55, tipShrink: 0.2, leafy: true },
+      { count: 2, angle: 0.5, start: 0.2, length: 0.8, radius: 0.5, tipShrink: 0.2, leafy: true },
+    ],
+    gnarliness: 0.55,
+    taper: 0.45,
+    growth: { dir: { x: 0, y: -0.85, z: 0 }, strength: 1.15 },
+    minRadius: 0.010,
+    maxBranches: 30,
+    leafSize: 0.40,
+    leafFalloff: 0.82,
+    leafDrop: 0.34,
+    cards: 2,
+    leafCell: 'broadleaf',
+    bark: [0.30, 0.27, 0.20],
+    leaf: [0.36, 0.46, 0.24],
+    impostor: {
+      trunk: 0.34, trunkWidth: 0.022, canopyFrom: 0.6,
+      blobs: 32, blobSize: 0.085, blobSquash: 1.25, bias: 0.4,
+      // Widest low down and trailing: a curtain rather than a dome.
+      profile: (t) => 0.80 * (1 - t * 0.55) * Math.sin(Math.PI * (0.3 + t * 0.6)),
+    },
+  },
+
+  /**
+   * POPLAR — a column. The cheapest possible silhouette contrast.
+   *
+   * Children leave the trunk at 0.32 rad, which is barely off vertical, so the
+   * whole tree is taller than it is wide by a factor of five. One of these in a
+   * hedgerow is worth more to a horizon than ten more oaks.
+   */
+  poplar: {
+    levels: 2,
+    sections: 6,
+    segments: 5,
+    segmentDrop: 1,
+    trunk: { length: 1.25, radius: 0.032, lean: 0.06 },
+    branches: [
+      { count: 9, angle: 0.32, start: 0.22, length: 0.42, radius: 0.42, tipShrink: 0.5, leafy: true },
+      { count: 2, angle: 0.3, start: 0.3, length: 0.5, radius: 0.5, tipShrink: 0.3, leafy: true },
+    ],
+    gnarliness: 0.3,
+    taper: 0.38,
+    growth: { dir: { x: 0, y: 1.0, z: 0 }, strength: 1.0 },
+    minRadius: 0.009,
+    maxBranches: 30,
+    leafSize: 0.26,
+    leafFalloff: 0.8,
+    leafDrop: 0.05,
+    cards: 2,
+    leafCell: 'broadleaf',
+    bark: [0.42, 0.38, 0.30],
+    leaf: [0.33, 0.44, 0.22],
+    impostor: {
+      trunk: 0.95, trunkWidth: 0.012, canopyFrom: 0.86,
+      blobs: 24, blobSize: 0.055, blobSquash: 1.15, bias: 0.5,
+      profile: (t) => 0.24 * Math.sin(Math.PI * (0.15 + t * 0.8)),
+    },
+  },
+
+  /**
+   * DEAD — bare wood, and the cheapest thing in the table at roughly a third
+   * the triangles of an oak, because it carries almost no leaf mass.
+   *
+   * It earns its place by being the only species that survives above the tree
+   * line, so the transition out of woodland is a thinning of standing dead
+   * timber rather than a hard edge into bare rock.
+   */
+  dead: {
+    levels: 3,
+    sections: 3,
+    segments: 5,
+    segmentDrop: 1,
+    trunk: { length: 0.7, radius: 0.05, lean: 0.3 },
+    branches: [
+      { count: 3, angle: 1.15, start: 0.4, length: 0.72, radius: 0.55, tipShrink: 0.3, leafy: false },
+      { count: 3, angle: 1.0, start: 0.25, length: 0.62, radius: 0.5, tipShrink: 0.35, leafy: false },
+      { count: 2, angle: 0.9, start: 0.2, length: 0.55, radius: 0.45, tipShrink: 0.4, leafy: false },
+    ],
+    gnarliness: 1.15,
+    taper: 0.4,
+    growth: { dir: { x: 0.2, y: 0.3, z: -0.1 }, strength: 0.5 },
+    minRadius: 0.011,
+    maxBranches: 26,
+    leafSize: 0.16,
+    leafFalloff: 0.8,
+    leafDrop: 0.0,
+    cards: 2,
+    leafCell: 'twig',
+    bark: [0.46, 0.42, 0.36],
+    leaf: [0.44, 0.40, 0.33],
+    impostor: {
+      trunk: 0.72, trunkWidth: 0.018, canopyFrom: 0.7,
+      blobs: 12, blobSize: 0.035, blobSquash: 0.9, bias: 0.6,
+      profile: (t) => 0.5 * Math.sin(Math.PI * (0.2 + t * 0.7)),
+    },
+  },
+};
+
+/* =============================================================== habitat == */
 
 /**
  * @typedef {object} FoliageKind
- * @property {string[]} models   file names (no extension)
- * @property {[number, number]} height  metres, min..max
- * @property {number} weight     relative abundance
- * @property {[number, number]} altitude  fades in/out over this band, metres
- * @property {number} maxSlope   steepest ground it will grow on (rise/run)
- * @property {[number, number]} lateral   how far from the road it may appear
- * @property {number} [regionBias]  >0 favours mountains, <0 favours lowland
+ * @property {[number, number]} height   metres, min..max
+ * @property {number} weight             relative abundance
+ * @property {[number, number]} relief   height above LOCAL sea level it will grow at
+ * @property {number} maxSlope           steepest ground it holds on (rise/run)
+ * @property {[number, number]} lateral  how far from the road it may appear
+ * @property {number} [rugged]           >0 favours mountains, <0 favours lowland
+ * @property {number} [wet]              >0 wants damp ground, <0 wants dry
+ * @property {number} [social]           0 = happy alone, 1 = only ever in stands
  */
 
 /** @type {Record<string, FoliageKind>} */
 export const FOLIAGE = {
   pine: {
-    models: ['PineTree_1', 'PineTree_2', 'PineTree_3', 'PineTree_4', 'PineTree_5'],
-    height: [9, 19],
-    weight: 1.0,
-    altitude: [10, 120],
-    maxSlope: 0.75,
-    lateral: [13, 135],
-    regionBias: 0.6,
+    height: [14, 26], weight: 1.0, relief: [30, 340], maxSlope: 0.8,
+    lateral: [13, 165], rugged: 0.7, wet: -0.2, social: 0.85,
   },
-  commonTree: {
-    models: ['CommonTree_1', 'CommonTree_2', 'CommonTree_3', 'CommonTree_4', 'CommonTree_5'],
-    height: [7, 14],
-    weight: 0.9,
-    altitude: [-60, 85],
-    maxSlope: 0.6,
-    lateral: [13, 135],
-    regionBias: -0.3,
+  spruce: {
+    height: [12, 22], weight: 0.8, relief: [60, 380], maxSlope: 0.85,
+    lateral: [13, 165], rugged: 0.9, wet: 0.15, social: 0.9,
+  },
+  oak: {
+    height: [11, 19], weight: 0.9, relief: [-40, 140], maxSlope: 0.55,
+    lateral: [14, 165], rugged: -0.5, wet: 0.1, social: 0.4,
   },
   birch: {
-    models: ['BirchTree_1', 'BirchTree_2', 'BirchTree_3', 'BirchTree_4', 'BirchTree_5'],
-    height: [8, 15],
-    weight: 0.55,
-    altitude: [-40, 95],
-    maxSlope: 0.55,
-    lateral: [13, 135],
+    height: [10, 18], weight: 0.6, relief: [-20, 240], maxSlope: 0.6,
+    lateral: [13, 165], rugged: 0.1, wet: 0.0, social: 0.6,
   },
   willow: {
-    models: ['Willow_1', 'Willow_2', 'Willow_3'],
-    height: [8, 13],
-    weight: 0.3,
-    // Willows want damp low ground, so they stop well below the others.
-    altitude: [-60, 35],
-    maxSlope: 0.35,
-    lateral: [14, 120],
-    regionBias: -0.8,
+    // Damp low ground only, and it stops well below everything else.
+    height: [8, 14], weight: 0.32, relief: [-60, 60], maxSlope: 0.3,
+    lateral: [14, 150], rugged: -0.85, wet: 0.9, social: 0.5,
   },
-  autumnTree: {
-    models: ['CommonTree_Autumn_1', 'CommonTree_Autumn_3', 'BirchTree_Autumn_2', 'BirchTree_Autumn_4'],
-    height: [7, 13],
-    weight: 0.28,
-    altitude: [-30, 90],
-    maxSlope: 0.6,
-    lateral: [13, 135],
+  poplar: {
+    height: [15, 25], weight: 0.3, relief: [-40, 130], maxSlope: 0.45,
+    lateral: [14, 150], rugged: -0.6, wet: 0.35, social: 0.75,
   },
-  deadTree: {
-    models: ['CommonTree_Dead_2', 'CommonTree_Dead_4', 'BirchTree_Dead_1', 'BirchTree_Dead_4'],
-    height: [6, 12],
-    weight: 0.16,
+  dead: {
     // Survives higher than anything living — the last thing before bare rock.
-    altitude: [40, 145],
-    maxSlope: 0.85,
-    lateral: [15, 150],
-    regionBias: 0.9,
+    height: [7, 14], weight: 0.2, relief: [140, 460], maxSlope: 0.95,
+    lateral: [15, 165], rugged: 0.95, wet: -0.5, social: 0.15,
   },
 };
 
 /**
- * Species are drawn from groups, and each chunk commits to only a few members
- * of each group. This is purely a batching concern: an InstancedMesh exists per
- * (chunk, model), so letting every species appear everywhere costs a draw call
- * each before a single tree is shaded. Picking per chunk keeps the batch count
- * low while the world at large still shows everything.
+ * Shrubs. Four forms, built by `env/bushes.js`; the same habitat fields as the
+ * trees plus `edge`, which is the one thing that separates them.
  *
- * The cap is a triangle budget. Canopy models are 1700–2900 triangles each, so
- * the count is what needs limiting rather than the sample count.
+ * Named `SHRUBS` and not `BUSHES` on purpose: `BUSHES` is the config block, and
+ * a module importing both would have to rename one of them at every call site.
+ *
+ * `edge` weights a species toward the woodland fringe — see `vegetation()`'s
+ * EDGE signal. Bramble and hazel live there; gorse and heather are open-ground
+ * plants and score highest where the canopy has given up entirely.
  */
-export const FOLIAGE_GROUPS = {
-  canopy: {
-    members: ['pine', 'commonTree', 'birch', 'willow', 'autumnTree', 'deadTree'],
-    picks: 3,
-    cap: 52,
+export const SHRUBS = {
+  bramble: {
+    form: 'round', height: [0.7, 1.5], weight: 1.0, relief: [-50, 180],
+    maxSlope: 0.9, lateral: [9, 150], wet: 0.3, edge: 1.0, tint: [0.30, 0.38, 0.20],
+  },
+  hazel: {
+    form: 'upright', height: [1.6, 3.2], weight: 0.7, relief: [-40, 170],
+    maxSlope: 0.7, lateral: [11, 150], wet: 0.25, edge: 0.85, tint: [0.32, 0.42, 0.22],
+  },
+  gorse: {
+    form: 'spiky', height: [0.6, 1.4], weight: 0.75, relief: [0, 300],
+    maxSlope: 1.1, lateral: [9, 150], wet: -0.55, edge: -0.5, tint: [0.38, 0.40, 0.17],
+  },
+  heather: {
+    form: 'low', height: [0.25, 0.6], weight: 0.9, relief: [60, 420],
+    maxSlope: 1.2, lateral: [9, 150], wet: -0.25, edge: -0.85, tint: [0.36, 0.31, 0.30],
   },
 };
 
-/** Which group a species belongs to. */
-export const GROUP_OF = (() => {
-  const m = {};
-  for (const [g, def] of Object.entries(FOLIAGE_GROUPS)) for (const k of def.members) m[k] = g;
-  return m;
-})();
+/* ================================================================ scatter == */
+
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const band = (v, lo, hi, feather) => {
+  // Fade in and out over `feather` rather than cutting, so species transition
+  // into one another up a hillside instead of stopping in a line.
+  if (v < lo - feather || v > hi + feather) return 0;
+  let f = 1;
+  if (v < lo) f *= (v - (lo - feather)) / feather;
+  if (v > hi) f *= ((hi + feather) - v) / feather;
+  return clamp01(f);
+};
 
 /**
- * Flat list of every model this module can ask for.
+ * The one evaluation every scatter in the project shares.
  *
- * Empty when `CHUNK.trees` is off, which is the whole switch: no models load,
- * so `chunks._buildProps` finds an empty library and returns nothing, and the
- * boot does not spend twenty-six fetches on geometry it will never draw. The
- * species table below stays exactly as it is.
+ * Called once per candidate point by the tree and bush scatters, and once per
+ * TERRAIN CELL by the ground cover — which is why it takes a terrain and two
+ * world coordinates rather than a chunk and a road offset. It knows nothing
+ * about the road except how far away it is.
+ *
+ * @param {object} terrain     from `noise.js:createTerrain`
+ * @param {number} x,z         world position
+ * @param {number} relief      height above the local continental surface
+ * @param {number} slope       rise/run of the ground here
+ * @param {number} lateral     distance from the road centreline
+ * @param {object} [out]       reused record; allocating one per grass cell is
+ *                             tens of thousands of objects a chunk
  */
-export function foliageModelNames() {
-  if (!CHUNK.trees) return [];
-  const names = new Set();
-  for (const kind of Object.values(FOLIAGE)) for (const m of kind.models) names.add(m);
-  return [...names];
+export function vegetation(terrain, x, z, relief, slope, lateral, out = {}) {
+  const stand = terrain.forestDensity(x, z);
+  const rugged = terrain.region(x, z);
+
+  /**
+   * Damp ground, 0..1. Two terms: a slow field that drifts over kilometres,
+   * and the landform itself — water collects below the local surface, so a
+   * hollow is wet and a shoulder is not, everywhere, for free.
+   */
+  const wetField = terrain.mask(x, z, 0.00085, 4210, -1180);
+  const hollow = clamp01(0.5 - relief / 260);
+  const moisture = clamp01(wetField * 0.62 + hollow * 0.55);
+
+  /**
+   * The tree line, as a soft ceiling rather than a height.
+   *
+   * Trees stop where it is too high, too steep and too exposed, and the three
+   * multiply: a sheltered gully carries woodland further up than an open ridge
+   * beside it at the same altitude, which is the thing that makes a treeline
+   * follow the ground instead of contouring round it like a bathtub ring.
+   */
+  const altitude = 1 - Math.pow(clamp01((relief - TREES.treeLine[0]) /
+    Math.max(1, TREES.treeLine[1] - TREES.treeLine[0])), 1.4);
+  const steep = 1 - clamp01((slope - 0.35) / 0.75);
+  const dry = 0.35 + 0.65 * moisture;
+
+  /**
+   * Canopy density. Squaring the stand mask sharpens its edges — a wood needs
+   * a boundary and a clearing needs to be empty — and `TREES.standBias` scales
+   * the result back up so squaring costs coverage rather than only contrast.
+   */
+  let canopy = clamp01(stand * stand * TREES.standBias * altitude * steep * dry);
+  // Nothing grows on the carriageway or its shoulder, and the fade outward
+  // keeps a tree from ever appearing to sprout out of the verge.
+  canopy *= clamp01((lateral - CHUNK.plantClear) / 8);
+
+  /**
+   * THE EDGE. Peaks at half-closed canopy, which is the woodland fringe.
+   * Everything scrubby hangs off this; see the file header.
+   */
+  const edge = clamp01(4 * canopy * (1 - canopy));
+
+  /**
+   * Understorey: the fringe, plus open scrub where the ground is too dry or too
+   * high for trees but not yet bare rock.
+   */
+  const openScrub = clamp01((1 - canopy) * clamp01((0.72 - moisture) / 0.42) *
+    clamp01(1 - (relief - TREES.treeLine[1]) / 260));
+  const understorey = clamp01(edge * 0.9 + openScrub * 0.5) *
+    clamp01((lateral - CHUNK.plantClear) / 6);
+
+  /**
+   * Ground cover, and this is the part of the field the player spends the most
+   * time looking at.
+   *
+   * Three things take grass away, and they are the three that take it away in
+   * a real field:
+   *
+   *   SHADE     a closed canopy has litter under it, not sward. Full shade is
+   *             `TREES.shadeFloor` of the open-ground density, not zero: even
+   *             a dark wood has something growing in it, and a hard zero draws
+   *             the stand's own outline on the ground in bare earth.
+   *   DROUGHT   dry ground goes patchy before it goes bare.
+   *   PATCHES   a fine field, tens of metres across, that thins the sward into
+   *             bald ground independently of everything else. Without it a
+   *             meadow is a uniform carpet, which is the single most artificial
+   *             thing a procedural verge can do — real grassland is mottled at
+   *             a scale you can see from a car.
+   */
+  const shade = 1 - canopy * (1 - TREES.shadeFloor);
+  const patch = terrain.mask(x, z, 0.0135, -733, 611);
+  const patchy = clamp01((patch - TREES.barePatch[0]) /
+    Math.max(0.01, TREES.barePatch[1] - TREES.barePatch[0]));
+  const ground = clamp01(
+    (0.62 + 0.38 * moisture) * shade * patchy * (1 - clamp01((slope - 0.9) / 0.8))
+  );
+
+  out.canopy = canopy;
+  out.understorey = understorey;
+  out.ground = ground;
+  out.edge = edge;
+  out.moisture = moisture;
+  out.rugged = rugged;
+  out.stand = stand;
+  return out;
 }
 
 /**
- * Suitability of a kind for a given spot, 0..1. Multiplied by the kind's weight
- * to form a sampling distribution; 0 means "never here".
+ * Suitability of one species for a point, 0..1, multiplied by its weight to
+ * form the sampling distribution. Zero means "never here".
+ *
+ * `field` is a record from `vegetation()`; `relief`, `slope` and `lateral` are
+ * the same numbers that produced it.
  */
-export function suitability(kind, { altitude, slope, lateral, region }) {
+export function suitability(kind, field, relief, slope, lateral) {
   if (slope > kind.maxSlope) return 0;
   if (lateral < kind.lateral[0] || lateral > kind.lateral[1]) return 0;
 
-  const [aLo, aHi] = kind.altitude;
-  // Fade over the outer 25% of the altitude band instead of cutting hard, so
-  // species transition into one another up a hillside.
-  const band = (aHi - aLo) * 0.25;
-  if (altitude < aLo - band || altitude > aHi + band) return 0;
-  let f = 1;
-  if (altitude < aLo) f *= (altitude - (aLo - band)) / band;
-  if (altitude > aHi) f *= ((aHi + band) - altitude) / band;
+  const span = kind.relief[1] - kind.relief[0];
+  let f = band(relief, kind.relief[0], kind.relief[1], span * 0.25);
+  if (f <= 0) return 0;
 
-  if (kind.regionBias) {
-    const want = kind.regionBias > 0 ? region : 1 - region;
-    f *= 1 - Math.abs(kind.regionBias) * (1 - want);
+  if (kind.rugged) {
+    const want = kind.rugged > 0 ? field.rugged : 1 - field.rugged;
+    f *= 1 - Math.abs(kind.rugged) * (1 - want);
+  }
+  if (kind.wet) {
+    const want = kind.wet > 0 ? field.moisture : 1 - field.moisture;
+    f *= 1 - Math.abs(kind.wet) * (1 - want);
+  }
+  if (kind.edge) {
+    const want = kind.edge > 0 ? field.edge : 1 - field.edge;
+    f *= 1 - Math.abs(kind.edge) * 0.8 * (1 - want);
+  }
+  // `social` species score poorly outside a stand, which is what stops a lone
+  // spruce turning up in the middle of a meadow.
+  if (kind.social) {
+    f *= 1 - kind.social * (1 - clamp01(field.stand * 1.35));
   }
 
   // Thin out as the ground steepens, well before the hard cutoff.
-  f *= 1 - Math.min(1, slope / kind.maxSlope) * 0.55;
+  f *= 1 - Math.min(1, slope / kind.maxSlope) * 0.5;
   return Math.max(0, f);
 }
+
+/**
+ * Which species a chunk may draw, and how many draw calls that costs.
+ *
+ * An InstancedMesh exists per (chunk, geometry), so letting every species and
+ * every variant appear everywhere costs a draw call each before a single tree
+ * is shaded. Each chunk therefore commits up front to `TREES.picks` species and
+ * one variant of each, seeded from its own index — so a chunk unloaded and
+ * reloaded comes back identical, neighbouring chunks draw different things, and
+ * the world at large still shows the whole table.
+ */
+export const TREE_NAMES = Object.keys(FOLIAGE);
+export const SHRUB_NAMES = Object.keys(SHRUBS);

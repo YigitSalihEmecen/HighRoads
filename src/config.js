@@ -302,6 +302,70 @@ export const ROUTE = {
    * a fine tremor that reads as noise rather than as decision.
    */
   hysteresis: 0.04,
+
+  /**
+   * How far a terrain vertex may travel toward the centre of its own turn,
+   * as a fraction. See `chunks.js:foldSafeOffset`.
+   *
+   * Rows are spaced `ds * (1 + v * kappa)` apart, so a vertex sitting exactly at
+   * the centre of rotation has zero longitudinal extent and everything past it
+   * is inside out. 0.7 keeps every quad at at least 30% of its nominal depth.
+   *
+   * It lives here rather than as a literal in `chunks.js` because
+   * `path.corridorAt` inverts it — the terrain sheet's own outer edge is
+   * `foldMargin / kappa`, and the recovery check needs that number — and two
+   * places holding the same threshold under different names is trap #7.
+   */
+  foldMargin: 0.7,
+
+  /**
+   * The turn rate the fold guard is built from, averaged over this many road
+   * samples either side before the running maximum is taken.
+   *
+   * ZERO WOULD BE THE OBVIOUS VALUE and it is what this used to do, implicitly:
+   * one frame-to-frame difference, which is a second derivative of a spline
+   * through 46 m control points sampled every 2.5 m. That estimate reached
+   * 1/81 rad/m against a road whose design limit is `ROAD.maxCurvature` = 1/165
+   * — twice as tight as the alignment can physically be — and since the guard
+   * turns curvature straight into a lateral limit, the terrain sheet was ending
+   * as little as 57 metres from the centreline. Measured: 16-19% of ray probes
+   * within 290 m of the road hit nothing at all, and the car drove off the edge
+   * of the world and fell. That is bug #64, and `probe/offroad.mjs` is its
+   * regression test.
+   *
+   * The average is EXACT for a circular arc at any width — the sum of the
+   * chord-to-chord angles across a window is the total turn across it, by
+   * construction — so widening costs no peak curvature, only the sharpness of
+   * the transition into one. What it removes is the spline's own roughness,
+   * which is not curvature, and which the running maximum would otherwise smear
+   * across fifty metres of road.
+   *
+   * SIX, and the number is measured rather than reasoned. Both directions cost
+   * something, and they are not the same something. Per seed, worst corridor
+   * width against folded cells (`probe/offroad.mjs`, five seeds, 20 chunks):
+   *
+   *   | window | worst corridor | folded cells |
+   *   |--------|----------------|--------------|
+   *   | 0      | 56.6 - 79.5 m  | 239 - 580    |
+   *   | 4      | 64.0 - 87.0 m  | 206 - 468    |
+   *   | 6      | 73.0 - 94.4 m  | 204 - 459    |
+   *   | 10     | 93.6 - 102.6 m | 75 - 568     |
+   *   | 16     | 98.9 - 105.6 m | 200 - 1080   |
+   *
+   * Six is the largest window that is better than the old behaviour on BOTH
+   * counts for every seed. Past it the estimate starts genuinely under-reading
+   * real corners and the sheet folds through itself again, which is the far
+   * worse bug (#58, #59) and the entire reason the guard exists.
+   *
+   * A HARD FLOOR ON THE RESULT WAS TRIED AND REJECTED. Capping the turn rate at
+   * `foldMargin / 112` guarantees a 112 m corridor and takes one seed from 580
+   * folded cells to 1,217: where a Catmull-Rom overshoots between control
+   * points the road really does turn tighter than it was designed to, and a cap
+   * clamps that away and inverts the mesh exactly there. The corridor is
+   * whatever the geometry allows, and `main.js:_checkRecovery` asks the road how
+   * wide it is rather than assuming — see `path.corridorAt`.
+   */
+  foldSmooth: 6,
 };
 
 export const CHUNK = {
@@ -320,8 +384,8 @@ export const CHUNK = {
 
   /** Chunks built per frame once running — keeps frame spikes bounded. */
   buildPerFrame: 1,
-  /** Built synchronously before the first frame so the car has ground. */
-  preload: 5,
+  /** Built synchronously before the first frame so the whole active window exists. */
+  preload: 9,
 
   /**
    * Drainage ditch depth just off the shoulder. Kept shallow and wide: this
@@ -350,20 +414,17 @@ export const CHUNK = {
    * the extra distance costs almost nothing.
    */
   halfExtent: 700,
-  /** Props stop well short of the terrain edge — nothing out there reads anyway. */
-  propExtent: 210,
-  /** Scatter attempts per chunk. Most are rejected by the suitability rules. */
-  propSamples: 420,
   /**
-   * Vegetation is placed around a handful of cluster seeds rather than
-   * independently. Independent draws give a statistically even field, which is
-   * precisely the "scattered around to fill space" look; clumping produces
-   * thickets and copses with real clearings between them.
+   * How close to the centreline anything may be planted, metres.
+   *
+   * `EDGE` in `chunks.js` is the paved edge at 9.4 m; this is a little wider,
+   * because a tree standing exactly on the verge is a tree the player clips
+   * through at 160 km/h and a bush there is a bush that hides the road. Read by
+   * `foliage.js:vegetation`, which fades every density to zero across it rather
+   * than cutting, so nothing ever appears to sprout out of the tarmac.
    */
-  clusterCount: 7,
-  clusterShare: 0.62,
-  /** Sharpens stand edges — density is squared, then scaled by this. */
-  standBias: 1.7,
+  plantClear: 11,
+
   /**
    * The outermost band tilts gently away below the eyeline so the corridor ends
    * by sloping out of sight rather than at a clean cut edge.
@@ -380,25 +441,6 @@ export const CHUNK = {
    */
   horizonFalloff: 520,
   horizonDrop: 30,
-  /**
-   * Master switch for the tree scatter.
-   *
-   * OFF. The measured cost is 468 instances for **1,030,000 triangles** — 90%
-   * of the geometry on screen, against 109,000 for the whole terrain sheet —
-   * because the Quaternius canopies are solid meshes at 1,700–2,900 each. What
-   * that buys is 10.3 trees per hectare, where real woodland is 200–1,000.
-   *
-   * Be clear about what this switch is and is not. It is not a fix: the trees
-   * were the only vertical thing in the world and the horizon is emptier
-   * without them. It is the honest way to hold a triangle budget until the
-   * canopy has a level of detail worth spending it on — distant trees as
-   * two-triangle impostors rendered once per species at boot, which is what
-   * makes thousands affordable where hundreds are not.
-   *
-   * Turning it back on is this line. Nothing else changed; `foliage.js` and the
-   * whole scatter are intact.
-   */
-  trees: false,
 
   /**
    * How far BELOW another pass of the road a chunk's far sheet is pushed where
@@ -449,6 +491,197 @@ export const CHUNK = {
 };
 
 /**
+ * The canopy — see `src/env/trees.js` and `src/foliage.js`.
+ *
+ * Trees used to be OFF, and the note that switched them off is worth keeping
+ * because it is the specification this block satisfies: 468 instances of the
+ * Quaternius pack measured **1,030,000 triangles**, 90% of the geometry on
+ * screen against 109,000 for the whole terrain sheet, and bought 10.3 trees per
+ * hectare where real woodland carries 200 to 1,000. It said the way out was
+ * "distant trees as impostors rendered once per species at boot, which is what
+ * makes thousands affordable where hundreds are not". That is what this is.
+ *
+ * The budget now: a near tree is 160-360 triangles of grown geometry, an
+ * impostor is 4, and the numbers below hold the whole canopy to roughly twice
+ * the terrain sheet.
+ */
+export const TREES = {
+  enabled: true,
+
+  /**
+   * Geometries built per species at boot, and species drawn per chunk.
+   *
+   * BOTH ARE DRAW-CALL DECISIONS, not look ones. An InstancedMesh exists per
+   * (chunk, geometry), so `picks * 2` (near plus impostor) is the batch count a
+   * chunk costs before a single tree is shaded. Three species from a table of
+   * seven, one variant of each, chosen from the chunk's own index: neighbouring
+   * chunks draw different things, a chunk unloaded and reloaded comes back
+   * identical, and the world at large still shows everything.
+   */
+  variants: 3,
+  picks: 3,
+
+  /** Atlas sizes. Bark and three leaf masses; then one silhouette per species. */
+  textureSize: 512,
+  impostorTextureSize: 512,
+
+  /**
+   * Where the grown mesh hands over to the impostor, metres of camera distance.
+   *
+   * The windows OVERLAP by design — the near tier shrinks out over 55-95 while
+   * the far tier grows in over 45-80 — so a tree is never both gone as geometry
+   * and not yet there as a card. They cross-fade by SCALE and not opacity, the
+   * same decision the ground cover makes and for the same reason: the material
+   * is an alpha-test cutout, there is no opacity to fade, and a tree shrinking
+   * into the ground reads far better than one dissolving in mid-air.
+   *
+   * 55 m is chosen against the fact that a 20 m tree at 55 m is about a fifth of
+   * the screen height. The silhouette is still doing all the work at that size;
+   * the branch structure stopped being resolvable well before it.
+   */
+  lodFade: [55, 95],
+  farFadeIn: [45, 80],
+  /**
+   * And where the impostors stop. Matched to the FOG, not to the chunk window:
+   * at `ATMOSPHERE.fogDensity` = 0.0016 there is about 20% of the colour left at
+   * 620 m, which is little enough that a card vanishing there is invisible. The
+   * chunk window reaches 720 m ahead, so the tier never outruns its own ground.
+   */
+  farFade: [430, 620],
+
+  /**
+   * Scatter attempts per chunk, and the caps on what survives.
+   *
+   * `samples` is an ASK. Most attempts are rejected — by slope, by the tree
+   * line, by the stand mask, by the species' own habitat — so the surviving
+   * count is always well under it and depends on the terrain, exactly as
+   * `GRASS.density` does. The caps are the triangle budget and they are what
+   * actually binds: `nearCap` x ~250 triangles is the per-chunk canopy cost.
+   */
+  samples: 1600,
+  nearCap: 200,
+  farCap: 760,
+
+  /**
+   * Chunks either side of the car that carry the GROWN canopy.
+   *
+   * The impostors live as long as their chunk, out to 720 m ahead; the grown
+   * mesh lives only as long as it can be resolved, which `lodFade` puts at 95 m.
+   * Building it with the chunk submitted nine chunks of tree geometry to draw
+   * one chunk's worth — 520,000 triangles alive to render 110,000 of them, the
+   * rest scaled to nothing by the shader and still costing a vertex each.
+   *
+   * One either side is 240 m of cover for a 95 m fade, which is margin enough
+   * that a chunk arriving a frame or two late is never visible.
+   */
+  behind: 1,
+  ahead: 1,
+
+  /**
+   * Vegetation is placed around a handful of cluster seeds rather than
+   * independently.
+   *
+   * Independent draws give a statistically even field — which is precisely the
+   * "scattered around to fill space" look — and this is the single biggest
+   * lever on whether a wood reads as a wood. Clumping produces thickets, copses
+   * and real clearings between them.
+   *
+   * `clusterSpecies` is the part that was missing before, and it matters more
+   * than the clumping does: a cluster commits to ONE species and draws 80% of
+   * its members from it. Real stands are monocultures at the scale of a copse —
+   * a birch wood is birches — and a clump of six different trees is just a
+   * clump, not a stand.
+   */
+  clusterCount: 9,
+  clusterShare: 0.72,
+  clusterRadius: [16, 46],
+  clusterSpecies: 0.8,
+  /** Sharpens stand edges — the density is squared, then scaled by this. */
+  standBias: 2.7,
+
+  /**
+   * The tree line, as relief above the LOCAL continental surface, metres.
+   *
+   * Relief and not altitude: 400 m is a summit in one part of the map and a
+   * valley floor two hundred kilometres away, and a treeline keyed to the
+   * absolute number paints bare rock across a lowland field. Canopy density
+   * falls from 1 at the first figure to 0 at the second, and slope and dryness
+   * multiply into it — so a sheltered gully carries woodland further up than
+   * the open ridge beside it, which is what makes a treeline follow the ground
+   * instead of contouring round it like a tidemark.
+   */
+  treeLine: [190, 430],
+
+  /**
+   * What is left of the ground cover under a closed canopy, 0..1.
+   *
+   * NOT zero, and the reason is worth stating: a hard zero draws the stand's
+   * own outline on the ground in bare earth, and from a moving car that reads
+   * as a texture bug rather than as shade. A dark wood has litter and moss in
+   * it; a quarter of the open-ground density is what that looks like.
+   */
+  shadeFloor: 0.25,
+
+  /**
+   * The window over which the fine patchiness field takes grass away entirely.
+   *
+   * Below the first figure the ground is bare, above the second it is fully
+   * grassed, and the field is `terrain.mask` at 0.0135 — features about
+   * seventy metres across. This is the knob for "how much of the verge is
+   * actually earth", and it is the single most effective thing in the file
+   * against the carpet look: real grassland is mottled at a scale you can see
+   * from a car, and a uniform sward is the giveaway that nobody modelled it.
+   *
+   * THE NUMBERS ARE AGAINST THE FIELD'S MEASURED RANGE, not against 0..1, and
+   * the first attempt at this got it wrong in a way worth recording. `mask` is
+   * two octaves of fBm mapped to 0..1, and two octaves do not reach the ends:
+   * measured over twenty thousand samples it spans 0.25 to 0.76 with half of
+   * everything between 0.44 and 0.56. A window of [0.30, 0.43] therefore left
+   * one per cent of the ground bare and merely scaled the rest down — a
+   * uniformly thinner carpet, which is the opposite of the intent. [0.42, 0.50]
+   * puts about a sixth of the ground genuinely bare and leaves half of it at
+   * full density.
+   */
+  barePatch: [0.42, 0.50],
+
+  /** Wind direction (world XZ), tip travel in metres, and rate. */
+  windDir: { x: 0.86, z: 0.51 },
+  windStrength: 0.55,
+  windSpeed: 0.65,
+};
+
+/**
+ * The understorey — see `src/env/bushes.js`.
+ *
+ * Small, numerous, and placed on the woodland EDGE rather than inside it or
+ * outside it. See `foliage.js:vegetation`.
+ */
+export const BUSHES = {
+  enabled: true,
+
+  variants: 3,
+  picks: 2,
+  textureSize: 256,
+
+  /**
+   * Camera distance over which a shrub shrinks away, metres.
+   *
+   * Much shorter than the canopy's, and there is no impostor tier: a bush is
+   * already four to eight triangles, and a four-triangle stand-in for a
+   * four-triangle object is not a saving. Past 105 m the ground detail texture
+   * and the far grass tier carry the middle distance.
+   */
+  fade: [70, 105],
+
+  /** Attempts per chunk and the cap on survivors. Mean 12 triangles each. */
+  samples: 900,
+  cap: 340,
+
+  /** Lighter than the canopy: a shrub is stiff and close to the ground. */
+  windStrength: 0.18,
+};
+
+/**
  * Ground cover.
  *
  * The single biggest lever on whether the world reads as flat, and the numbers
@@ -469,15 +702,27 @@ export const GRASS = {
    * roughly 20 blades/m^2 — well under a real sward, and enough that crossed
    * cards close up into a continuous field rather than reading as objects.
    *
-   * This is an ASK, not a count. Samples that land on ground too steep for
-   * grass are dropped, so what gets placed is always less — and how much less
-   * depends on the terrain, which is why this number moved when the landforms
-   * did. At 3.6 against the old, gentler ground a third of the samples were
+   * This is an ASK, not a count, and it is now a long way from one. Samples on
+   * ground too steep for grass are dropped, and — since the ground cover was
+   * put on the same vegetation field as the canopy — every cell's share is
+   * scaled by `foliage.js:vegetation`'s `ground` density, which averages 0.47
+   * with about a sixth of the world at zero. So the ask was raised from 2.9 to
+   * hold the density in a full meadow while the shaded ground under a wood and
+   * the bare patches in a dry field lose theirs. Measured: 1.3 tufts/m^2
+   * placed against 3.6 asked, 16,000 tufts a chunk.
+   *
+   * It is deliberately NOT raised the whole way. Matching the old carpet in a
+   * meadow would need about 5.8, and the scatter's cost tracks the surviving
+   * count: the verge no longer has to carry the frame on its own now that there
+   * are trees and scrub standing in it.
+   *
+   * How much less also depends on the terrain, which is why this number moved
+   * when the landforms did. At 3.6 against the old, gentler ground a third of the samples were
    * being rejected and about 30,000 tufts a chunk survived; against terrain
    * with more flat shelf in it only a tenth are, and the same 3.6 delivered
    * 41,000. The budget is the surviving count, so the ask has to follow it.
    */
-  density: 2.9,
+  density: 3.6,
   /** Lateral band: from the paved edge out to here, metres. */
   halfExtent: 62,
   /**
