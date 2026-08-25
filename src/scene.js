@@ -288,6 +288,7 @@ export async function createScene(container) {
   // rather than taking the whole game down with us.
 
   let composer = null;
+  let renderPass = null;
   let speedBlur = null;
   try {
     const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { ShaderPass }, { OutputPass }] =
@@ -300,7 +301,11 @@ export async function createScene(container) {
       ]);
 
     composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
+    // Kept, so `render` can point the whole post chain at a different scene —
+    // the showroom borrows the bloom and the vignette rather than running its
+    // own composer, which would mean two of everything.
+    renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
     composer.addPass(
       new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -350,9 +355,24 @@ export async function createScene(container) {
     sun.target.updateMatrixWorld();
   }
 
-  function render() {
-    if (composer) composer.render();
-    else renderer.render(scene, camera);
+  /**
+   * Draws the world, or something else entirely.
+   *
+   * The title screen is its own scene with its own camera and its own lights
+   * (showroom.js), but it should still get the same bloom, vignette and tone
+   * mapping as the game — so it is swapped into the existing chain rather than
+   * given a second one.
+   */
+  function render(altScene, altCamera) {
+    const useScene = altScene || scene;
+    const useCamera = altCamera || camera;
+    if (composer) {
+      renderPass.scene = useScene;
+      renderPass.camera = useCamera;
+      composer.render();
+    } else {
+      renderer.render(useScene, useCamera);
+    }
   }
 
   /** How hard the periphery streaks. `t` is 0..1 across the speed range. */

@@ -492,6 +492,155 @@ Measured against `speed × dt`, over 600 frames of simulated vsync jitter at
 | raw physics state | 146.2 mm | 457.0 mm | 467.9 mm |
 | interpolated | **0.3 mm** | **0.5 mm** | **0.6 mm** |
 
+### …and that was not enough, because smooth in the world is not smooth on screen
+
+The table above is real, and the car still visibly sprang backwards at speed —
+worse the lower the frame rate went. The measurement was not wrong; it was
+answering a different question. World-space interpolation was exact, and what
+the player looks at is the car's position *relative to the camera*.
+
+Two things were wrong there, and each is invisible at a steady frame rate.
+
+**The camera's lag depended on frame time.** `damp(x, goal, k, dt)` is the
+standard frame-rate-independent smoother and it is exactly right for a goal that
+sits still. For a goal that is *moving* it is not. Stepping once per frame
+toward the goal's end-of-frame position settles at
+
+    L = v·dt·e^(-k·dt) / (1 − e^(-k·dt))
+
+which contains `dt`. At 64 m/s the rig sat 3.98 m behind the car at 60 fps and
+3.51 m at 30 fps, and slid between the two whenever frame time wobbled. Since
+the car's own motion is exact, what moved on screen was the car.
+
+The fix is to stop pretending the goal is stationary. Over one frame it is a
+ramp, `g(t) = g0 + v·t`, and `ẋ = k·(g − x)` has a closed form on that interval:
+
+    x₁ = g₁ − v/k + (x₀ − g₀ + v/k)·e^(-k·dt)
+
+whose settled lag is exactly `v/k` — speed and stiffness only, `dt` gone from
+the answer. Same cost, one exponential, and it collapses to `damp()` when the
+goal is not moving. That is `util.dampTrack`.
+
+**The frame clamp and the substep budget disagreed.** `maxSubSteps · fixedStep`
+covered 41.7 ms while the loop clamped a frame to a separate literal 50 ms. Every
+frame between those two ran the physics short and threw the remainder away —
+while the camera, the traffic and the trip meter were handed the full `dt` and
+acted on time the car never got. A 90 ms hitch advanced the world 46% of its own
+frame; sustained 20 fps ran the entire game at 83% speed. The clamp is now
+derived from the budget, and `maxSubSteps` is 6 so the accumulator always drains.
+
+Measured in camera space, peak-to-peak movement of the car relative to the eye
+under constant motion — which should be zero:
+
+| frame pattern | before | after |
+|---|---|---|
+| 60 fps steady | 1 mm | 1 mm |
+| 60 fps, 20% jitter | 50 mm | **1 mm** |
+| 30 fps, 30% jitter | 273 mm | **2 mm** |
+| 60 fps, 90 ms hitches | 544 mm | **3 mm** |
+| 30 fps, cornering | 215 mm | **9 mm** |
+
+Both fixes are load-bearing: `probe/smooth.mjs` still fails on four patterns with
+only the clamp fixed, and on two with only the camera fixed.
+
+### Ground cover, and what a triangle buys
+
+The world read as flat, and the reason was a budget spent in the wrong place.
+468 trees were consuming **1,030,000 triangles** — 90% of the geometry on screen
+— against 109,000 for the entire terrain sheet, because the Quaternius canopies
+are solid meshes at 1,700–2,900 each. The density that bought was 10.3 trees per
+hectare. Real woodland is 200–1,000. There was nothing in the world, and what
+was there was expensive.
+
+The trees are currently **switched off** (`CHUNK.trees`), and it is worth being
+precise about what that is. It is not a performance fix — nobody has profiled
+this project on a GPU, and 1.5M triangles is not obviously a problem for one. It
+is a budget held back until the canopy has a level of detail worth spending it
+on. It is also not an improvement: rendered without them the horizon is bare,
+because the trees were the only vertical thing in the world. The scatter, the
+species table and the suitability rules are untouched and one line brings them
+back.
+
+The pack ships grass too, and it is the wrong tool for the same reason: 192
+triangles per tuft, which at roadside density is six million triangles for the
+grass alone. A tuft here is **two crossed quads — four triangles — carrying a
+texture of seven painted blades**, so one instance is seven blades for four
+triangles. The same budget that bought 468 trees buys well over a hundred
+thousand tufts.
+
+Three things make it hold together:
+
+- **The texture is luminance only.** All the hue comes from the per-instance
+  colour, interpolated from the terrain's own vertex colours at the tuft's
+  position — so grass is green in the lowlands and pale on a high shoulder for
+  free, follows the biome mask as it drifts over kilometres, and cannot
+  disagree with the ground it stands in.
+- **Wind is applied in world space**, after the instance matrix. Tufts are
+  randomly yawed so they do not moiré; displacing them in object space would
+  send each one a different way and the field would shimmer instead of leaning.
+- **Cards grow with distance.** A low camera compresses forty metres of verge
+  into a few dozen pixels, and cards sized for the near verge are gaps with
+  grass between them out there. Bigger cards cover more ground for the same
+  instance and the count per unit area falls as the square, so coverage reaches
+  the middle distance and the triangle budget does not follow it.
+
+Placement reads the terrain sheet rather than re-deriving it. The obvious
+implementation — draw a random `(s, v)` and ask `meshGroundPoint` — measured at
+**591 ms per chunk**: not a slow function, the right function called thirty
+thousand times, each call re-deriving the surface from four road frames and four
+fBm evaluations that the terrain builder had already done and written into a
+buffer ten milliseconds earlier. Reading that buffer instead is **14 ms**, and
+it is more correct: the tuft is on the surface the renderer draws and painted
+the colour the renderer paints, by construction rather than by agreement.
+
+### The road is routed, not wandered
+
+The alignment used to be a noise-driven heading integrator that chased a
+smoothed terrain elevation. It was completely blind to the shape of the ground:
+it wandered by noise and bulldozed whatever it met.
+
+It is now the standard approach from the literature — Galin et al., *Procedural
+Generation of Roads* (CGF 2010), where the trajectory minimises a cost over
+terrain slope, curvature and obstacles — adapted to the one constraint that
+paper does not have. This world is infinite and streams: there is no global
+heightmap to run A* over and no destination to route to. So the global search
+becomes a greedy lookahead. At every control point, fan out thirteen candidate
+headings, score the span each would create, commit to the cheapest. O(1), and
+the road still extends forever.
+
+Three things were learned building it, and all three are counter-intuitive.
+
+**Earthwork is a budget, not an objective.** Minimising it works exactly as
+advertised and finds the boring routes: measured against the old generator it
+cut mean earthwork 6.4 m → 4.9 m *and* cut sidehill cross-sections 12% → 8%,
+because the cheapest place to put a road is a flat field. It now costs nothing
+up to a threshold and bites hard past it, which leaves the terms that are
+actually about the drive free to decide.
+
+**A contour-following router spirals.** A contour line around a hill is a
+circle. Without a slowly drifting compass bearing to follow, the road goes round
+and round; swept over six seeds, weakening that term took one of them to a net
+progress of 0.07.
+
+**It has to avoid itself, and that is structural rather than stylistic.** Every
+chunk carries terrain 700 m either side while being 120 m long, so two stretches
+of road passing near each other have sheets that disagree about whose ground it
+is. The old generator wandered too incoherently to double back within 700 m; one
+that follows hillsides does it readily, because going round a hill is what
+following a contour means. Measured, chunk 0's carriageway was being covered by
+chunk 23's sheet.
+
+Over four seeds and 6 km each:
+
+| | noise generator | cost router |
+|---|---|---|
+| sidehill cross-sections | 12% | **29%** |
+| mean earthwork | 6.4 m | **3.9 m** |
+| worst self-clearance | — | **191 m** |
+
+`probe/route.mjs` measures all of it. `probe/xsec.mjs` prints the cross-sections
+if you want to read an alignment rather than trust a summary.
+
 ### The engine simulator is the drivetrain
 
 Audio comes from `engine_sim/`, a procedural engine sound simulator that

@@ -19,6 +19,8 @@
  * scale that turns it into a believable real-world height.
  */
 
+import { CHUNK } from './config.js';
+
 /**
  * @typedef {object} FoliageKind
  * @property {string[]} models   file names (no extension)
@@ -113,8 +115,16 @@ export const GROUP_OF = (() => {
   return m;
 })();
 
-/** Flat list of every model this module can ask for. */
+/**
+ * Flat list of every model this module can ask for.
+ *
+ * Empty when `CHUNK.trees` is off, which is the whole switch: no models load,
+ * so `chunks._buildProps` finds an empty library and returns nothing, and the
+ * boot does not spend twenty-six fetches on geometry it will never draw. The
+ * species table below stays exactly as it is.
+ */
 export function foliageModelNames() {
+  if (!CHUNK.trees) return [];
   const names = new Set();
   for (const kind of Object.values(FOLIAGE)) for (const m of kind.models) names.add(m);
   return [...names];

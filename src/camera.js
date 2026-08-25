@@ -8,7 +8,7 @@
 
 import * as THREE from 'three';
 import { CAMERA } from './config.js';
-import { clamp, damp, smoothstep } from './util.js';
+import { clamp, damp, dampTrack, smoothstep } from './util.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -36,6 +36,33 @@ export class ChaseCamera {
     this._up = new THREE.Vector3();
     this._desired = new THREE.Vector3();
     this._target = new THREE.Vector3();
+    /**
+     * Where the rig WANTED to be last frame.
+     *
+     * The smoother needs both ends of the goal's travel across the frame, not
+     * just where it ended up — see util.dampTrack. Without the previous goal
+     * the lag the camera settles at is a function of frame time, and at 230
+     * km/h that is half a metre of difference between a 60 fps frame and a
+     * 30 fps one, which is the camera springing at the car and back.
+     */
+    this._prevDesired = new THREE.Vector3();
+    this._prevTarget = new THREE.Vector3();
+  }
+
+  /**
+   * Advances one axis of the rig. Splitting it out keeps the two call sites
+   * (driving and garage) from drifting apart — they had the same bug.
+   */
+  _track(vec, prev, goal, rate, dt) {
+    vec.x = dampTrack(vec.x, prev.x, goal.x, rate, dt);
+    vec.y = dampTrack(vec.y, prev.y, goal.y, rate, dt);
+    vec.z = dampTrack(vec.z, prev.z, goal.z, rate, dt);
+  }
+
+  /** Seeds both goal histories, so the first frame has no goal velocity. */
+  _seedGoals() {
+    this._prevDesired.copy(this._desired);
+    this._prevTarget.copy(this._target);
   }
 
   /**
@@ -49,12 +76,19 @@ export class ChaseCamera {
     if (on) {
       this.initialised = false;      // arriving: frame the car immediately
     } else {
-      // Leaving: keep where the rig is and let it sweep round to the chase
-      // position, briefly stiffened so it arrives promptly. Cutting from an
-      // orbit straight to the bumper is disorienting at the exact moment the
-      // player takes control.
-      this.initialised = true;
-      this._snapFor = CAMERA.snapTime;
+      /**
+       * Leaving: SNAP.
+       *
+       * Bug #39 is the opposite of this — resetting `initialised` made the rig
+       * teleport from the orbit to the bumper, and the fix was to sweep. That
+       * was right while the garage was the same road seen from a different
+       * angle, where a cut looked like a glitch. The title screen is now its
+       * own scene (showroom.js), so this transition is a cut between two
+       * places, and sweeping a camera that was never in the world produces a
+       * lurch from wherever the last chase position happened to be.
+       */
+      this.initialised = false;
+      this._snapFor = 0;
     }
   }
 
@@ -115,6 +149,7 @@ export class ChaseCamera {
     if (!this.initialised) {
       this.position.copy(this._desired);
       this.lookAt.copy(this._target);
+      this._seedGoals();
       this.initialised = true;
     } else {
       // Position lags a touch more than the aim: the car leads the frame into
@@ -125,15 +160,14 @@ export class ChaseCamera {
         boost = CAMERA.snapBoost;
       }
       const k = CAMERA.posDamp * (1 + speedT * 0.5) * boost;
-      this.position.x = damp(this.position.x, this._desired.x, k, dt);
-      this.position.y = damp(this.position.y, this._desired.y, k * 1.4, dt);
-      this.position.z = damp(this.position.z, this._desired.z, k, dt);
+      // Y is stiffer than X/Z, so it gets its own call rather than sharing one.
+      this.position.x = dampTrack(this.position.x, this._prevDesired.x, this._desired.x, k, dt);
+      this.position.y = dampTrack(this.position.y, this._prevDesired.y, this._desired.y, k * 1.4, dt);
+      this.position.z = dampTrack(this.position.z, this._prevDesired.z, this._desired.z, k, dt);
 
-      const ka = CAMERA.aimDamp * boost;
-      this.lookAt.x = damp(this.lookAt.x, this._target.x, ka, dt);
-      this.lookAt.y = damp(this.lookAt.y, this._target.y, ka, dt);
-      this.lookAt.z = damp(this.lookAt.z, this._target.z, ka, dt);
+      this._track(this.lookAt, this._prevTarget, this._target, CAMERA.aimDamp * boost, dt);
     }
+    this._seedGoals();
 
     this.camera.position.copy(this.position);
     this.camera.up.copy(WORLD_UP);
@@ -174,16 +208,16 @@ export class ChaseCamera {
     if (!this.initialised) {
       this.position.copy(this._desired);
       this.lookAt.copy(this._target);
+      this._seedGoals();
       this.initialised = true;
     } else {
-      // Eased, so switching car does not cut — the rig slides to the new framing.
-      this.position.x = damp(this.position.x, this._desired.x, 5, dt);
-      this.position.y = damp(this.position.y, this._desired.y, 5, dt);
-      this.position.z = damp(this.position.z, this._desired.z, 5, dt);
-      this.lookAt.x = damp(this.lookAt.x, this._target.x, 7, dt);
-      this.lookAt.y = damp(this.lookAt.y, this._target.y, 7, dt);
-      this.lookAt.z = damp(this.lookAt.z, this._target.z, 7, dt);
+      // Eased, so switching car does not cut — the rig slides to the new
+      // framing. The orbit is a moving goal like any other, so it tracks the
+      // same way; the car is parked here, but the CAMERA is not.
+      this._track(this.position, this._prevDesired, this._desired, 5, dt);
+      this._track(this.lookAt, this._prevTarget, this._target, 7, dt);
     }
+    this._seedGoals();
 
     this.camera.position.copy(this.position);
     this.camera.up.copy(WORLD_UP);
