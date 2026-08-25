@@ -573,6 +573,9 @@ class Game {
     ground.y += SPAWN_HEIGHT;
 
     this.vehicle.respawn(ground, frame.tan);
+    if (this.powertrain) {
+      this.powertrain.reset(this.inGarage ? 0 : 1);
+    }
     this.carS = s;
   }
 

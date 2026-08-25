@@ -237,7 +237,10 @@ check(quietPuffs === 0, 'a gripping tyre makes nothing', `${quietPuffs} puffs`);
 fx.reset();
 for (const w of stub.wheels) w.slipAmount = 0.6;
 stub.forwardSpeed = 50;
-for (let f = 0; f < 60; f++) fx.update(1 / 60, stub);
+for (let f = 0; f < 60; f++) {
+  for (const w of stub.wheels) w.contact.z += stub.forwardSpeed / 60;
+  fx.update(1 / 60, stub);
+}
 const fastPuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
 const fastMarks = [...fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.marks.life).length / 4;
 check(fastPuffs === 0, 'no smoke at speed', `${fastPuffs} puffs at 180 km/h`);
