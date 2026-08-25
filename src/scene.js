@@ -301,9 +301,6 @@ export async function createScene(container) {
       ]);
 
     composer = new EffectComposer(renderer);
-    // Kept, so `render` can point the whole post chain at a different scene —
-    // the showroom borrows the bloom and the vignette rather than running its
-    // own composer, which would mean two of everything.
     renderPass = new RenderPass(scene, camera);
     composer.addPass(renderPass);
     composer.addPass(
@@ -356,23 +353,16 @@ export async function createScene(container) {
   }
 
   /**
-   * Draws the world, or something else entirely.
+   * Draws the world.
    *
-   * The title screen is its own scene with its own camera and its own lights
-   * (showroom.js), but it should still get the same bloom, vignette and tone
-   * mapping as the game — so it is swapped into the existing chain rather than
-   * given a second one.
+   * There is one scene now. The title screen used to be a second one with its
+   * own camera and its own lights, swapped into this chain so it borrowed the
+   * bloom and the vignette rather than running a composer of its own; the car
+   * is back on the road, so the title screen IS the world and the swap is gone.
    */
-  function render(altScene, altCamera) {
-    const useScene = altScene || scene;
-    const useCamera = altCamera || camera;
-    if (composer) {
-      renderPass.scene = useScene;
-      renderPass.camera = useCamera;
-      composer.render();
-    } else {
-      renderer.render(useScene, useCamera);
-    }
+  function render() {
+    if (composer) composer.render();
+    else renderer.render(scene, camera);
   }
 
   /** How hard the periphery streaks. `t` is 0..1 across the speed range. */

@@ -66,7 +66,11 @@ const VIEWS = [
   ['hud-phone-se',    375,  667,  'hud=1',             1],
   ['hud-land',        852,  393,  'hud=1',             1],
   ['hud-tablet',      834, 1112,  'hud=1',             1],
-  ['settings',        393,  852,  'hud=1&settings=1',  1],
+  ['drawer-world',    393,  852,  'open=world',        1],
+  ['drawer-car-land', 852,  393,  'open=car',          1],
+  ['drawer-desktop', 1440,  900,  'open=settings&touch=0', 0],
+  ['pause',           393,  852,  'pause=1',           1],
+  ['pause-land',      852,  393,  'pause=1',           1],
   ['gameover',        393,  852,  'over=1',            1],
 ];
 
@@ -88,9 +92,9 @@ function serve() {
 const AUDIT = `(() => {
   const de = document.documentElement, bad = [];
   document.querySelectorAll('body *').forEach((el) => {
-    // The settings panel is width:0 when closed; its content overflowing that
-    // is the whole mechanism, not a fault.
-    if (el.id === 'settings-panel') return;
+    // A folded drawer clips its own contents to nothing; that is the fold, not
+    // a fault. Open drawers are still audited.
+    if (el.closest('.drawer:not(.open)')) return;
     if (el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== 'auto') {
       bad.push((el.id || el.className || el.tagName) + ' ' + el.clientWidth + '<' + el.scrollWidth);
     }

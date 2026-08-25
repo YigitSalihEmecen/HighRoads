@@ -465,11 +465,19 @@ export const GRASS = {
   enabled: true,
 
   /**
-   * Tufts per square metre at the verge. Each is seven blades, so 3.2 here is
-   * roughly 22 blades/m^2 — well under a real sward, and enough that crossed
+   * Tufts per square metre at the verge. Each is seven blades, so 2.9 here is
+   * roughly 20 blades/m^2 — well under a real sward, and enough that crossed
    * cards close up into a continuous field rather than reading as objects.
+   *
+   * This is an ASK, not a count. Samples that land on ground too steep for
+   * grass are dropped, so what gets placed is always less — and how much less
+   * depends on the terrain, which is why this number moved when the landforms
+   * did. At 3.6 against the old, gentler ground a third of the samples were
+   * being rejected and about 30,000 tufts a chunk survived; against terrain
+   * with more flat shelf in it only a tenth are, and the same 3.6 delivered
+   * 41,000. The budget is the surviving count, so the ask has to follow it.
    */
-  density: 3.6,
+  density: 2.9,
   /** Lateral band: from the paved edge out to here, metres. */
   halfExtent: 62,
   /**
@@ -1203,85 +1211,93 @@ export const CAMERA = {
   fovSpeedGain: 12,
 
   /**
-   * Garage: the rig that orbits the car on the title screen.
+   * The title screen's orbit lives in TITLE below, not here.
    *
-   * `aim` is NEGATIVE on purpose. The look-at point sits at the centre of the
-   * frame, so aiming at a point below the car lifts the car up the screen and
-   * out from behind the dock of buttons along the bottom.
+   * It used to be `CAMERA.garage` — a distance, a height and a hand-picked
+   * negative aim that lifted the car out from behind whatever the dock happened
+   * to be that week. That number was re-tuned every time a row was added to the
+   * menu, which is the tell: it was standing in for a measurement nobody was
+   * taking. The rig now solves for the free rectangle instead, so there is
+   * nothing left to tune.
    */
-  /**
-   * `aim` is NEGATIVE, and it is how far BELOW the car the rig looks. The
-   * look-at point sits at the centre of the frame, so aiming low lifts the car
-   * up the screen and clear of the dock along the bottom.
-   *
-   * -2.2 rather than -0.55 because the dock got taller when it gained a second
-   * paint row: rendered at 1280x720 the car sat exactly behind the panel, which
-   * is a poor outcome for a screen whose entire job is showing it.
-   */
-  garage: { dist: 7.2, height: 2.3, spin: 0.22, aim: -2.2 },
-
-  /**
-   * Leaving the garage, the rig sweeps to the chase position rather than
-   * cutting. `snapBoost` multiplies the damping rates for `snapTime` seconds so
-   * it arrives promptly without teleporting.
-   */
-  snapTime: 1.1,
-  snapBoost: 2.6,
 };
 
 /**
- * The showroom — the title screen's own little world.
+ * The title screen's camera.
  *
- * Nothing here is procedural or seed-dependent, which is the point: a product
- * shot should look the same every time, and the road behind the old garage
- * screen did not. See showroom.js.
+ * There used to be a SHOWROOM block here, and a `showroom.js` to go with it: a
+ * cyclorama, three fixed lights and a turntable, rendered as a scene of its
+ * own. The argument for it was that a road is an uncontrolled backdrop — the
+ * same seed that looks bright from the chase camera can put the title screen in
+ * near-darkness because the orbit happens to face away from the sun — and that
+ * argument was true.
+ *
+ * It was also answering the wrong question. What a title screen is selling is
+ * not the car, it is the drive; and a studio shot of a car says nothing about
+ * the landscape the whole game is made of. So the car is back on the road,
+ * parked at the spawn point of the world you are about to be dropped into,
+ * which means the title screen is a photograph of the actual thing rather than
+ * an advert for it — and pressing Drive is a camera move rather than a scene
+ * change.
+ *
+ * What survives from the studio is the FRAMING MATHS, which was the part that
+ * was doing real work. See `camera.js:_updateTitle`.
  */
-export const SHOWROOM = {
-  fov: 38,
-  /** Cyclorama radius, metres. Large enough that no car can approach the wall. */
-  radius: 60,
+export const TITLE = {
+  /** Narrower than the driving field of view: this is a portrait, not a road. */
+  fov: 46,
 
-  /** Backdrop, floor upward. Cool and dim, so warm paint reads against it. */
-  floorColor: 0x171a22,
-  wallColor: 0x333a48,
-  topColor: 0x4a5468,
-  /** The pool of light thrown on the wall behind the car. */
-  glowColor: 0x3a4560,
+  /** Turntable rate, radians per second. A full turn takes about forty seconds. */
+  spin: 0.15,
 
   /**
-   * Half-extent of the invisible shadow catcher, metres. There is no plate any
-   * more — see `showroom.js:shadowFloor` — but the car still needs something
-   * under it for its shadow to land on, or it hovers.
+   * The four angles that make a good car shot, in radians of orbit phase.
+   *
+   * Phase is measured from directly IN FRONT of the car, so 0 is a head-on
+   * shot, pi is the tail. These four are the front and rear three-quarters on
+   * either side — the angles a car is actually photographed from, because they
+   * are the ones that show two faces of it at once.
+   *
+   * The rig starts on whichever of them faces the sun; see
+   * `camera.js:_seedOrbit`. That is what replaces the studio's control of the
+   * light — instead of building somewhere the light is always right, the
+   * camera stands somewhere the light already is.
    */
-  plateRadius: 3.6,
-  /** How dark that shadow is. It is the only thing the floor draws. */
-  shadowOpacity: 0.42,
+  angles: [0.85, -0.85, 2.35, -2.35],
 
-  // ---- three-point lighting, fixed ------------------------------------
-  keyColor: 0xfff2e0,
-  keyIntensity: 3.0,
-  fillColor: 0xc8d8ff,
-  fillIntensity: 0.85,
-  rimColor: 0xffd9a8,
-  rimIntensity: 2.2,
-  hemiSky: 0x9fb4d6,
-  hemiGround: 0x1a1d24,
-  hemiIntensity: 0.75,
-
-  // ---- framing ---------------------------------------------------------
   /**
-   * Fraction of the free band the car is allowed to fill.
+   * Fraction of the free rectangle the car is allowed to fill. Under one, so
+   * there is air around it — a subject that touches the edges of its frame
+   * reads as cropped rather than as placed.
    */
-  fill: 0.58,
-  /** Never closer than this, whatever the arithmetic says. */
-  minDistance: 5.5,
-  /** Camera distance as a multiple of the solved distance, and its lift. */
-  orbitRadius: 0.95,
-  eyeLift: 0.32,
+  fill: 0.62,
+  /** Never closer than this, whatever the arithmetic says, metres. */
+  minDistance: 6.0,
+  /**
+   * The orbit's horizontal radius and its height, both as multiples of the
+   * solved distance. They are a direction, not a distance: the fit above sets
+   * how far away the camera is, and these two decide where on the sphere.
+   */
+  orbitRadius: 0.94,
+  eyeLift: 0.30,
+  /**
+   * Where the rig looks, as a fraction of body height above the contact plane.
+   *
+   * Below the middle of the car on purpose. The framing solve centres the AIM
+   * POINT in the free rectangle, and the rig looks slightly down, so a car
+   * whose bulk sits below the aim projects below the centre of the frame.
+   * Dropping the aim lifts the car back into the middle of its own space.
+   */
+  aimHeight: 0.34,
 
-  /** Turntable rate, radians per second, and where it starts. */
-  spin: 0.22,
-  startAngle: 2.35,
+  /**
+   * Seconds for the fly-in from the orbit to the chase position.
+   *
+   * Long enough to read as a move and short enough that nobody presses Drive
+   * twice. The overlay fades over 0.55 s, so the interface is gone by the
+   * halfway point and the second half is pure camera.
+   */
+  introTime: 1.35,
 };
 
 export const ATMOSPHERE = {

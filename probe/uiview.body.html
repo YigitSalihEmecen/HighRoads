@@ -3,20 +3,20 @@
 
   `index.html` cannot be screenshotted on its own: it boots WebGL, and a
   headless Chrome has no GPU, so the page dies before the overlay is populated.
-  This copies the shell, drops the module boot, and fills the garage, the HUD
-  and the settings drawer with the same option lists the real modules build —
-  so what gets rendered is the actual stylesheet under actual content.
+  This copies the shell, drops the module boot, and fills the drawers, the HUD
+  and the pause menu with the same option lists the real modules build — so what
+  gets rendered is the actual stylesheet under actual content.
 
   It also reports its own overflow into the corner of the page, which is how the
   layout bugs listed in probe/README.md were found.
 
-  Query flags: ?hud=1 driving HUD  ?settings=1 drawer open  ?over=1 game over
-               ?touch=0 desktop (no touch layer)
+  Query flags: ?hud=1 driving HUD   ?pause=1 pause menu   ?over=1 game over
+               ?open=car|engine|world|settings   ?touch=0 desktop
 
   Regenerate after editing index.html:  node probe/uishot.mjs --build
 -->
 <script>
-// Static harness: fills the garage with the real option lists and switches on
+// Static harness: fills the drawers with the real option lists and switches on
 // the touch layer and the HUD, so the whole interface can be looked at without
 // a WebGL context. Numbers are the real ones from src/cars.js.
 const CARS = ['Sport','Muscle','Classic','Hatchback','Interceptor','Pick-Up','Van','Military','Monster Truck'];
@@ -29,30 +29,59 @@ for (const [i,c] of CARS.entries()) document.getElementById('car-list').append(m
 for (const [i,c] of COLORS.entries()) { const b = mk('swatch','',i===0); b.style.background=c; document.getElementById('color-list').append(b); }
 for (const [i,c] of TRIMS.entries()) { const b = mk('swatch','',i===0); if (c) b.style.background=c; else b.classList.add('swatch-stock'); document.getElementById('trim-list').append(b); }
 for (const [i,e] of ENGINES.entries()) document.getElementById('engine-list').append(mk('eng-chip', e, i===0));
-document.getElementById('car-detail').innerHTML =
-  '<b>Sport</b> — Light, low and rear-driven. The quickest thing here, and the least forgiving.' +
-  '<div id="car-stats"><span>Mass<b>1180 kg</b></span><span>Engine<b>V8 flat-plane 4.5</b></span>' +
-  '<span>Layout<b>RWD</b></span><span>Redline<b>9000</b></span></div>' +
-  '<div style="margin-top:6px;opacity:.6">rear-wheel drive — Points for near misses. One crash ends the run.</div>';
+
+// The drawer headers carry the state a folded drawer would otherwise hide.
+document.getElementById('v-car').textContent = 'Sport · Signal Red';
+document.getElementById('v-engine').textContent = 'V8 flat-plane 4.5';
+document.getElementById('v-world').textContent = 'Traffic · highroads-01';
+document.getElementById('v-settings').textContent = 'Auto · 62%';
+document.getElementById('v-pause-settings').textContent = 'Auto · 62%';
+document.getElementById('mode-hint').textContent = 'Points for near misses. One crash ends the run.';
+document.getElementById('seed-badge').textContent = 'highroads-01';
 document.getElementById('seed-input').value = 'highroads-01';
-document.getElementById('garage').classList.add('ready');
 document.getElementById('start').disabled = false;
 document.getElementById('start').textContent = 'Drive';
 document.getElementById('boot').textContent = '26 plants · 9 vehicles';
-// The settings drawer, built the same way settings.js builds it.
+// The route snapshot is a WebGL read-back in the real thing; stand it in.
+{
+  const c = document.getElementById('terrain-canvas');
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, c.height);
+  grad.addColorStop(0, '#7ba4ce'); grad.addColorStop(0.5, '#8e9a68'); grad.addColorStop(1, '#546b45');
+  g.fillStyle = grad; g.fillRect(0, 0, c.width, c.height);
+  g.strokeStyle = '#2a2a2e'; g.lineWidth = 14; g.beginPath();
+  g.moveTo(c.width * 0.42, c.height); g.quadraticCurveTo(c.width * 0.62, c.height * 0.5, c.width * 0.5, c.height * 0.36);
+  g.stroke();
+}
+
+// The settings panel, built the same way settings.js builds it.
 const body = document.getElementById('settings-body');
 const sec = (t) => { const d=document.createElement('div'); d.className='set-section'; d.textContent=t; body.append(d); };
 const btn = (t,on) => { const b=document.createElement('button'); b.className='set-btn'+(on?' on':''); b.textContent=t; body.append(b); };
 const sld = (n,v) => { const r=document.createElement('label'); r.className='set-row';
   r.innerHTML = `<span class="set-name">${n}</span><input type="range" min="0" max="2" step="0.01" value="${v}"><span class="set-val">${v.toFixed(2)}</span>`; body.append(r); };
 sec('Driving'); btn('Gearbox: auto'); btn('Camera: chase');
-sec('Audio'); sld('Master',0.62);
+sec('Audio'); sld('Master',0.62); sld('Wind',0.45);
 sec('Voice mix'); for (const [n,v] of [['Exhaust',1],['Intake',0.6],['Gearbox',0.22],['Turbo',0.5],['Transients',0.4],['Sub',1]]) sld(n,v);
 sec('Tone'); sld('Rumble',1.1); sld('Brightness',0.72);
 
+// The accordion, the same way main.js wires it.
+for (const root of [document.getElementById('drawers'), document.getElementById('pause')]) {
+  const drawers = [...root.querySelectorAll('.drawer')];
+  for (const d of drawers) d.querySelector('.drawer-head').addEventListener('click', () => {
+    const open = !d.classList.contains('open');
+    for (const o of drawers) o.classList.toggle('open', o === d && open);
+  });
+}
+
 const q = new URLSearchParams(location.search);
 if (q.get('touch') !== '0') document.body.classList.add('touch');
-if (q.get('hud') === '1') { document.getElementById('hud').classList.add('live','traffic');
+if (q.get('open')) {
+  const d = document.querySelector(`.drawer[data-drawer="${q.get('open')}"]`);
+  if (d) d.classList.add('open');
+}
+if (q.get('hud') === '1' || q.get('pause') === '1') {
+  document.getElementById('hud').classList.add('live','traffic');
   document.getElementById('overlay').classList.add('gone');
   document.body.classList.add('driving');
   document.getElementById('speed-val').textContent='187';
@@ -68,7 +97,12 @@ if (q.get('hud') === '1') { document.getElementById('hud').classList.add('live',
   f.style.strokeDasharray=L+' '+L; f.style.strokeDashoffset=String(L*0.28);
   const r=document.getElementById('tach-red'); r.style.strokeDasharray=(L*0.12)+' '+L; r.style.strokeDashoffset=String(-L*0.88);
 }
-if (q.get('settings') === '1') { document.getElementById('settings').classList.add('open'); }
+if (q.get('pause') === '1') {
+  document.body.classList.add('paused');
+  document.getElementById('pause-km').textContent='4.31 km';
+  document.getElementById('pause-speed').textContent='187 km/h';
+  document.getElementById('pause-score').textContent='12,480';
+}
 if (q.get('over') === '1') { document.getElementById('gameover').classList.add('show');
   document.getElementById('go-points').textContent='12,480'; document.getElementById('go-best').textContent='18,240';
   document.getElementById('go-detail').textContent='43 near misses · 4.31 km'; }
