@@ -222,6 +222,37 @@ export class Powertrain {
     return this.sim ? this.sim.shiftDown() !== false : false;
   }
 
+  /**
+   * Resets the drivetrain state and puts the transmission back into first gear (or neutral).
+   * Called on respawn / reset so a car dropped from high speed does not start
+   * bogged down in 5th or 6th gear.
+   */
+  reset(gear = 1) {
+    this._ww = 0;
+    this.force = 0;
+    this.reverse = false;
+    this._stallFor = 0;
+    this._stallCool = 0;
+    if (this.sim && this.sim.physics) {
+      const p = this.sim.physics;
+      p.selectGear(gear);
+      if (p.shift && p.shift.reset) {
+        p.shift.reset();
+      }
+      p.ww = 0;
+      p.wo = 0;
+      p.twist = 0;
+      p.dtwist = 0;
+      p.contact = 0;
+      p.Tp = 0;
+      if (p.engine && p.engine.idleRpm) {
+        p.we = p.engine.idleRpm * (2 * Math.PI / 60);
+      }
+      this.rpm = p.rpm;
+      this.gear = p.gear;
+    }
+  }
+
   // ------------------------------------------------------------- mix -----
 
   setVolume(v) {
