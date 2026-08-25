@@ -1,4 +1,4 @@
-# FASTROADS
+# HIGHROADS
 
 An infinite procedural driving game — Three.js rendering, Rapier (WebAssembly)
 physics, Simplex-noise terrain, and a hand-written raycast vehicle controller.

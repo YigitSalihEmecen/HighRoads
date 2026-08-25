@@ -123,6 +123,11 @@ export class Settings {
 
     this._section('Audio');
     this.master = this._slider('Master', 'overall level', 0, 1, pt.volume, (v) => pt.setVolume(v));
+    // Not one of the engine's buses — see wind.js. It shares the context and
+    // nothing else, so it gets its own control rather than sitting under a
+    // heading that says "voice mix" and meaning combustion.
+    this.wind = this._slider('Wind', 'air over the body, louder the faster you go',
+      0, 1, this.game.wind.volume, (v) => this.game.wind.setVolume(v));
 
     this._section('Voice mix');
     this.busRows = {};
@@ -149,6 +154,10 @@ export class Settings {
     if (this.master) {
       this.master.input.value = String(pt.volume);
       this.master.show(pt.volume);
+    }
+    if (this.wind) {
+      this.wind.input.value = String(this.game.wind.volume);
+      this.wind.show(this.game.wind.volume);
     }
     for (const [id] of BUSES) {
       const row = this.busRows && this.busRows[id];

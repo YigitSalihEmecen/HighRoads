@@ -22,10 +22,13 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import fs from 'node:fs';
 import { WORLD, CHUNK, ROAD, VEHICLE } from '../src/config.js';
 import { createTerrain } from '../src/noise.js';
-import { RoadPath } from '../src/path.js';
+import { RoadPath, makeFrame } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
 import { RaycastVehicle } from '../src/vehicle.js';
 import { Traffic } from '../src/traffic.js';
+
+/** Scratch frame for the autopilot's corner scan — it runs a dozen times a frame. */
+const _look = makeFrame();
 import { Powertrain } from '../src/powertrain.js';
 import { CARS, carById, buildCarParams } from '../src/cars.js';
 import { buildCarFromObject } from '../src/assets.js';
@@ -150,7 +153,46 @@ for (let i = 0; i < steps; i++) {
     // Positive steer yaws left, which moves the car toward -x — the direction
     // of DECREASING lateral offset. Hence the sign on the cross-track term.
     const crossTrack = Math.atan2(2.2 * (lat - ROAD.laneWidth * 0.5), Math.abs(vehicle.forwardSpeed) + 4);
-    input.steer = Math.max(-1, Math.min(1, (headingErr + crossTrack) / vehicle.V.maxSteer));
+
+    /**
+     * Feed-forward: the steer the corner needs, before any error exists.
+     *
+     * A purely proportional tracker has a STEADY-STATE OFFSET against a
+     * constant-curvature path — it can only ask for steering in proportion to
+     * how far off line it already is, so on a long bend it settles wherever the
+     * error is big enough to buy the angle the corner needs, and sits there.
+     * That is a property of the controller, not of the road: traced on the
+     * alignment this reported 5.8 m on, the car was carrying zero tyre slip and
+     * a third of available lock the whole way round, quietly running wide at a
+     * millimetre a metre.
+     *
+     * Raising the gain does not fix it and makes it worse — swept, 3.6 and 5.0
+     * took the worst seed to 14.9 m and 15.1 m as the loop went unstable. The
+     * Ackermann angle for the local radius does fix it, because it is the term
+     * that was missing rather than a larger dose of the term that was there.
+     */
+    const steerFF = (vehicle.V.wheelbaseHalf * 2) * path.frameAt(carS + 12, _look).curv;
+
+    /**
+     * ...divided by the lock ACTUALLY AVAILABLE, not by `V.maxSteer`.
+     *
+     * `input.steer` is a normalised command: the vehicle multiplies it by
+     * whatever lock the grip and rollover limits leave at this speed, which is
+     * the right contract for a human holding a stick. Everything above computes
+     * a steering ANGLE, and converting an angle to that command with the
+     * unlimited maximum quietly divides it by six at 160 km/h. The car then
+     * tracked a wider radius than the road, drifted out at about a millimetre a
+     * metre with zero tyre slip and a third of the lock it thought it was
+     * using, and reported the verge it eventually found as a fault in the road.
+     *
+     * This is a harness bug of the same family as the ones in AGENT_CONTEXT §7:
+     * it looked exactly like the world being wrong, and it got worse as the
+     * alignment got more interesting, which is precisely the correlation that
+     * makes it convincing.
+     */
+    const lock = Math.max(1e-3, vehicle.steerLimit || vehicle.V.maxSteer);
+    input.steer = Math.max(-1, Math.min(1,
+      (headingErr + crossTrack + steerFF) / lock));
 
     /**
      * ...and it lifts for corners, which is the one thing that actually needed
@@ -167,9 +209,18 @@ for (let i = 0; i < steps; i++) {
      * v = sqrt(a / kappa), at 85% of the tyres' limit so it is a driver's
      * margin rather than a computer's.
      */
-    const look = path.frameAt(carS + Math.min(90, 25 + Math.abs(vehicle.forwardSpeed) * 1.2));
-    const kappa = Math.abs(look.curv);
-    const aMax = vehicle.V.tyreFriction * Math.abs(WORLD.gravity) * 0.85;
+    // The WORST curvature between here and the lookahead, not the curvature at
+    // one point of it. Reading a single station ahead misses the corner the car
+    // is already in — traced on one seed, the model was looking at an 828 m
+    // radius 73 m up the road while the car sat in a 270 m one, so it held full
+    // throttle into a bend it had never seen. A driver looks at the whole
+    // corner; so does this now.
+    const reach = Math.min(110, 25 + Math.abs(vehicle.forwardSpeed) * 1.4);
+    let kappa = 0;
+    for (let d = 0; d <= reach; d += 10) {
+      kappa = Math.max(kappa, Math.abs(path.frameAt(carS + d, _look).curv));
+    }
+    const aMax = vehicle.V.tyreFriction * Math.abs(WORLD.gravity) * 0.58;
     const vCorner = kappa > 1e-5 ? Math.sqrt(aMax / kappa) : 1e3;
     const speed = Math.abs(vehicle.forwardSpeed);
     input.throttle = speed < vCorner ? 1 : 0;

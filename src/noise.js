@@ -236,8 +236,16 @@ export function createTerrain(seed) {
    * inverse-distance blend across six centres never lets any weight exceed
    * about 0.5, which silently halves every landform's amplitude and leaves the
    * whole world looking like gentle hills whatever the map says.
+   *
+   * Tightened from 0.30. At that width the winning archetype held about 0.66 of
+   * the blend and its two neighbours a fifth each, so a mountain region was
+   * two-thirds mountain and a third something flatter — an averaging that acts
+   * exactly like turning the amplitude down, and it is a large part of why the
+   * world read as "everything, mildly". At 0.245 the winner holds about 0.80,
+   * which is enough for a landform to be recognisably itself while the
+   * transitions between them stay several hundred metres wide.
    */
-  const SIGMA2 = 2 * 0.30 * 0.30;
+  const SIGMA2 = 2 * 0.245 * 0.245;
 
   function archetypes(x, y) {
     // ~7 km and ~4.5 km wavelengths: an archetype lasts several kilometres of
@@ -268,7 +276,7 @@ export function createTerrain(seed) {
   }
 
   function hillsH(x, y) {
-    return erodedFbm(nA, x, y, 0.0017, 6, 0.52, 0.40) * 66;
+    return erodedFbm(nA, x, y, 0.0014, 6, 0.52, 0.40) * 105;
   }
 
   /**
@@ -277,19 +285,38 @@ export function createTerrain(seed) {
    * naturally wants to follow.
    */
   function valleyH(x, y) {
-    const trough = ridgedFbm(nB, x, y, 0.0013, 5, 0.5, 0.30);
-    const floor = -44 + erodedFbm(nA, x, y, 0.0022, 3, 0.5, 0.30) * 12;
-    return floor + (1 - trough) * 62;
+    const trough = ridgedFbm(nB, x, y, 0.0011, 5, 0.5, 0.30);
+    const floor = -60 + erodedFbm(nA, x, y, 0.0022, 3, 0.5, 0.30) * 16;
+    return floor + (1 - trough) * 128;
   }
 
+  /**
+   * Mountains, and this is where the world's vertical scale is actually set.
+   *
+   * The relief here used to top out around 300 m, which sounds like a mountain
+   * and does not look like one: against a 1.4 km corridor of visible ground
+   * that is a 12-degree swell, and the eye reads it as a big hill. Real ranges
+   * put 1,000–1,500 m between a valley floor and a summit over the same
+   * horizontal distance. This is now 620 m of ridge over a 150 m bulk, which
+   * with the continental term underneath it (see `continent`) reaches summits
+   * well over a kilometre above the low country.
+   *
+   * `ridgePow` is the other half of it. Squaring the ridged field before
+   * scaling pushes the distribution toward the floor — most of a mountain
+   * region is flank and valley, and only the crests reach the top of the range.
+   * A linear map spends far too much of its height budget on the middle, which
+   * is what makes a "mountain" look like a plateau with texture on it.
+   *
+   * Damping shapes the profile; it must not erase it. At the old value the
+   * accumulated gradient had suppressed everything past the third octave by
+   * ~90%, which removed exactly the frequencies that give a mountain its local
+   * slope.
+   */
   function mountainH(x, y) {
-    // Damping shapes the profile; it must not erase it. At the old value the
-    // accumulated gradient had suppressed everything past the third octave by
-    // ~90%, which removed exactly the frequencies that give a mountain its
-    // local slope and left 200 m peaks reading as 2-degree swells.
-    const ridge = ridgedFbm(nB, x, y, 0.0011, 7, 0.5, 0.42);
-    const bulk = erodedFbm(nA, x, y, 0.0008, 4, 0.5, 0.35);
-    return bulk * 74 + (ridge * 0.5 + 0.5) * 232;
+    const ridge = ridgedFbm(nB, x, y, 0.00082, 7, 0.5, 0.42) * 0.5 + 0.5;
+    const bulk = erodedFbm(nA, x, y, 0.0006, 4, 0.5, 0.35);
+    const peaked = ridge * ridge * (3 - 2 * ridge);   // smoothstep, cheap
+    return bulk * 150 + peaked * 620;
   }
 
   /**
@@ -329,6 +356,64 @@ export function createTerrain(seed) {
     return terraced * 135 + 18;
   }
 
+  /* -------------------------------------------------------- continental -- */
+
+  /**
+   * The elevation the whole map sits on, before any landform.
+   *
+   * Every archetype above is a field with a MEAN. Blend six of them and the
+   * result has a mean too, so however dramatic the local shape is, drive far
+   * enough and the ground comes back to roughly where it started — which is
+   * what "the average of everything still goes to zero" describes. A climb is
+   * always eventually paid for by a descent, and the road, which follows the
+   * ground, inherits exactly that: it can never simply go up for five minutes.
+   *
+   * Real topography does not work that way, and the reason is that it has TWO
+   * scales of relief. Landforms — ridges, valleys, escarpments — sit on a
+   * continental surface whose wavelength is far longer than anything you can
+   * see from the ground. You do not perceive it as a hill; you perceive it as
+   * having spent the last twenty minutes climbing.
+   *
+   * So: two octaves at 11 km and 5.5 km, +/-CONTINENT_AMP metres, added
+   * underneath everything.
+   *
+   * The WAVELENGTH is measured against how far the road actually travels, not
+   * against how far it drives. A routed alignment covers roughly 0.4 m of
+   * ground per metre of tarmac — it winds — so eighteen kilometres of driving is
+   * about seven kilometres of map, and a 19 km field (which is where this
+   * started) barely turns over in a whole session: measured, 106 m of total
+   * elevation change across 18 km of road. At 11 km the same drive crosses most
+   * of a cycle and the numbers become 123 to 348 m, with sustained climbs of
+   * three to five kilometres gaining 100 to 180 m and giving none of it back —
+   * which is what the whole term is for.
+   *
+   * The AMPLITUDE is bounded by the road's grade budget. 340 m over a 5.5 km
+   * half-cycle is a mean gradient near 6% against ROAD.maxGrade of 9.5%, which
+   * leaves the alignment room to traverse and switchback instead of being
+   * pinned to the clamp. Past that the router simply saturates and the extra
+   * height buys earthwork rather than scenery.
+   *
+   * `erodedFbm` rather than plain fBm because its derivative damping flattens
+   * the field where it is already steep, which gives long shallow benches
+   * separated by sustained climbs instead of a smooth sine — the difference
+   * between a plateau country and a rolling one.
+   *
+   * IT IS EVALUATED AT FULL OCTAVE DEPTH, ALWAYS. Everything else in this file
+   * fades its finest octaves out with the mesh's lateral resolution (see
+   * `lodOct`), which is right for detail and catastrophic here: at this
+   * amplitude a 20% change in an octave's weight between one column and the
+   * next is metres of height, and the columns out there are 55 m apart. The
+   * wavelengths are kilometres, so there is nothing to alias anyway.
+   */
+  const CONTINENT_AMP = 340;
+  function continent(x, y) {
+    const keep = lodOct;
+    lodOct = 99;
+    const h = erodedFbm(nA, x + 4211.7, y - 1877.3, 0.00009, 2, 0.55, 0.22);
+    lodOct = keep;
+    return h * CONTINENT_AMP;
+  }
+
   /* -------------------------------------------------------------- fields -- */
 
   /**
@@ -349,7 +434,7 @@ export function createTerrain(seed) {
       w.mountain * mountainH(wx, wy) +
       w.canyon * canyonH(wx, wy) +
       w.plateau * plateauH(wx, wy)
-    );
+    ) + continent(x, z);
     lodOct = 99;
     return h;
   }
@@ -427,6 +512,17 @@ export function createTerrain(seed) {
     archetypes,
     forestDensity,
     mask,
+    /**
+     * The continental surface at (x, z) — "local sea level".
+     *
+     * Exposed because it is what makes an altitude cue mean anything. The
+     * palette wants to know whether a place is high FOR HERE: 400 m is a summit
+     * in one part of the map and a valley floor two hundred kilometres away,
+     * and a colour ramp keyed to absolute height paints the second one white.
+     * Subtracting this leaves the landform's own relief, which is the quantity
+     * every rule about snow lines, tree lines and scree was always about.
+     */
+    continent,
     // Scalar accessors for colour jitter, road wear and prop seeding.
     nA: (x, z) => nA(x, z, t0)[0],
     nB: (x, z) => nB(x, z, t0)[0],

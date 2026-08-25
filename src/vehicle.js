@@ -83,6 +83,8 @@ export class RaycastVehicle {
     this.forwardSpeed = 0;
     this.groundedCount = 0;
     this.slip = 0;        // 0..1, drives skid audio and drift feedback
+    /** Steering lock available this frame, radians. See `_updateSteering`. */
+    this.steerLimit = 0;
 
     this.upsideDownFor = 0;
 
@@ -453,6 +455,18 @@ export class RaycastVehicle {
     // roughly constant instead of snapping instantly at speed.
     const scale = clamp(maxSteer / V.maxSteer, 0.25, 1);
     const rate = (Math.abs(input.steer) < 0.05 ? V.steerReturnRate : V.steerRate) * scale;
+
+    /**
+     * The lock actually available this frame.
+     *
+     * Published because `input.steer` is a NORMALISED command — full stick is
+     * full available lock, which is the right thing for a human — and anything
+     * that wants to ask for a steering ANGLE has to divide by this rather than
+     * by `V.maxSteer`. The two differ by a factor of six or more at speed, and
+     * a controller that gets it wrong delivers a sixth of the angle it thinks
+     * it asked for. See the note in `probe/drive.mjs`.
+     */
+    this.steerLimit = maxSteer;
 
     const target = input.steer * maxSteer;
     this.steer = clamp(moveTowards(this.steer, target, rate * dt), -maxSteer, maxSteer);

@@ -327,7 +327,7 @@ export async function createScene(container) {
     composer.addPass(new OutputPass()); // tone mapping + sRGB happen here
     composer.setSize(window.innerWidth, window.innerHeight);
   } catch (err) {
-    console.warn('[fastroads] post-processing unavailable, rendering direct.', err);
+    console.warn('[highroads] post-processing unavailable, rendering direct.', err);
   }
 
   // ---------------------------------------------------------------- resize --

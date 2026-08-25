@@ -25,8 +25,35 @@ const WORLD_UP = new THREE.Vector3(0, 1, 0);
 /** How many samples per control-point segment. ~2.5 m each at 46 m spacing. */
 const SAMPLES_PER_SEGMENT = Math.max(2, Math.round(ROAD.ctrlSpacing / ROAD.sampleStep));
 
-/** Half-width of the symmetric window used to smooth curvature into banking. */
+/**
+ * Half-widths, in samples, of the two symmetric windows the frames are built
+ * from. At ROAD.sampleStep = 2.5 m these are +/-10 m and +/-25 m.
+ *
+ * ORIENTATION and CURVATURE want the tightest honest estimate: the ribbon's
+ * lateral direction is measured against `tan`, and smoothing that skews the
+ * carriageway on a bend; banking is `curv * bankGain`, and a banking that lags
+ * the corner is worse than no banking at all — measured, widening this window
+ * alone took one seed's worst lane error from 5.8 m to 16.8 m, because through
+ * an S-bend the smoothed curvature still says "left" while the road has already
+ * gone right, and the cross-slope then throws the car off the outside.
+ *
+ * THE FOLD WINDOW is the exception, and it is a different question. The terrain
+ * fold guard does not care where the corner is, only how tight the tightest
+ * thing nearby is — see `chunks.js:foldSafeOffset`. A short-window curvature
+ * estimate is a second derivative of a spline through 46 m control points, so
+ * it carries the spline's own roughness: measured, it swung 38% in a single
+ * 2.5 m step, the road going from a 963 m radius to a 697 m one and back, which
+ * is not a thing that happens to a road. The guard turns that into tens of
+ * metres of lateral shear between adjacent rows 700 m out, which is a torn
+ * sheet. Fifty metres of window removes it, and a guard lagging a corner by
+ * 25 m costs nothing at all.
+ *
+ * The estimate stays exact for a circular arc at any width — the angle between
+ * two successive chord directions IS the total turn across them — so widening
+ * costs no peak curvature, only the sharpness of the transitions.
+ */
 const CURV_WINDOW = 4;
+const FOLD_WINDOW = 10;
 
 export class RoadPath {
   constructor(terrain, seed) {
@@ -37,7 +64,7 @@ export class RoadPath {
     this.ctrl = [];
     /** Densely sampled positions with cumulative arc length. */
     this.pts = [];
-    /** Per-sample orientation frames; lags `pts` by CURV_WINDOW. */
+    /** Per-sample orientation frames; lags `pts` by FOLD_WINDOW. */
     this.frames = [];
 
     this.framedUpTo = -1;
@@ -120,6 +147,55 @@ export class RoadPath {
       if (t > worst) worst = t;
     }
     return worst;
+  }
+
+  /**
+   * Road SEGMENTS belonging to a different pass of the road than station `s`,
+   * within `range` of (x, z). Consecutive control-point pairs are appended to
+   * `out` as [a, b, a, b, ...]; the return value is the number of pairs.
+   *
+   * This is the query behind the terrain's foreign-road clamp (see
+   * `chunks.js:sampleGround`). Control points are evenly spaced in ARC LENGTH,
+   * so "a different pass of the road" is an index band and no distances have to
+   * be accumulated to find it — the same trick `_selfProximity` uses.
+   *
+   * SEGMENTS, not points, and the difference is the whole thing working. The
+   * control points are 46 m apart, so a place standing directly on the foreign
+   * carriageway can still be 23 m from the nearest of them — and the cut ramp
+   * the clamp uses rises at 62%, so 23 m of error is 2.7 m of terrain left
+   * standing over the road. Measured: exactly the 2.6 m step this was written
+   * to remove. Distance to the polyline is the quantity that was always meant.
+   *
+   * The exclusion band is deliberately WIDER than `ROUTE.selfNear`. The index
+   * is only an estimate of arc length (the spline is a little longer than the
+   * chord through its control points), and the failure mode of excluding too
+   * much is that a genuinely separate carriageway 300 m along the road does not
+   * get carved for — invisible. The failure mode of excluding too little is
+   * cutting a trench across the road you are driving on.
+   */
+  foreignSegments(s, x, z, range, out) {
+    const spacing = ROAD.ctrlSpacing;
+    const iSelf = s / spacing;
+    const near = (ROUTE.selfNear + 120) / spacing;
+    const far = ROUTE.selfFar / spacing;
+    const r2 = range * range;
+    const lo = Math.max(0, Math.floor(iSelf - far));
+    const hi = Math.min(this.ctrl.length - 2, Math.ceil(iSelf + far));
+    let n = 0;
+    for (let i = lo; i <= hi; i++) {
+      // Both ends have to be foreign, or a segment straddling the band edge
+      // would reach back onto the road being driven.
+      if (Math.abs(i - iSelf) < near || Math.abs(i + 1 - iSelf) < near) continue;
+      const a = this.ctrl[i];
+      const b = this.ctrl[i + 1];
+      const dax = a.x - x, daz = a.z - z;
+      const dbx = b.x - x, dbz = b.z - z;
+      if (dax * dax + daz * daz > r2 && dbx * dbx + dbz * dbz > r2) continue;
+      out[n * 2] = a;
+      out[n * 2 + 1] = b;
+      n++;
+    }
+    return n;
   }
 
   /** Natural ground the router routes over. Coarser than the mesh — see ROUTE.lod. */
@@ -313,28 +389,32 @@ export class RoadPath {
   }
 
   /**
-   * Builds orientation frames for every sample that now has CURV_WINDOW
+   * Builds orientation frames for every sample that now has FOLD_WINDOW
    * neighbours on both sides, so curvature can be measured symmetrically.
    */
   _buildFrames() {
-    const last = this.pts.length - 1 - CURV_WINDOW;
+    const last = this.pts.length - 1 - FOLD_WINDOW;
 
-    for (let i = Math.max(this.framedUpTo + 1, CURV_WINDOW); i <= last; i++) {
-      const a = this.pts[i - CURV_WINDOW];
+    const _t1 = new THREE.Vector3(), _t2 = new THREE.Vector3(), _x = new THREE.Vector3();
+    /** Signed curvature at sample `i` over a +/-`w` window. See the constants. */
+    const curvatureAt = (i, w) => {
+      const a = this.pts[i - w];
       const b = this.pts[i];
+      const c = this.pts[i + w];
+      _t1.subVectors(b.p, a.p).normalize();
+      _t2.subVectors(c.p, b.p).normalize();
+      _x.crossVectors(_t1, _t2);
+      // Only the vertical component matters: banking responds to yaw rate, not
+      // to the pitch change from climbing a hill.
+      return Math.asin(clamp(_x.y, -1, 1)) / Math.max(1e-3, c.s - a.s);
+    };
+
+    for (let i = Math.max(this.framedUpTo + 1, FOLD_WINDOW); i <= last; i++) {
+      const a = this.pts[i - CURV_WINDOW];
       const c = this.pts[i + CURV_WINDOW];
 
       const tan = new THREE.Vector3().subVectors(c.p, a.p).normalize();
-
-      // Signed curvature over the window: the turn angle divided by arc length.
-      const t1 = new THREE.Vector3().subVectors(b.p, a.p).normalize();
-      const t2 = new THREE.Vector3().subVectors(c.p, b.p).normalize();
-      const cross = new THREE.Vector3().crossVectors(t1, t2);
-      // Only the vertical component matters: banking responds to yaw rate, not
-      // to the pitch change from climbing a hill.
-      const angle = Math.asin(clamp(cross.y, -1, 1));
-      const arc = Math.max(1e-3, c.s - a.s);
-      const curv = angle / arc;
+      const curv = curvatureAt(i, CURV_WINDOW);
 
       // right = tangent x up  (with forward = -Z, that resolves to +X).
       const right = new THREE.Vector3().crossVectors(tan, WORLD_UP).normalize();
@@ -348,28 +428,122 @@ export class RoadPath {
 
       // How much ground sits over the centreline here. Positive means the
       // alignment is below the natural surface — a cutting.
-      const cover = this.terrain.base(b.p.x, b.p.z) - b.p.y;
+      const here = this.pts[i];
+      const cover = this.terrain.base(here.p.x, here.p.z) - here.p.y;
 
-      this.frames[i] = { tan, right, up, bank, curv, cover };
+      this.frames[i] = { tan, right, up, bank, curv, foldL: 0, foldR: 0, cover };
       this.framedUpTo = i;
     }
 
     // The leading samples never get a symmetric window; mirror the first real
     // frame back onto them so s = 0 is addressable.
-    if (this.framedUpTo >= CURV_WINDOW && !this.frames[0]) {
-      for (let i = 0; i < CURV_WINDOW; i++) {
-        const f = this.frames[CURV_WINDOW];
+    if (this.framedUpTo >= FOLD_WINDOW && !this.frames[0]) {
+      for (let i = 0; i < FOLD_WINDOW; i++) {
+        const f = this.frames[FOLD_WINDOW];
         this.frames[i] = {
           tan: f.tan.clone(),
           right: f.right.clone(),
           up: f.up.clone(),
           bank: f.bank,
           curv: f.curv,
+          foldL: f.foldL,
+          foldR: f.foldR,
           cover: f.cover,
         };
       }
     }
+
+    this._buildFoldLimits();
   }
+
+  /**
+   * Per-frame curvature limits for the terrain's fold guard, one per side.
+   *
+   * ── why this is not just `curv` ────────────────────────────────────────────
+   *
+   * The guard in `chunks.js:foldSafeOffset` exists to stop the terrain sheet
+   * turning inside out. Rows of vertices fan out perpendicular to the road, so
+   * the longitudinal spacing at lateral offset `v` is `ds * (1 + v * kappa)` and
+   * the mesh folds when that reaches zero. `kappa` in that expression is the
+   * rate at which THIS ROW'S FRAME rotates into the NEXT ROW'S — nothing else.
+   *
+   * `curv` is not that number. It is the turn measured over +/-10 m, which is
+   * the right estimate for banking and for a corner-speed model and is a
+   * SMOOTHED one: where the spline turns sharply over a few metres, the average
+   * over twenty is smaller. Feeding it to the guard therefore relaxes exactly
+   * the limit the guard exists to enforce, and measured across five seeds the
+   * far corridor was folding through itself in 1,240 to 4,353 cells per seed —
+   * with the worst row spacing at MINUS 54% of nominal, which is a sheet turned
+   * inside out, drawn back-to-front, with garbage normals. It has been doing
+   * that since the guard was written.
+   *
+   * So the limit is built from the actual frame-to-frame rotation, and the
+   * guard's 0.7 margin then means what it says: no vertex can pass 70% of the
+   * way to the centre of rotation, so no quad can lose more than 70% of its
+   * depth, so nothing folds. By construction rather than by estimate.
+   *
+   * ── why a window, and why two of them ──────────────────────────────────────
+   *
+   * The frame-to-frame rate is the NOISIEST estimate there is — a second
+   * difference of a spline through 46 m control points — and the guard's output
+   * is a lateral position hundreds of metres out, so noise in it becomes tens of
+   * metres of shear between adjacent rows. A tear, instead of a fold.
+   *
+   * A running MAXIMUM over a window fixes both at once. It is conservative, so
+   * every row in the window is protected against the tightest turn near it; and
+   * the maximum of a continuous function over a sliding window is itself
+   * continuous, and holds its value across the window's width, so the spikes
+   * that caused the shear become plateaux.
+   *
+   * Two of them because the guard is ONE-SIDED and must stay that way. Only the
+   * inside of a bend folds; the outside spreads out. Compressing both sides
+   * would mean the world visibly ending 115 m away on the outside of a hairpin.
+   * Splitting the running maximum by sign — left turns bound the left side,
+   * right turns the right — keeps each side protected against every turn in the
+   * window while leaving a straight, or the outside of a bend, completely
+   * alone. A stretch that reverses within the window has both limits set, which
+   * is correct: within that window, both sides really do fold.
+   */
+  _buildFoldLimits() {
+    const frames = this.frames;
+    const pts = this.pts;
+    const last = this.framedUpTo;
+    if (last < 1) return;
+
+    // Frame-to-frame turn rate, signed. Positive turns left, which compresses
+    // negative `v` — the same convention `curv` uses.
+    if (!this._rowCurv) this._rowCurv = [];
+    const row = this._rowCurv;
+    const cross = _foldCross;
+    for (let i = Math.max(0, row.length - 1); i < last; i++) {
+      const a = frames[i];
+      const b = frames[i + 1];
+      if (!a || !b) { row[i] = 0; continue; }
+      cross.crossVectors(a.tan, b.tan);
+      const ds = Math.max(1e-3, pts[i + 1].s - pts[i].s);
+      row[i] = Math.asin(clamp(cross.y, -1, 1)) / ds;
+    }
+    row.length = last;
+
+    // Running maximum either side. Recomputed from `foldFrom` so that extending
+    // the road revisits the frames whose window now reaches further.
+    const from = Math.max(0, (this.foldFrom || 0) - FOLD_WINDOW);
+    for (let i = from; i <= last; i++) {
+      let l = 0;
+      let r = 0;
+      const lo = Math.max(0, i - FOLD_WINDOW);
+      const hi = Math.min(row.length - 1, i + FOLD_WINDOW);
+      for (let j = lo; j <= hi; j++) {
+        const k = row[j];
+        if (k > l) l = k;
+        else if (-k > r) r = -k;
+      }
+      const f = frames[i];
+      if (f) { f.foldL = l; f.foldR = r; }
+    }
+    this.foldFrom = last;
+  }
+
 
   /** Grows the spline until arc length `sTarget` is sampled and framed. */
   ensureLength(sTarget) {
@@ -422,6 +596,8 @@ export class RoadPath {
     out.up.crossVectors(out.right, out.tan).normalize();
     out.bank = lerp(fa.bank, fb.bank, t);
     out.curv = lerp(fa.curv, fb.curv, t);
+    out.foldL = lerp(fa.foldL, fb.foldL, t);
+    out.foldR = lerp(fa.foldR, fb.foldR, t);
     out.cover = lerp(fa.cover || 0, fb.cover || 0, t);
     out.s = s;
     return out;
@@ -504,10 +680,15 @@ export function makeFrame() {
     up: new THREE.Vector3(),
     bank: 0,
     curv: 0,
+    foldL: 0,
+    foldR: 0,
     cover: 0,
     s: 0,
   };
 }
+
+/** Scratch for `_buildFoldLimits`, which runs once per sample per extension. */
+const _foldCross = new THREE.Vector3();
 
 const _scratchFrame = makeFrame();
 const _v = new THREE.Vector3();
