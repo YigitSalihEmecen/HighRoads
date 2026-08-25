@@ -29,7 +29,6 @@ import { Powertrain } from './powertrain.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { createScene } from './scene.js';
-import { createShowroom } from './showroom.js';
 import { Wind } from './wind.js';
 import { TyreFX } from './fx.js';
 import { Settings } from './settings.js';
@@ -131,8 +130,16 @@ export async function boot() {
   // ever sees it, so there's no hitch on the first real frame.
   game.loop(performance.now());
 
+  // The settings panel is built once, here, and re-parented between the title
+  // screen's Settings drawer and the pause menu — see `Game.setPaused`. It used
+  // to be constructed on the first Drive, which meant its values did not exist
+  // until then and nothing on the title screen could show them.
+  game.settings = new Settings(game);
+
   buildGarage(game, roster);
   buildSeedBox(game);
+  buildDrawers(game);
+  buildPauseMenu(game);
 
   bootEl.textContent = `${foliage.size} plants · ${roster.length} vehicles`;
   startBtn.disabled = false;
@@ -145,6 +152,7 @@ export async function boot() {
     await game.powertrain.start(game.car());
     game.startRun();
   };
+  window.addEventListener('resize', () => game.refreshTitleFraming());
   startBtn.addEventListener('click', begin);
   document.getElementById('go-again').addEventListener('click', () => game.startRun());
   document.getElementById('go-garage').addEventListener('click', () => game.enterGarage());
@@ -166,11 +174,19 @@ function buildSeedBox(game) {
   const terrainBox = document.getElementById('terrain-box');
   const terrainCanvas = document.getElementById('terrain-canvas');
 
-  if (terrainCanvas && game.terrain && game.path && game.gfx) {
-    requestAnimationFrame(() => {
-      drawTerrainMap(terrainCanvas, game.terrain, game.path, game.seed, game.gfx, game.chunks);
-    });
-  }
+  /**
+   * The route snapshot is rendered ON DEMAND, not at boot.
+   *
+   * It lives inside a folded drawer now, and a canvas inside a collapsed grid
+   * row measures zero — `drawTerrainMap` sizes itself from the element's
+   * rectangle, so drawing it while the drawer is shut produces a picture at the
+   * fallback resolution that is then stretched over whatever size the drawer
+   * turns out to be. `buildDrawers` calls this when World is first opened.
+   */
+  game.drawRoutePreview = () => {
+    if (!terrainCanvas || !game.terrain || !game.path || !game.gfx) return;
+    drawTerrainMap(terrainCanvas, game.terrain, game.path, game.seed, game.gfx, game.chunks);
+  };
 
   if (!input) return;
 
@@ -201,30 +217,20 @@ function buildSeedBox(game) {
   input.addEventListener('keyup', (e) => e.stopPropagation());
 }
 
-/** Builds the car picker on the title screen. */
+/**
+ * Builds the pickers on the title screen.
+ *
+ * What is NOT here any more: the paragraph. Every car used to arrive with a
+ * sentence of ad copy and a four-cell table of mass, engine, layout and
+ * redline, held at a fixed height so that changing car did not move the
+ * controls under the player's thumb. It was the tallest thing in the menu, it
+ * pushed the one button that matters off the bottom of a phone, and none of it
+ * survives contact with the car being visible on screen behind it. The chips
+ * name the cars; the car shows what it is.
+ */
 function buildGarage(game, roster) {
-  const garage = document.getElementById('garage');
-  const list = document.getElementById('car-list');
-  const detail = document.getElementById('car-detail');
   const chips = new Map();
-
-  const refreshDetail = () => {
-    const spec = carById(game.carId);
-    const drive = { fwd: 'front-wheel drive', rwd: 'rear-wheel drive', awd: 'all-wheel drive' }[spec.drive];
-    const eng = game.powertrain.sim ? game.powertrain.sim.profile : null;
-    const engName = eng ? eng.label : ENGINE_OPTIONS.find((e) => e.id === game.engineChoice).name;
-    const stock = game.engineChoice === 'stock';
-    detail.innerHTML =
-      `<b>${spec.name}</b> — ${spec.blurb}` +
-      `<div id="car-stats">` +
-      `<span>Mass<b>${spec.mass} kg</b></span>` +
-      `<span>Engine<b>${engName}</b></span>` +
-      `<span>Layout<b>${spec.drive.toUpperCase()}</b></span>` +
-      (eng ? `<span>Redline<b>${eng.redlineRpm}</b></span>` : '') +
-      `</div>` +
-      `<div style="margin-top:6px;opacity:.6">${drive}${stock ? '' : ' · engine swapped'}` +
-      ` — ${GAME_MODES.find((m) => m.id === game.mode).blurb}</div>`;
-  };
+  const list = document.getElementById('car-list');
 
   /** Flashes a chip for as long as the throttle blip lasts. */
   const flash = (el) => {
@@ -237,13 +243,13 @@ function buildGarage(game, roster) {
     game.setCar(id);
     for (const [cid, chip] of chips) chip.setAttribute('aria-pressed', String(cid === id));
     chips.get(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    refreshDetail();
+    game.refreshSummaries();
     // The click is a user gesture, which is the only moment Web Audio will
     // start. Taking it means the player hears the engine before committing to
     // it rather than discovering it a kilometre down the road.
     if (preview) {
       flash(chips.get(id));
-      game.previewEngine().then(refreshDetail);
+      game.previewEngine().then(() => game.refreshSummaries());
     }
   };
 
@@ -264,7 +270,7 @@ function buildGarage(game, roster) {
   const pickMode = (id) => {
     game.setMode(id);
     for (const [mid, el] of modeChips) el.setAttribute('aria-pressed', String(mid === id));
-    refreshDetail();
+    game.refreshSummaries();
   };
   for (const m of GAME_MODES) {
     const el = document.createElement('button');
@@ -330,9 +336,8 @@ function buildGarage(game, roster) {
     game.setEngine(id);
     for (const [eid, el] of engineChips) el.setAttribute('aria-pressed', String(eid === id));
     engineChips.get(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    refreshDetail();
     flash(engineChips.get(id));
-    game.previewEngine().then(refreshDetail);
+    game.previewEngine().then(() => game.refreshSummaries());
   };
   for (const e of ENGINE_OPTIONS) {
     const el = document.createElement('button');
@@ -345,11 +350,97 @@ function buildGarage(game, roster) {
     engineChips.set(e.id, el);
   }
 
-  garage.classList.add('ready');
   select(game.carId, false);   // no audio before the player has clicked anything
   pickColor(game.colorId);
   pickTrim(game.trimId);
   pickMode(game.mode);
+}
+
+/**
+ * Accordion behaviour for a set of `.drawer` sections.
+ *
+ * ONE OPEN AT A TIME, and that is the whole reason the title screen fits on a
+ * phone now. Four folded drawers plus the Drive button is a fixed height; four
+ * OPEN drawers is the wall of controls this replaced. The summary in each
+ * header is what makes a shut drawer honest — it still answers the question you
+ * would have opened it to ask.
+ *
+ * @param {Element} root  the container to scope the accordion to
+ * @param {?function(string)} onOpen  called with the drawer's key when it opens
+ */
+function wireDrawers(root, onOpen) {
+  const drawers = [...root.querySelectorAll('.drawer')];
+  for (const d of drawers) {
+    const head = d.querySelector('.drawer-head');
+    if (!head) continue;
+    head.addEventListener('click', () => {
+      const open = !d.classList.contains('open');
+      for (const other of drawers) {
+        const on = other === d && open;
+        other.classList.toggle('open', on);
+        other.querySelector('.drawer-head').setAttribute('aria-expanded', String(on));
+      }
+      if (!open) return;
+      // Let the fold finish before scrolling, or the browser scrolls to the
+      // height the drawer had a third of a second ago.
+      setTimeout(() => d.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 340);
+      if (onOpen) onOpen(d.dataset.drawer || d.id);
+    });
+  }
+  return drawers;
+}
+
+/** The title screen's four drawers. */
+function buildDrawers(game) {
+  const host = document.getElementById('drawers');
+  if (!host) return;
+  let drewRoute = false;
+  wireDrawers(host, (key) => {
+    if (key === 'world' && !drewRoute) {
+      drewRoute = true;
+      // One frame, so the fold has a size to measure.
+      requestAnimationFrame(() => requestAnimationFrame(() => game.drawRoutePreview()));
+    }
+  });
+
+  // The settings panel writes its own values; the drawer header mirrors them.
+  // One delegated listener rather than a callback per control — every slider in
+  // there raises `input`, and none of them needs to know a header exists.
+  const body = document.getElementById('settings-body');
+  if (body) body.addEventListener('input', () => game.refreshSummaries());
+
+  game.refreshSummaries();
+}
+
+/**
+ * The pause menu.
+ *
+ * Note what it does NOT contain: a second copy of the settings controls. The
+ * panel `settings.js` builds is moved in here and moved back out again, because
+ * two sets of sliders bound to the same buses are two things that can disagree
+ * about what the volume is.
+ */
+function buildPauseMenu(game) {
+  const root = document.getElementById('pause');
+  if (!root) return;
+  wireDrawers(root, null);
+
+  document.getElementById('pause-btn').addEventListener('click', () => game.setPaused(true));
+  document.getElementById('pause-resume').addEventListener('click', () => game.setPaused(false));
+  document.getElementById('pause-restart').addEventListener('click', () => {
+    game.setPaused(false);
+    game.startRun();
+  });
+  document.getElementById('pause-garage').addEventListener('click', () => {
+    game.setPaused(false);
+    game.enterGarage();
+  });
+
+  // Clicking the backdrop resumes; clicking the card does not.
+  root.addEventListener('click', (e) => { if (e.target === root) game.setPaused(false); });
+  // Nothing typed into the menu should reach the driving controls.
+  root.addEventListener('keydown', (e) => e.stopPropagation());
+  root.addEventListener('keyup', (e) => e.stopPropagation());
 }
 
 /* ------------------------------------------------------------------------- */
@@ -383,12 +474,11 @@ class Game {
     this.overlayEl = document.getElementById('overlay');
     this.gameOverEl = document.getElementById('gameover');
 
-    /**
-     * The title screen's own scene. Separate from the world on purpose — see
-     * showroom.js; the road was the wrong backdrop for choosing a car, and it
-     * was also whatever the seed happened to make it that kilometre.
-     */
-    this.showroom = createShowroom();
+    /** True while the pause menu is up. Distinct from `!active`. */
+    this.paused = false;
+    /** The current model's measurements, for the title rig's fit. */
+    this.carMetrics = null;
+    this._stageEl = null;
 
     this.input = new Input();
     this.hud = new HUD();
@@ -399,7 +489,7 @@ class Game {
      * engine_sim has built that, which is inside the Drive click.
      */
     this.wind = new Wind();
-    /** Tyre smoke and rubber. Lives in the world scene, not the showroom's. */
+    /** Tyre smoke and rubber. */
     this.fx = new TyreFX(gfx.scene, {
       anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
     });
@@ -415,6 +505,22 @@ class Game {
 
     this._tmp = new THREE.Vector3();
 
+    /**
+     * The pause key is bound here rather than going through `Input`.
+     *
+     * Everything in `_handleActions` is read only while the game is running,
+     * which is exactly the state a pause key has to work in BOTH sides of. It
+     * also has to keep working while the menu is up, and the menu swallows key
+     * events so a slider cannot steer the car.
+     */
+    this._onPauseKey = (e) => {
+      if (e.code !== 'Escape' && e.code !== 'KeyP') return;
+      if (this.inGarage) return;
+      e.preventDefault();
+      this.togglePause();
+    };
+    window.addEventListener('keydown', this._onPauseKey);
+
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         this.powertrain.suspend();
@@ -422,7 +528,7 @@ class Game {
         // minutes of pending physics would fling the car into orbit.
         this.accumulator = 0;
         this.lastTime = performance.now();
-      } else if (this.active) {
+      } else if (this.active && !this.paused) {
         this.powertrain.resume();
       }
     });
@@ -452,7 +558,8 @@ class Game {
       model,
     });
     this.carId = spec.id;
-    if (this.inGarage) this.showroom.setCar(model, model.metrics);
+    // The title rig fits the car to the free rectangle from these.
+    this.carMetrics = model.metrics;
     // A car the player has never coloured takes its own default; once they
     // choose, that choice follows them from car to car.
     if (!this.colorId) this.colorId = spec.defaultColor || CAR_COLORS[0].id;
@@ -490,38 +597,60 @@ class Game {
    * can choose what to do next.
    */
   enterGarage() {
+    // Before `inGarage` flips, so a run abandoned from the pause menu leaves
+    // the audio context running rather than suspended behind the title screen —
+    // `setPaused` will not resume anything once it believes we are in the
+    // garage, and the garage still wants to hear the engine blip.
+    this.setPaused(false);
+    this.powertrain.resume();
     this.active = false;
     this.inGarage = true;
     this.gameOverEl.classList.remove('show');
     this.overlayEl.classList.remove('gone');
-    this.cam.setGarage(true);
+    this.cam.setTitle(true);
     this.hud.hide();
-    // Take the car off the road and put it on the turntable. The model's groups
-    // are re-parented, not cloned: same meshes, same materials, so a paint
-    // click is still one property write and there is no second copy to drift.
-    const model = this.models.get(this.carId);
-    if (model) this.showroom.setCar(model, model.metrics);
     // The on-screen driving controls belong to driving. Left up over the title
     // screen they are a steering wheel on top of a menu — live, tappable, and
     // attached to a car that is parked.
     document.body.classList.remove('driving');
     if (this.traffic) this.traffic.dispose();
-    this.respawn(this.carS);
+    // Back to the start of the road rather than to wherever the last run ended.
+    // The title screen is a photograph of the world you are about to be dropped
+    // into, and you are dropped in at the beginning of it.
+    this.carS = START_S;
+    this.respawn(START_S);
     this.vehicle.setParked(true);
+    this.fx.reset();
+    this.wind.update(0, 0);
+    this.mountSettings('title-settings-host');
+    this.refreshSummaries();
   }
 
+  /**
+   * Drive.
+   *
+   * The camera does not cut. It is left exactly where the title orbit had it
+   * and flown into the chase position over `TITLE.introTime` — see
+   * `camera.beginIntro` — while the overlay fades out underneath. The two
+   * overlap deliberately, so the transition reads as one move rather than as a
+   * menu closing and then a camera starting.
+   *
+   * Controls go live immediately rather than at the end of the flight. A second
+   * and a bit of a car that will not respond is a second and a bit of a game
+   * that looks broken, and the chase goal is recomputed every frame, so pulling
+   * away during the fly-in simply moves the place the camera is flying to.
+   */
   startRun() {
     this.gameOverEl.classList.remove('show');
     this.overlayEl.classList.add('gone');
+    this.setPaused(false);
     this.inGarage = false;
-    this.cam.setGarage(false);
+    this.cam.setTitle(false);
+    this.cam.beginIntro();
     this.hud.show();
     document.body.classList.add('driving');
-    // Hand the car back to the vehicle, which owns those groups while driving.
-    this.showroom.releaseCar();
-    if (this.vehicle) this.vehicle.reattachModel();
     this.hud.setMode(this.mode);
-    if (!this.settings) this.settings = new Settings(this);
+    this.mountSettings('pause-settings-host');
     this.input.bindTouch(document);
     this.vehicle.setParked(false);
     this.respawn(this.carS);
@@ -548,6 +677,128 @@ class Game {
       `${(this.trip / 1000).toFixed(2)} km`;
     document.getElementById('go-record').textContent = record ? 'New best' : '';
     this.gameOverEl.classList.add('show');
+  }
+
+  // ---------------------------------------------------------------- pause --
+
+  /**
+   * Pause.
+   *
+   * Freezing a fixed-step simulation is not a matter of multiplying `dt` by
+   * zero — the accumulator would keep filling from wall time and the world
+   * would fast-forward through everything it owed the moment play resumed,
+   * which is the same failure as returning to a backgrounded tab. So the loop
+   * returns BEFORE the accumulator is touched: no time is banked, and the frame
+   * still renders, so what is behind the menu is the road you stopped on.
+   *
+   * Audio is suspended rather than muted. The engine simulator runs on the
+   * AudioContext's own clock and would otherwise keep idling behind the menu.
+   */
+  setPaused(on) {
+    const want = !!on && !this.inGarage;
+    if (want === this.paused) return;
+    this.paused = want;
+    document.body.classList.toggle('paused', want);
+    if (want) {
+      this.powertrain.suspend();
+      this._refreshPauseStats();
+    } else {
+      if (this.active) this.powertrain.resume();
+      // Wall time moved on while the menu was up; the next frame must not be
+      // handed the whole of it.
+      this.lastTime = performance.now();
+      this.accumulator = 0;
+    }
+  }
+
+  togglePause() {
+    this.setPaused(!this.paused);
+  }
+
+  _refreshPauseStats() {
+    const set = (id, text) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    };
+    set('pause-km', (this.trip / 1000).toFixed(2) + ' km');
+    set('pause-speed', Math.round(Math.abs(this.vehicle.forwardSpeed) * 3.6) + ' km/h');
+    set('pause-score', Math.round(this.run.score).toLocaleString());
+    const wrap = document.getElementById('pause-score-wrap');
+    if (wrap) wrap.style.display = this.mode === 'traffic' ? '' : 'none';
+  }
+
+  /**
+   * Moves the settings panel to whichever host wants it now.
+   *
+   * See the note in `index.html`: there is one panel, and it is re-parented
+   * between the title screen's Settings drawer and the pause menu rather than
+   * built twice. `appendChild` on a node that already has a parent is a move,
+   * so this is the whole implementation.
+   */
+  mountSettings(hostId) {
+    const host = document.getElementById(hostId);
+    const body = this.settings && this.settings.body;
+    if (!host || !body || body.parentNode === host) return;
+    host.appendChild(body);
+  }
+
+  // ------------------------------------------------------- title readouts --
+
+  /**
+   * Writes the one-line summary into each folded drawer's header.
+   *
+   * This is what a closed drawer is worth. Without it the title screen is four
+   * words and no state, and the player has to open every one of them to find
+   * out what they are about to drive.
+   */
+  refreshSummaries() {
+    const set = (id, text) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    };
+    const spec = carById(this.carId);
+    const colour = colorById(this.colorId);
+    set('v-car', spec ? `${spec.name} · ${colour ? colour.name : ''}`.trim() : '');
+
+    const sim = this.powertrain.sim ? this.powertrain.sim.profile : null;
+    const choice = ENGINE_OPTIONS.find((e) => e.id === this.engineChoice);
+    set('v-engine', sim ? sim.label : (choice ? choice.name : 'Stock'));
+
+    const mode = GAME_MODES.find((m) => m.id === this.mode);
+    set('v-world', `${mode ? mode.name : ''} · ${this.seed}`);
+    set('mode-hint', mode ? mode.blurb : '');
+
+    const pt = this.powertrain;
+    const summary = `${pt.autoShift ? 'Auto' : 'Manual'} · ${Math.round(pt.volume * 100)}%`;
+    set('v-settings', summary);
+    set('v-pause-settings', summary);
+  }
+
+  /**
+   * Hands the title rig the slice of screen the interface is not using.
+   *
+   * Measured from the DOM rather than assumed. `#stage` is the hole in the
+   * title screen's grid — see the layout note in `index.html` — and its shape
+   * changes with the orientation, the safe area and whether a drawer is open. A
+   * camera tuned by hand against one of those puts the car behind a panel the
+   * moment another changes; that is bug #53 exactly. A layout query per frame
+   * would be indefensible in the driving loop and costs nothing on a menu that
+   * is not moving anything else.
+   */
+  _frameTitle() {
+    if (!this._stageEl) this._stageEl = document.getElementById('stage');
+    const r = this._stageEl ? this._stageEl.getBoundingClientRect() : null;
+    this.cam.frameTitle(
+      window.innerWidth,
+      window.innerHeight,
+      r && r.width > 0 ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null,
+      this.carMetrics
+    );
+  }
+
+  /** Re-frames after a rotation or a window resize, without waiting a frame. */
+  refreshTitleFraming() {
+    if (this.inGarage) this._frameTitle();
   }
 
   setEngine(id) {
@@ -623,6 +874,21 @@ class Game {
     const dt = Math.min((now - this.lastTime) / 1000, maxFrame);
     this.lastTime = now;
 
+    /**
+     * Paused: draw the frame, bank no time.
+     *
+     * This returns before the accumulator is touched on purpose. Scaling `dt`
+     * to zero instead would leave the accumulator filling from wall time, and
+     * the world would then fast-forward through every second the menu was up —
+     * the same failure as returning to a tab that has been in the background,
+     * which the visibility handler below exists to avoid.
+     */
+    if (this.paused) {
+      this.gfx.render();
+      this.input.endFrame();
+      return;
+    }
+
     this.input.update(dt);
     if (this.active) this._handleActions();
 
@@ -697,9 +963,9 @@ class Game {
     this.chunks.update(this.carS);
 
     // Tyre effects read the wheel state the substeps above just wrote, so they
-    // have to come after the loop and before anything renders. They are inert
-    // on the title screen: the car is parked, nothing is slipping, and the
-    // world scene is not what is on screen anyway.
+    // have to come after the loop and before anything renders. On the title
+    // screen they are inert rather than hidden — the car is parked and nothing
+    // is slipping — which matters now that the title screen is the world.
     this.fx.update(dt, this.vehicle);
     this.wind.update(dt, this.active ? this.vehicle.forwardSpeed : 0);
 
@@ -722,17 +988,10 @@ class Game {
     this._checkRecovery(dt);
 
     // ---- presentation ----------------------------------------------------
-    // On the title screen the world is not what is on screen. The simulation
-    // above still runs — the car settles, the engine idles, chunks stream — but
-    // the camera, the sky dome and the speed blur all belong to the road, and
-    // none of them has anything to say about a studio.
-    if (this.inGarage) {
-      this.showroom.update(dt);
-      this._frameShowroom();
-      this.gfx.render(this.showroom.scene, this.showroom.camera);
-      this.input.endFrame();
-      return;
-    }
+    // The title screen and the road are the same picture now, so there is one
+    // presentation path rather than two. All that differs is which rig is
+    // driving the camera and whether the speed effects have anything to say.
+    if (this.inGarage) this._frameTitle();
 
     // Camera first: follow() re-centres the sky dome on the camera, so it must
     // see this frame's position, not last frame's.
@@ -768,33 +1027,6 @@ class Game {
 
     // Anything that did not consume its one-shot press this frame loses it.
     this.input.endFrame();
-  }
-
-  /**
-   * Hands the showroom the slice of screen the interface is not using.
-   *
-   * Measured from the DOM every frame rather than assumed. `#stage` is the half
-   * of the title screen the interface is not using — see the layout note in
-   * `index.html` — and its shape changes with the orientation, the safe area
-   * and how many rows the garage has. A camera tuned by hand against one of
-   * those puts the car behind the panel the moment another changes; that is bug
-   * #53 exactly. A layout query per frame would be indefensible in the driving
-   * loop and costs nothing on a menu that is not moving anything else.
-   */
-  _frameShowroom() {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    if (!this._stageEl) {
-      this._stageEl = document.getElementById('stage');
-    }
-    const stage = this._stageEl ? this._stageEl.getBoundingClientRect() : null;
-    if (!stage) { this.showroom.frame(vw, vh, null); return; }
-    this.showroom.frame(vw, vh, {
-      left: stage.left + 20,
-      right: stage.right - 20,
-      top: stage.top + 30,
-      bottom: stage.bottom - 60,
-    });
   }
 
   _handleActions() {
@@ -836,6 +1068,7 @@ class Game {
     const v = this.powertrain.setAutoShift(on);
     this.hud.toast(v ? 'automatic' : 'manual');
     if (this.settings) this.settings.refresh();
+    this.refreshSummaries();
     return v;
   }
 

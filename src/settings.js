@@ -1,12 +1,20 @@
 /**
- * settings.js — the in-game settings drawer.
+ * settings.js — the settings panel.
  *
- * A collapsible panel on the left exposing the parts of the engine simulator
- * worth touching while driving: master level, the six voice buses it mixes
- * independently, and the two tone controls. Plus the gearbox mode, which is a
- * driving setting rather than an audio one but belongs with the other toggles.
+ * The parts of the engine simulator worth touching: master level, the six voice
+ * buses it mixes independently, the two tone controls, the wind, plus the
+ * gearbox and camera modes — driving settings rather than audio ones, but they
+ * belong with the other toggles.
  *
- * One non-obvious constraint shapes the whole file: **the game reads the
+ * IT IS A NODE, NOT A PLACE. There used to be a tab clinging to the left edge
+ * of the screen that slid this out over the road, and the panel knew where it
+ * lived: it owned `#settings`, `#settings-toggle` and an `open` flag. The same
+ * controls are now wanted folded into the title screen's Settings drawer AND
+ * inside the pause menu, and the honest way to be in two places is to be moved
+ * between them — see `Game.mountSettings`. So this module builds the panel and
+ * nothing else; whoever wants it appends it.
+ *
+ * One non-obvious constraint shapes the rest of the file: **the game reads the
  * keyboard from `window`**. A focused range input also responds to arrow keys,
  * so a slider left focused would steer the car every time the player nudged it.
  * Every control therefore blurs itself as soon as it is released, and the panel
@@ -33,28 +41,15 @@ const BUSES = [
 export class Settings {
   constructor(game) {
     this.game = game;
-    this.root = document.getElementById('settings');
     this.body = document.getElementById('settings-body');
-    this.toggle = document.getElementById('settings-toggle');
-    this.open = false;
     this._rows = [];
-
-    this.toggle.addEventListener('click', () => this.setOpen(!this.open));
 
     // The panel is a keyboard trap by design — nothing typed into it should
     // reach the driving controls.
-    this.root.addEventListener('keydown', (e) => e.stopPropagation());
-    this.root.addEventListener('keyup', (e) => e.stopPropagation());
+    this.body.addEventListener('keydown', (e) => e.stopPropagation());
+    this.body.addEventListener('keyup', (e) => e.stopPropagation());
 
     this._build();
-    this.setOpen(false);
-  }
-
-  setOpen(open) {
-    this.open = open;
-    this.root.classList.toggle('open', open);
-    this.toggle.textContent = open ? '‹' : '›';
-    this.toggle.setAttribute('aria-expanded', String(open));
   }
 
   _section(title) {

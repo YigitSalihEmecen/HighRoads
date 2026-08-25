@@ -303,10 +303,19 @@
 
   /* ------------------------------------------------------------- run HUD -- */
 
+  /**
+   * The score hangs under the pause button, not behind it.
+   *
+   * Both want the middle of the top edge — the pause control because it is the
+   * one place on a touch screen neither thumb rests on, the score because it is
+   * the number you glance at. The pause button is fixed and small, so the score
+   * takes the offset: one tap height plus a gap, which is exactly what the
+   * button occupies.
+   */
   #run {
     position: absolute;
     left: 0; right: 0;
-    top: var(--edge-t);
+    top: calc(var(--edge-t) + var(--tap) + var(--s2));
     display: none;
     flex-direction: column;
     align-items: center;
@@ -367,190 +376,79 @@
   /* ------------------------------------------------------------ overlay -- */
 
   /**
-   * TITLE SCREEN: TWO HALVES (Left: Preview Column, Right: Settings / Garage).
-   * Left column is split vertically into:
-   *   - TOP BOX: 2D procedural topographic terrain preview map (clickable to re-roll seed).
-   *   - BOTTOM BOX: 3D showroom car preview.
-   * Right column holds the Garage, vehicle configuration, and start controls.
+   * TITLE SCREEN — THE WORLD IS THE BACKDROP.
+   *
+   * There is no studio any more. The car on screen is the real vehicle, parked
+   * on the real road at the real spawn point, lit by that seed's own sun, with
+   * that seed's own landscape behind it; the camera orbits it slowly and, when
+   * Drive is pressed, flies from the orbit into the chase position without a
+   * cut. Which means the interface's job here is the opposite of what it used
+   * to be. It is not framing a product shot — the scene already IS one — it is
+   * staying out of the way of it.
+   *
+   * So everything is a floating pane of glass over a picture, and the layout is
+   * A GRID WITH A HOLE IN IT. `#stage` is the hole: the region no panel covers.
+   * `camera.js` measures that rectangle every frame and solves the orbit
+   * distance and aim so the car lands inside it. Open a drawer, rotate the
+   * phone, run it on a monitor — the framing follows, because it is derived
+   * from the thing that actually changed rather than tuned against one screen.
+   *
+   * PORTRAIT stacks: wordmark, hole, dock along the bottom.
+   * LANDSCAPE splits: wordmark and hole on the left, dock down the right edge.
+   * Both are the same three boxes in the same order; only the axis differs.
    */
   #overlay {
     position: fixed;
     inset: 0;
-    display: flex;
-    flex-direction: column;
     z-index: 15;
-    transition: opacity 0.7s ease, visibility 0s;
-    text-align: center;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     padding: var(--edge-t) var(--edge-r) var(--edge-b) var(--edge-l);
     gap: var(--s3);
     pointer-events: none;
+    transition: opacity 0.55s ease, visibility 0s;
   }
-  @media (orientation: landscape) {
-    #overlay {
-      flex-direction: row;
-      align-items: stretch;
-      justify-content: space-between;
-    }
+  /* A whisper of shade top and bottom, so the wordmark survives a bright sky
+     and the glass has something to sit against. Absolutely positioned, so it
+     is not a grid item and does not occupy a row. */
+  #overlay::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, rgba(8, 8, 12, 0.55) 0%, transparent 26%),
+      linear-gradient(0deg, rgba(8, 8, 12, 0.5) 0%, transparent 34%);
   }
+  /**
+   * Leaving. The overlay fades while the camera is already flying in, so the
+   * two motions overlap and the transition reads as one move rather than as a
+   * menu closing followed by a camera starting.
+   */
   #overlay.gone {
     opacity: 0;
     visibility: hidden;
-    transition: opacity 0.7s ease, visibility 0s linear 0.7s;
+    transition: opacity 0.55s ease, visibility 0s linear 0.55s;
   }
 
-  /* ---- LEFT COLUMN: Preview column (50%) -------------------------------- */
-  #preview-col {
-    flex: 1 1 50%;
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--s3);
-    pointer-events: none;
-  }
   @media (orientation: landscape) {
-    #preview-col {
-      max-width: 50%;
-      height: 100%;
+    #overlay {
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-rows: auto minmax(0, 1fr);
     }
+    #brand { grid-area: 1 / 1; }
+    #stage { grid-area: 2 / 1; }
+    #dock  { grid-area: 1 / 2 / 3 / 3; }
   }
 
-  /* TOP BOX: Terrain / Map Preview Box */
-  #terrain-box {
-    flex: 1 1 45%;
-    min-height: 130px;
-    background: var(--panel);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid var(--line);
-    border-radius: var(--r-lg);
-    box-shadow: var(--shadow);
-    display: flex;
-    flex-direction: column;
-    position: relative;
-    overflow: hidden;
-    cursor: pointer;
-    pointer-events: auto;
-    transition: transform 0.18s, border-color 0.18s, box-shadow 0.18s;
-  }
-  #terrain-box:hover {
-    border-color: var(--accent-dim);
-    transform: translateY(-2px);
-    box-shadow: 0 8px 28px rgba(255, 180, 87, 0.22);
-  }
-  #terrain-box:active {
-    transform: scale(0.99);
-  }
-
-  .box-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--s2) var(--s3);
-    background: rgba(14, 13, 18, 0.75);
-    border-bottom: 1px solid var(--line);
-    z-index: 2;
-  }
-  .box-title {
-    font-size: var(--fs-xs);
-    letter-spacing: 0.18em;
-    color: var(--accent);
-    font-weight: 600;
-    text-transform: uppercase;
-  }
-  .seed-badge {
-    font-size: var(--fs-xs);
-    letter-spacing: 0.12em;
-    color: var(--dim);
-    background: rgba(244, 234, 217, 0.08);
-    padding: 2px var(--s2);
-    border-radius: var(--r-sm);
-    border: 1px solid rgba(244, 234, 217, 0.12);
-  }
-
-  #terrain-canvas {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-
-  .terrain-overlay {
-    position: absolute;
-    inset: auto 0 0 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--s2) var(--s3);
-    background: linear-gradient(0deg, rgba(14, 13, 18, 0.92) 0%, rgba(14, 13, 18, 0.6) 70%, transparent 100%);
-    z-index: 2;
-    pointer-events: none;
-  }
-  .reroll-tag {
-    font-size: var(--fs-xs);
-    letter-spacing: 0.14em;
-    color: var(--accent);
-    font-weight: 600;
-    text-transform: uppercase;
-    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
-  }
-  .terrain-info {
-    font-size: var(--fs-xs);
-    letter-spacing: 0.1em;
-    color: var(--dim);
-    text-transform: uppercase;
-  }
-
-  /* BOTTOM BOX: Car Preview Box (#stage) */
-  #stage {
-    flex: 1 1 55%;
-    min-width: 0;
-    min-height: 140px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    position: relative;
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: var(--r-lg);
-    box-shadow: var(--shadow);
-    padding: var(--s2) var(--s3);
-    overflow: hidden;
-    pointer-events: auto;
-  }
-
-  #stage-car {
-    flex: 1 1 auto;
-    width: 100%;
-    min-height: 60px;
-    display: flex;
-    align-items: flex-end;
-    justify-content: center;
-    padding-bottom: var(--s2);
-    position: relative;
-  }
-  .car-hint-tag {
-    font-size: var(--fs-xs);
-    letter-spacing: 0.18em;
-    color: var(--faint);
-    text-transform: uppercase;
-    background: rgba(14, 13, 18, 0.6);
-    padding: 2px var(--s2);
-    border-radius: var(--r-sm);
-    border: 1px solid rgba(244, 234, 217, 0.08);
-  }
+  /* ---- wordmark --------------------------------------------------------- */
 
   #brand {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    flex: 0 0 auto;
-    z-index: 2;
+    pointer-events: none;
+    text-align: left;
+    z-index: 1;
+    animation: fr-rise 0.6s cubic-bezier(0.2, 0.8, 0.25, 1) backwards;
   }
-
   #title {
     font-size: var(--fs-display);
     font-weight: 700;
@@ -561,6 +459,7 @@
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
+    filter: drop-shadow(0 2px 18px rgba(0, 0, 0, 0.55));
   }
   #tagline {
     margin: var(--s1) 0 0;
@@ -568,85 +467,172 @@
     letter-spacing: 0.32em;
     color: var(--dim);
     text-transform: uppercase;
+    text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8);
   }
 
-  /* ---- RIGHT COLUMN: Dock & Settings (50%) ------------------------------- */
+  /* ---- the hole --------------------------------------------------------- */
+
+  /**
+   * Nothing is drawn here and nothing ever will be. It exists so the camera has
+   * a rectangle to solve against — see `Game._frameTitle`. Its size is whatever
+   * the grid has left over once the wordmark and the dock have taken theirs,
+   * which is exactly the question the camera needs answered.
+   */
+  #stage {
+    pointer-events: none;
+    min-height: 20dvh;
+    min-width: 0;
+  }
+
+  /* ---- the dock --------------------------------------------------------- */
+
   #dock {
+    pointer-events: auto;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
     gap: var(--s2);
-    flex: 1 1 50%;
-    min-width: 0;
     min-height: 0;
-    width: 100%;
-    overflow: hidden;
-    padding: var(--s3) var(--s4);
-    background: var(--panel);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    min-width: 0;
+    max-height: min(58dvh, 560px);
+    padding: var(--s3);
     border: 1px solid var(--line);
     border-radius: var(--r-lg);
-    box-shadow: var(--shadow);
-    pointer-events: auto;
+    background: var(--panel);
+    backdrop-filter: blur(20px) saturate(1.25);
+    -webkit-backdrop-filter: blur(20px) saturate(1.25);
+    box-shadow: var(--shadow), inset 0 1px 0 rgba(244, 234, 217, 0.07);
+    animation: fr-rise 0.55s 0.06s cubic-bezier(0.2, 0.8, 0.25, 1) backwards;
   }
   @media (orientation: landscape) {
     #dock {
-      max-width: 50%;
-      height: 100%;
+      width: clamp(290px, 33vw, 400px);
+      max-height: 100%;
     }
   }
 
-  .dock-header {
+  #drawers {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid rgba(244, 234, 217, 0.09);
-    padding-bottom: var(--s2);
-  }
-  .dock-title {
-    font-size: var(--fs-xs);
-    letter-spacing: 0.24em;
-    color: var(--accent);
-    font-weight: 600;
-    text-transform: uppercase;
-  }
-
-  #garage {
-    display: none;
     flex-direction: column;
-    gap: var(--s2);
+    gap: var(--s1);
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
-    padding-right: var(--s1);
   }
-  #garage.ready { display: flex; }
-  /**
-   * Rows never shrink — they scroll.
-   *
-   * A flex item's default `flex-shrink: 1` means that in a height-constrained
-   * column every row gets squeezed proportionally, and a row squeezed below its
-   * content does not scroll, it OVERFLOWS: on a 375 px phone the car blurb was
-   * drawn straight through the paint swatches underneath it. Pinning the basis
-   * makes the garage overflow as a whole, which is what the scrollbar is for.
-   */
-  #garage > * { flex: 0 0 auto; }
-  #garage::-webkit-scrollbar { width: 5px; }
-  #garage::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+  #drawers::-webkit-scrollbar { width: 5px; }
+  #drawers::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 
   /**
-   * Every line of the garage is the same two-column grid: a right-aligned
-   * label, then the control. Previously the car picker sat outside the grid and
-   * the rest sat inside it, so nothing lined up with anything.
+   * A DRAWER.
+   *
+   * The garage used to be six labelled rows and a paragraph, all open at once,
+   * which on a phone was a wall of controls with the one button that matters
+   * somewhere underneath it. Folded, each drawer is a single line: what it is,
+   * and what it is currently set to. That summary is the point — a closed
+   * drawer still answers the question you would have opened it to ask.
+   */
+  .drawer {
+    flex: 0 0 auto;
+    border: 1px solid transparent;
+    border-radius: var(--r-md);
+    background: rgba(244, 234, 217, 0.035);
+    transition: background 0.2s, border-color 0.2s;
+    animation: fr-rise 0.45s cubic-bezier(0.2, 0.8, 0.25, 1) backwards;
+  }
+  .drawer:nth-child(1) { animation-delay: 0.10s; }
+  .drawer:nth-child(2) { animation-delay: 0.16s; }
+  .drawer:nth-child(3) { animation-delay: 0.22s; }
+  .drawer:nth-child(4) { animation-delay: 0.28s; }
+  .drawer.open {
+    background: rgba(244, 234, 217, 0.06);
+    border-color: var(--line);
+  }
+
+  .drawer-head {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    padding: var(--s2) var(--s3);
+    min-height: var(--tap);
+    border: 0;
+    background: none;
+    color: var(--dim);
+    border-radius: var(--r-md);
+    cursor: pointer;
+    text-align: left;
+    transition: color 0.18s;
+  }
+  .drawer-head:hover { color: var(--ink); }
+  .drawer.open .drawer-head { color: var(--ink); }
+
+  .drawer-name {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    flex: 0 0 auto;
+  }
+  .drawer-value {
+    margin-left: auto;
+    min-width: 0;
+    font-size: var(--fs-xs);
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .drawer-caret {
+    flex: 0 0 auto;
+    width: 0.42em;
+    height: 0.42em;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    opacity: 0.55;
+    transform: translateY(-0.15em) rotate(45deg);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .drawer.open .drawer-caret { transform: translateY(0.05em) rotate(225deg); }
+
+  /**
+   * Opening animates the HEIGHT of something whose height nobody knows.
+   *
+   * `max-height` guesswork is the usual answer and it is always wrong in one
+   * direction or the other — too small clips the content, too large makes the
+   * close look like it stalls. A one-row grid animated from `0fr` to `1fr`
+   * interpolates against the row's own intrinsic size, so the transition is
+   * exactly as long as the content is tall whatever ends up inside it.
+   */
+  .drawer-fold {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .drawer.open .drawer-fold { grid-template-rows: 1fr; }
+  .drawer-body {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
+    padding: 0 var(--s3);
+  }
+  .drawer.open .drawer-body { padding-bottom: var(--s3); }
+  /* The fold clips its own overflow, so a control that is mid-animation cannot
+     be interacted with until it has arrived. */
+  .drawer:not(.open) .drawer-body { visibility: hidden; }
+  .drawer.open .drawer-body { visibility: visible; transition: visibility 0s; }
+
+  /* ---- rows inside a drawer --------------------------------------------- */
+
+  /**
+   * Every line is the same two-column grid: a right-aligned label, then the
+   * control. One grid for all of them is what makes the labels line up.
    */
   .garage-row {
     display: grid;
-    /* Wide enough for the longest label ("ENGINE") at the smallest type size
-       and this tracking, so nothing wraps to a second line on a phone. */
-    grid-template-columns: clamp(44px, 10vmin, 66px) minmax(0, 1fr);
+    grid-template-columns: clamp(40px, 9vmin, 58px) minmax(0, 1fr);
     align-items: center;
     gap: var(--s3);
     text-align: left;
@@ -676,14 +662,8 @@
 
   /**
    * Wrapping, for the one row that genuinely needs it: the seed field and its
-   * two buttons, where the field should take the slack and the buttons should
-   * drop under it when there is none.
-   *
-   * The colour swatches use `.row-scroll` like every other option row. They
-   * used to wrap, and on a phone with 44 px tap targets ten paint swatches and
-   * thirteen trim swatches became five stacked rows of circles that filled half
-   * the screen — while the car and engine pickers, which have MORE options,
-   * scrolled quietly in one line each. Same kind of control, same behaviour.
+   * two buttons, where the field takes the slack and the buttons drop under it
+   * when there is none.
    */
   .row-wrap {
     display: flex;
@@ -692,37 +672,12 @@
     align-items: center;
   }
 
-  #car-detail {
-    /* Held at roughly the height of its own content: the blurb and the stat row
-       change length with the car, and letting the row collapse moved every
-       control below it every time the player tapped a different chip. */
-    min-height: 5.2em;
-    font-size: var(--fs-sm);
-    line-height: 1.55;
-    color: var(--dim);
-    text-align: center;
-    padding: 0 var(--s2);
-  }
-  #car-detail b { color: var(--ink); font-weight: 500; }
-
-  #car-stats {
-    display: flex;
-    gap: var(--s4);
-    justify-content: center;
-    flex-wrap: wrap;
-    margin-top: var(--s2);
+  .row-hint {
     font-size: var(--fs-xs);
-    letter-spacing: 0.18em;
-    color: var(--dim);
-    text-transform: uppercase;
-  }
-  #car-stats span b {
-    display: block;
-    color: var(--accent);
-    font-size: var(--fs-md);
-    letter-spacing: 0;
-    margin-top: 2px;
-    font-weight: 600;
+    letter-spacing: 0.08em;
+    line-height: 1.6;
+    color: var(--faint);
+    text-align: left;
   }
 
   #seed-input {
@@ -739,38 +694,107 @@
   }
   #seed-input:focus { border-color: var(--accent-dim); }
 
-  /* ---- the commit row ------------------------------------------------- */
+  /* ---- the route preview, now inside the World drawer -------------------- */
+
+  #terrain-box {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    cursor: pointer;
+    background: rgba(8, 8, 12, 0.5);
+    transition: border-color 0.18s, box-shadow 0.18s;
+  }
+  #terrain-box:hover {
+    border-color: var(--accent-dim);
+    box-shadow: 0 6px 22px rgba(255, 180, 87, 0.18);
+  }
+  #terrain-canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 7;
+    object-fit: cover;
+  }
+  .terrain-overlay {
+    position: absolute;
+    inset: auto 0 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--s2);
+    padding: var(--s2) var(--s3);
+    background: linear-gradient(0deg, rgba(10, 9, 13, 0.92) 0%, transparent 100%);
+    pointer-events: none;
+  }
+  .reroll-tag {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .terrain-info,
+  .seed-badge {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.1em;
+    color: var(--dim);
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ---- the commit row --------------------------------------------------- */
 
   #launch {
+    flex: 0 0 auto;            /* never scrolls away */
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: var(--s2);
-    flex: 0 0 auto;              /* never scrolls away */
     padding-top: var(--s2);
     border-top: 1px solid rgba(244, 234, 217, 0.07);
   }
 
+  /**
+   * The one button on the screen that commits to anything, so it is the only
+   * thing here with a fill, a glow and a sheen. Everything else is an outline.
+   */
   #start {
-    border: 1px solid var(--accent-dim);
-    background: var(--accent-wash);
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    border: 1px solid rgba(255, 180, 87, 0.5);
+    background: linear-gradient(100deg, rgba(255, 180, 87, 0.26), rgba(255, 132, 92, 0.14));
     color: var(--accent);
     font-size: var(--fs-md);
     font-weight: 600;
     letter-spacing: 0.4em;
     text-indent: 0.4em;         /* balance the tracking on the last glyph */
     padding: var(--s3) var(--s4);
-    width: min(320px, 100%);
     min-height: var(--tap);
     border-radius: var(--r-md);
     cursor: pointer;
     text-transform: uppercase;
-    box-shadow: 0 4px 18px rgba(255, 180, 87, 0.18);
-    transition: background 0.25s, transform 0.15s, opacity 0.3s;
+    box-shadow: 0 6px 24px rgba(255, 180, 87, 0.2);
+    transition: background 0.25s, transform 0.15s, box-shadow 0.25s, opacity 0.3s;
   }
-  #start:hover { background: rgba(255, 180, 87, 0.22); }
-  #start:active { transform: scale(0.98); }
+  /* A slow highlight crossing the face. It is the only moving thing on a
+     screen where everything else is waiting for a click. */
+  #start::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 35%, rgba(255, 240, 210, 0.22) 50%, transparent 65%);
+    transform: translateX(-120%);
+    animation: fr-sheen 3.6s 1.2s ease-in-out infinite;
+  }
+  #start:hover {
+    background: linear-gradient(100deg, rgba(255, 180, 87, 0.36), rgba(255, 132, 92, 0.2));
+    box-shadow: 0 8px 30px rgba(255, 180, 87, 0.3);
+  }
+  #start:active { transform: scale(0.985); }
   #start:disabled { opacity: 0.35; cursor: default; }
+  #start:disabled::after { display: none; }
 
   #boot {
     font-size: var(--fs-xs);
@@ -778,6 +802,7 @@
     color: var(--dim);
     min-height: 1.2em;
     max-width: 100%;
+    text-align: center;
   }
   #boot.err {
     color: var(--danger);
@@ -804,61 +829,37 @@
   /* A keyboard legend on a device with no keyboard is just clutter. */
   body.touch #keys { display: none; }
 
+  @keyframes fr-rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes fr-sheen {
+    0%, 62% { transform: translateX(-120%); }
+    100%    { transform: translateX(120%); }
+  }
+
   /* ----------------------------------------------------------- settings -- */
 
-  #settings {
-    --drawer: clamp(210px, 46vmin, 290px);
-    position: fixed;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    display: flex;
-    align-items: stretch;
-    z-index: 25;
-  }
-
-  #settings-panel {
-    width: 0;
-    overflow: hidden;
-    transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-    background: var(--panel-solid);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--line);
-    border-left: none;
-    border-radius: 0 var(--r-md) var(--r-md) 0;
-  }
-  #settings.open #settings-panel { width: var(--drawer); }
-
+  /**
+   * The settings panel is a NODE, not a place.
+   *
+   * There used to be a tab clinging to the left edge of the screen that slid a
+   * drawer out over the road. It was reachable while driving, which sounds
+   * useful and in practice meant a permanent handle sitting on top of the game.
+   * The same controls are now wanted in two places — folded into the title
+   * screen's Audio drawer, and inside the pause menu — and the honest way to be
+   * in two places is to be moved between them rather than to exist twice.
+   *
+   * So `settings.js` builds `#settings-body` exactly once and `main.js`
+   * re-parents it: two hosts, one panel, one set of live values. Two copies of
+   * a slider are two things that can disagree.
+   */
   #settings-body {
-    width: var(--drawer);
-    max-height: min(80dvh, 620px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    padding: var(--s3) var(--s3) var(--s4);
     display: flex;
     flex-direction: column;
     gap: var(--s1);
+    min-width: 0;
   }
-  #settings-body::-webkit-scrollbar { width: 5px; }
-  #settings-body::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
-
-  #settings-toggle {
-    align-self: center;
-    width: clamp(20px, 4vmin, 26px);
-    height: clamp(54px, 11vmin, 76px);
-    border: 1px solid var(--line);
-    border-left: none;
-    border-radius: 0 var(--r-md) var(--r-md) 0;
-    background: var(--panel);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    color: var(--dim);
-    font-size: var(--fs-md);
-    cursor: pointer;
-    transition: color 0.2s, background 0.2s;
-  }
-  #settings-toggle:hover { color: var(--ink); background: rgba(30, 28, 32, 0.85); }
 
   .set-section {
     font-size: var(--fs-xs);
@@ -912,6 +913,150 @@
     text-align: left;
     min-height: calc(var(--tap) * 0.72);
   }
+
+  /* -------------------------------------------------------------- pause -- */
+
+  /**
+   * One button, dead centre of the top edge, and only while driving.
+   *
+   * Centre rather than a corner because both corners are already spoken for on
+   * a phone — the auxiliary pad is top-right and the frame counter is top-left
+   * — and because the middle of the top edge is the one place on a touch screen
+   * that neither thumb rests on, which is exactly what you want of a control
+   * that ends the thing you are doing.
+   */
+  #pause-btn {
+    position: fixed;
+    left: 50%;
+    top: var(--edge-t);
+    transform: translateX(-50%);
+    z-index: 26;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: calc(var(--tap) * 1.05);
+    height: calc(var(--tap) * 0.72);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: rgba(14, 13, 18, 0.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    cursor: pointer;
+    transition: background 0.18s, border-color 0.18s, transform 0.12s;
+  }
+  body.driving #pause-btn { display: flex; }
+  body.paused  #pause-btn { display: none; }
+  #pause-btn:hover { border-color: var(--line-strong); background: rgba(30, 28, 32, 0.75); }
+  #pause-btn:active { transform: translateX(-50%) scale(0.94); }
+  /* Two bars, drawn rather than typed: the ❚❚ glyph is a different width in
+     every font on every platform and centres in none of them. */
+  #pause-btn i {
+    display: block;
+    width: 3px;
+    height: 42%;
+    border-radius: 2px;
+    background: var(--ink);
+    opacity: 0.85;
+  }
+
+  #pause {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: var(--edge-t) var(--edge-r) var(--edge-b) var(--edge-l);
+    background: rgba(8, 8, 12, 0.5);
+    backdrop-filter: blur(8px) saturate(0.9);
+    -webkit-backdrop-filter: blur(8px) saturate(0.9);
+  }
+  body.paused #pause { display: flex; }
+
+  #pause-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s3);
+    width: min(420px, 100%);
+    max-height: 100%;
+    padding: var(--s4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--panel-solid);
+    box-shadow: var(--shadow), inset 0 1px 0 rgba(244, 234, 217, 0.07);
+    animation: fr-rise 0.28s cubic-bezier(0.2, 0.8, 0.25, 1) backwards;
+    min-height: 0;
+  }
+
+  .pause-title {
+    font-size: var(--fs-sm);
+    letter-spacing: 0.45em;
+    color: var(--accent);
+    text-transform: uppercase;
+    text-align: center;
+  }
+
+  #pause-stats {
+    display: flex;
+    justify-content: center;
+    gap: var(--s4);
+    flex-wrap: wrap;
+    font-size: var(--fs-xs);
+    letter-spacing: 0.18em;
+    color: var(--faint);
+    text-transform: uppercase;
+  }
+  #pause-stats b {
+    display: block;
+    margin-top: 2px;
+    font-size: var(--fs-md);
+    font-weight: 600;
+    letter-spacing: 0;
+    color: var(--ink);
+  }
+
+  .pause-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
+  }
+
+  /* A full-width menu row. Same object as a chip, wider and centred. */
+  .menu-btn {
+    border: 1px solid var(--line);
+    background: rgba(244, 234, 217, 0.04);
+    color: var(--dim);
+    font-size: var(--fs-sm);
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    padding: var(--s3);
+    min-height: var(--tap);
+    border-radius: var(--r-md);
+    cursor: pointer;
+    transition: color 0.18s, border-color 0.18s, background 0.18s, transform 0.12s;
+  }
+  .menu-btn:hover { color: var(--ink); border-color: var(--line-strong); }
+  .menu-btn:active { transform: scale(0.985); }
+  .menu-btn.primary {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    background: var(--accent-wash);
+  }
+  .menu-btn.primary:hover { background: rgba(255, 180, 87, 0.22); }
+  .menu-btn.danger { color: var(--danger); border-color: rgba(255, 95, 77, 0.4); }
+
+  /* The settings drawer inside the card scrolls; the buttons above it do not. */
+  #pause-scroll {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  #pause-scroll::-webkit-scrollbar { width: 5px; }
+  #pause-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+
 
   /* -------------------------------------------------------------- touch -- */
 
@@ -1074,7 +1219,7 @@
   #toast {
     position: fixed;
     left: 50%;
-    top: calc(var(--edge-t) + var(--s4));
+    top: calc(var(--edge-t) + var(--tap) + 4.6em);
     transform: translateX(-50%);
     font-size: var(--fs-sm);
     letter-spacing: 0.22em;
@@ -1106,28 +1251,6 @@
    * trip readout moves to the top-left where nothing else is.
    */
   @media (orientation: landscape) {
-    /**
-     * The title screen's split runs left-to-right here — see #overlay.
-     *
-     * In a row the flex basis is a WIDTH, so the panel's height is not
-     * constrained by it at all: left alone it centred at its own content size
-     * and ran off both the top and the bottom of a landscape phone, taking the
-     * mode row and the Drive button with it. `max-height: 100%` is the cap that
-     * was missing — the panel is as tall as it needs to be and never taller
-     * than its half, so a desktop gets a compact card and a phone on its side
-     * gets a full-height one that scrolls inside. Stretching instead would give
-     * the desktop a panel with 400 px of empty floor under the keys.
-     *
-     * This rule has to come AFTER `#dock`'s own block or it loses the cascade
-     * to it, which is exactly what happened the first time.
-     */
-    #dock {
-      align-self: center;
-      max-height: 100%;
-      width: auto;
-      max-width: min(940px, 50vw);
-    }
-
     body.touch #cluster {
       right: auto;
       left: 50%;
@@ -1147,23 +1270,18 @@
    * Short screens — a phone on its side, not a desktop.
    *
    * This is a HEIGHT query, and it is the one axis a query can honestly ask
-   * about: "is there room above the panel for a title?". Keying it to
-   * `orientation: landscape` instead swept in every desktop monitor, which has
-   * 900 px of height and no such problem, and put the brand in the corner there
-   * for no reason. Height is the constraint, so height is the question.
-   */
-  /**
-   * Short screens — a phone on its side, not a desktop.
+   * about: "is there room for a wordmark at full size?". Keying it to
+   * `orientation: landscape` instead sweeps in every desktop monitor, which has
+   * 900 px of height and no such problem.
    *
-   * This is a HEIGHT query, and it is the one axis a query can honestly ask
-   * about: "is there room for a wordmark at full size?". The brand no longer
-   * has to be lifted out of the flow — the split gives it a half of its own —
-   * so what is left is the type scale. A subtitle is the first thing that
-   * should go when there is 390 px of screen to spend.
+   * The dock is capped at the viewport here rather than at 58dvh: a phone on
+   * its side has the dock down one edge, where the constraint is the full
+   * height, not a share of it.
    */
   @media (max-height: 620px) {
     #title { font-size: clamp(19px, 5.2vmin, 30px); }
     #tagline { display: none; }
+    #stage { min-height: 0; }
   }
 
   /* A mouse can hit a 22px target; a finger cannot. Anything driven by a
@@ -1171,7 +1289,6 @@
   @media (pointer: coarse) {
     .swatch { width: var(--tap); height: var(--tap); }
     .car-chip, .eng-chip, .set-btn { min-height: var(--tap); }
-    #settings-toggle { width: calc(var(--tap) * 0.7); }
     #seed-input { min-height: var(--tap); }
   }
 
@@ -1210,11 +1327,6 @@
   </div>
 </div>
 
-<div id="settings">
-  <div id="settings-panel"><div id="settings-body"></div></div>
-  <button id="settings-toggle" type="button" aria-expanded="false" title="Settings">›</button>
-</div>
-
 <div id="touch" aria-hidden="true">
   <div class="pad pad-left">
     <button class="tbtn tbtn-lg" data-hold="left" aria-label="Steer left">&#9664;</button>
@@ -1237,6 +1349,34 @@
   </div>
 </div>
 
+<button id="pause-btn" type="button" aria-label="Pause"><i></i><i></i></button>
+
+<div id="pause">
+  <div id="pause-card">
+    <div class="pause-title">Paused</div>
+    <div id="pause-stats">
+      <span>Trip<b id="pause-km">0.00 km</b></span>
+      <span>Speed<b id="pause-speed">0 km/h</b></span>
+      <span id="pause-score-wrap">Points<b id="pause-score">0</b></span>
+    </div>
+    <div class="pause-actions">
+      <button id="pause-resume" class="menu-btn primary" type="button">Resume</button>
+      <button id="pause-restart" class="menu-btn" type="button">Restart run</button>
+      <button id="pause-garage" class="menu-btn danger" type="button">Title screen</button>
+    </div>
+    <div id="pause-scroll">
+      <div class="drawer" id="pause-settings">
+        <button class="drawer-head" type="button" aria-expanded="false">
+          <span class="drawer-name">Settings</span>
+          <span class="drawer-value" id="v-pause-settings"></span>
+          <span class="drawer-caret"></span>
+        </button>
+        <div class="drawer-fold"><div class="drawer-body" id="pause-settings-host"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <div id="gameover">
@@ -1250,66 +1390,99 @@
   </div>
 </div>
 
+<!--
+  TITLE SCREEN.
+
+  Three boxes: the wordmark, the hole the camera frames the car into (#stage),
+  and the dock. See the layout note in the stylesheet — the hole is load-bearing
+  and is the only reason the car is never behind a panel.
+-->
 <div id="overlay">
-  <!-- LEFT COLUMN: Preview Column (Terrain Preview on top, Car Preview on bottom) -->
-  <div id="preview-col">
-    <!-- TOP BOX: Procedural Route Perspective Preview -->
-    <div id="terrain-box" role="button" tabindex="0" title="Click to generate a new world seed">
-      <div class="box-header">
-        <span class="box-title">ROUTE PREVIEW</span>
-        <span id="seed-badge" class="seed-badge">SEED: highroads-01</span>
-      </div>
-      <canvas id="terrain-canvas" width="380" height="200"></canvas>
-      <div class="terrain-overlay">
-        <span class="reroll-tag">CLICK TO RE-ROLL ROUTE</span>
-        <div id="terrain-info" class="terrain-info">ROUTE PERSPECTIVE</div>
-      </div>
-    </div>
+  <header id="brand">
+    <h1 id="title">HIGHROADS</h1>
+    <p id="tagline">endless procedural driving</p>
+  </header>
 
-    <!-- BOTTOM BOX: Car Preview & Wordmark -->
-    <div id="stage">
-      <div id="brand">
-        <h1 id="title">HIGHROADS</h1>
-        <p id="tagline">endless procedural driving</p>
-      </div>
-    </div>
-  </div>
+  <div id="stage" aria-hidden="true"></div>
 
-  <!-- RIGHT COLUMN: Settings & Garage Dock -->
   <div id="dock">
-    <div class="dock-header">
-      <span class="dock-title">CONFIGURATION & GARAGE</span>
-    </div>
-    <div id="garage">
-      <div class="garage-row">
-        <span class="garage-label">Mode</span>
-        <span id="mode-list" class="row-scroll"></span>
-      </div>
-      <div class="garage-row">
-        <span class="garage-label">Car</span>
-        <span id="car-list" class="row-scroll"></span>
-      </div>
-      <div id="car-detail"></div>
-      <div class="garage-row">
-        <span class="garage-label">Paint</span>
-        <span id="color-list" class="row-scroll"></span>
-      </div>
-      <div class="garage-row">
-        <span class="garage-label">Trim</span>
-        <span id="trim-list" class="row-scroll"></span>
-      </div>
-      <div class="garage-row">
-        <span class="garage-label">Engine</span>
-        <span id="engine-list" class="row-scroll"></span>
-      </div>
-      <div class="garage-row">
-        <span class="garage-label">Seed</span>
-        <span class="row-wrap">
-          <input id="seed-input" type="text" spellcheck="false" autocomplete="off" aria-label="World seed" />
-          <button id="seed-apply" class="eng-chip" type="button">Generate</button>
-          <button id="seed-random" class="eng-chip" type="button">Random</button>
-        </span>
-      </div>
+    <div id="drawers">
+      <section class="drawer" data-drawer="car">
+        <button class="drawer-head" type="button" aria-expanded="false">
+          <span class="drawer-name">Car</span>
+          <span class="drawer-value" id="v-car"></span>
+          <span class="drawer-caret"></span>
+        </button>
+        <div class="drawer-fold"><div class="drawer-body">
+          <div class="garage-row">
+            <span class="garage-label">Model</span>
+            <span id="car-list" class="row-scroll"></span>
+          </div>
+          <div class="garage-row">
+            <span class="garage-label">Paint</span>
+            <span id="color-list" class="row-scroll"></span>
+          </div>
+          <div class="garage-row">
+            <span class="garage-label">Trim</span>
+            <span id="trim-list" class="row-scroll"></span>
+          </div>
+        </div></div>
+      </section>
+
+      <section class="drawer" data-drawer="engine">
+        <button class="drawer-head" type="button" aria-expanded="false">
+          <span class="drawer-name">Engine</span>
+          <span class="drawer-value" id="v-engine"></span>
+          <span class="drawer-caret"></span>
+        </button>
+        <div class="drawer-fold"><div class="drawer-body">
+          <div class="garage-row">
+            <span class="garage-label">Swap</span>
+            <span id="engine-list" class="row-scroll"></span>
+          </div>
+        </div></div>
+      </section>
+
+      <section class="drawer" data-drawer="world">
+        <button class="drawer-head" type="button" aria-expanded="false">
+          <span class="drawer-name">World</span>
+          <span class="drawer-value" id="v-world"></span>
+          <span class="drawer-caret"></span>
+        </button>
+        <div class="drawer-fold"><div class="drawer-body">
+          <div class="garage-row">
+            <span class="garage-label">Mode</span>
+            <span id="mode-list" class="row-scroll"></span>
+          </div>
+          <div id="mode-hint" class="row-hint"></div>
+          <div id="terrain-box" role="button" tabindex="0" title="Click to generate a new world seed">
+            <canvas id="terrain-canvas" width="380" height="200"></canvas>
+            <div class="terrain-overlay">
+              <span class="reroll-tag">Re-roll route</span>
+              <span id="seed-badge" class="seed-badge"></span>
+            </div>
+          </div>
+          <div class="garage-row">
+            <span class="garage-label">Seed</span>
+            <span class="row-wrap">
+              <input id="seed-input" type="text" spellcheck="false" autocomplete="off" aria-label="World seed" />
+              <button id="seed-apply" class="eng-chip" type="button">Generate</button>
+              <button id="seed-random" class="eng-chip" type="button">Random</button>
+            </span>
+          </div>
+        </div></div>
+      </section>
+
+      <section class="drawer" data-drawer="settings">
+        <button class="drawer-head" type="button" aria-expanded="false">
+          <span class="drawer-name">Settings</span>
+          <span class="drawer-value" id="v-settings"></span>
+          <span class="drawer-caret"></span>
+        </button>
+        <div class="drawer-fold"><div class="drawer-body" id="title-settings-host">
+          <div id="settings-body"></div>
+        </div></div>
+      </section>
     </div>
 
     <div id="launch">
@@ -1323,10 +1496,9 @@
         <span><b>E Q</b> shift</span>
         <span><b>G</b> auto/manual</span>
         <span><b>L</b> lights</span>
-        <span><b>F</b> flash</span>
         <span><b>C</b> camera</span>
         <span><b>R</b> respawn</span>
-        <span><b>M</b> mute</span>
+        <span><b>ESC</b> pause</span>
       </div>
     </div>
   </div>

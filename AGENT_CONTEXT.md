@@ -22,9 +22,15 @@ only, and a hand-written gradient-noise chain generates terrain. The car is a
 **raycast vehicle** — a single rigid body with four downward suspension rays,
 not four wheel colliders. The engine note comes from `engine_sim/`, a separate
 physically-modelled engine simulator that is also the car's actual drivetrain,
-not just its soundtrack. Everything — road, terrain, trees, tunnels, traffic —
-streams in and out in chunks as you drive, forever, seeded from a string you can
+not just its soundtrack. Everything — road, terrain, ground cover, stone,
+traffic — streams in and out in chunks as you drive, forever, seeded from a string you can
 type in the menu.
+
+**Nothing you can see is an asset.** The terrain, the road, the grass, the stone,
+every texture on the ground, the tyre smoke and the sound of the air over the
+body are all generated from code at boot — `src/env/` is where the generators
+live and `src/env/README.md` is their contract. The only art in the repository is
+the nine car models.
 
 No build step. No bundler. ES modules and an import map, served statically.
 
@@ -38,7 +44,8 @@ highroads/
 ├── package.json          scripts only; the game itself has no dependencies
 ├── README.md             architecture essay
 ├── AGENT_CONTEXT.md      this file
-├── src/                  18 modules
+├── src/                  21 modules + src/env/
+│   └── env/              procedurally generated scenery — see its own README
 ├── probe/                headless measurement scripts (see §10)
 ├── assets/               user-supplied art (NOT generated, do not regenerate)
 │   ├── car_models/Fbx/   10 FBX; the roster uses 9, the 10th is an aeroplane
@@ -50,24 +57,47 @@ highroads/
 
 | File | Owns |
 |---|---|
-| `chunks.js` | Terrain/road/tunnel/tree mesh generation, colliders, streaming |
+| `chunks.js` | Terrain/road mesh generation, colliders, streaming, every scatter |
+| `config.js` | **All** tunables, in 16 exported blocks |
 | `vehicle.js` | Raycast vehicle: suspension, tyres, aero, stability, visuals |
 | `main.js` | Boot, `Game` class, fixed-step loop, garage wiring, recovery |
-| `assets.js` | OBJ parser, FBX loading, car mesh normalisation, metric extraction |
-| `config.js` | **All** tunables, in 8 exported blocks |
-| `traffic.js` | Other cars: spline riders, AI, lane changes, analytic impacts |
-| `cars.js` | 9-car roster, colours, engine options, physics synthesis |
 | `path.js` | Road centreline spline, Frenet frames, arc-length projection |
-| `noise.js` | Gradient noise, fBm, erosion, warping, landform archetypes, LOD |
+| `assets.js` | OBJ parser, FBX loading, car mesh normalisation, metric extraction |
+| `traffic.js` | Other cars: spline riders, AI, lane changes, analytic impacts |
 | `powertrain.js` | Bridge between the game and `engine_sim` |
+| `noise.js` | Gradient noise, fBm, erosion, warping, landforms, continental term |
+| `fx.js` | Tyre smoke and rubber — a GPU particle pool and a ring of quads |
+| `cars.js` | 9-car roster, colours, engine options, physics synthesis |
 | `scene.js` | Renderer, lights, sky, fog, post-processing chain |
-| `foliage.js` | Tree species table, ecology rules |
-| `score.js` | Near-miss scoring for Traffic mode — pure logic, no DOM |
-| `input.js` | Keyboard, gamepad, touch; one-shot vs held keys |
+| `showroom.js` | The title screen's own scene, and the framing solve |
+| `wind.js` | Air noise over the body, synthesised, speed-driven |
 | `settings.js` | The collapsible left drawer |
-| `camera.js` | Three chase modes, FOV-by-speed |
+| `input.js` | Keyboard, gamepad, touch; one-shot vs held keys |
 | `hud.js` | Speed, tach, gear, trip |
+| `foliage.js` | Tree species table, ecology rules |
 | `util.js` | clamp/lerp/damp, PRNGs, `smin`/`smax`, string hash |
+| `score.js` | Near-miss scoring for Traffic mode — pure logic, no DOM |
+| `camera.js` | Three chase modes, FOV-by-speed |
+| `terrain-preview.js` | The route perspective drawn on the title screen |
+
+### `src/env/` — everything the world is dressed with
+
+Generated from code at boot. No meshes, no textures, no material files. Read
+`src/env/README.md` before adding to it; the contract is one factory per module
+returning shared geometry and one shared material, with PLACEMENT left to
+`chunks.js` because placement is the only part that needs the road, the terrain
+sheet and the streaming window.
+
+| File | Builds | Triangles per instance |
+|---|---|---|
+| `textures.js` | Canvas helpers: soft-failing canvas, seeded PRNG, TILEABLE value noise, fBm, ridged fBm, a whole-image `paint()` | — |
+| `grass.js` | Crossed-card tufts, in a near tier and a far tier | 4 |
+| `rocks.js` | Fractured convex boulders, slabs and scree in three size classes | 20–80, 59 mean |
+| `ground.js` | The terrain's three-channel detail texture and its material patch | — |
+
+`trees.js` and `bushes.js` are the obvious next two and do not exist yet. The
+tree *scatter* is intact in `foliage.js` and `chunks.js`; what is switched off
+(`CHUNK.trees`) is the Quaternius models, at 1,700–2,900 triangles each.
 
 ### ⚠ `engine_sim/` is a broken submodule — read this before cloning
 
@@ -110,7 +140,8 @@ has deliberately been left alone.
 5. Load tree OBJs and the 9 car FBXs (progress bar on `#boot`).
 6. Build the garage UI (`buildGarage`) and seed box (`buildSeedBox`).
 7. On "Drive": construct `RaycastVehicle`, start `Powertrain` (this is the first
-   `AudioContext` touch and **must** be inside the user gesture), begin `loop()`.
+   `AudioContext` touch and **must** be inside the user gesture), hand that same
+   context to `Wind`, wipe the tyre marks, begin `loop()`.
 
 ### Frame (`main.js:loop()`)
 
@@ -127,12 +158,20 @@ rAF
  │      accumulator -= h
  ├── vehicle.syncVisuals(accumulator / h)   render interpolation
  ├── carS = path.projectPoint(...)          arc-length position
+ ├── chunks.advanceTime(dt)                 the wind in the grass
  ├── chunks.update(carS)                    stream in/out, 1 chunk per frame
+ ├── fx.update(dt, vehicle)                 tyre smoke and rubber
+ ├── wind.update(dt, forwardSpeed)          air noise over the body
  ├── traffic.update(dt, {s, v, speed, flashing, vehicle})
  ├── camera.update(dt, vehicle)
  ├── hud.update(...)
  └── render
 ```
+
+`fx.update` reads the wheel state the substeps just wrote, so it has to come
+after the loop and before anything renders. Both it and `wind.update` are inert
+on the title screen — the car is parked and nothing is slipping — so neither is
+gated on `active`, which is one less state to keep in step.
 
 **The ordering is load-bearing.** Vehicle forces are integrated *inside* the
 substep loop, immediately before each `world.step()`. Applying them once per
@@ -165,33 +204,100 @@ y = clamp(natural, roadY − fillSlope·d, roadY + cutSlope·d)
 implemented in `chunks.js:sampleGround()` with `smin`/`smax` instead of hard
 `min`/`max` — see bug #17, and note that **the blend width is not a constant**.
 
-### The fold guard (`chunks.js:foldSafeOffset`)
+### The fold guard (`chunks.js:foldSafeOffset`) — REWRITTEN, and it was broken
 
-Rows of vertices radiate perpendicular from the centreline. On a tight curve the
-rows on the inside converge and eventually cross, folding the mesh inside out.
-The rows meet at the centre of rotation, at radius `R = 1/|curvature|`.
+Rows of vertices radiate perpendicular from the centreline. On a bend the rows
+on the inside converge and eventually cross, folding the mesh inside out. They
+meet at the centre of rotation, at radius `R = 1/|curvature|`.
 
-The fix compresses the inside asymptotically so it can never reach `R`:
+The guard compresses the inside so it can never reach `R`. Two things about it
+changed, and both were load-bearing.
+
+**1. The mapping.** It was `v' = L·(1 − e^(−|v|/L))`, `L = 0.7·R`. An exponential
+starts bending *immediately*: at `|v| = 0.35·L` it has already taken 16% off. So
+a road that is all but straight still had its far corridor squeezed — and since
+`L` is inversely proportional to curvature and a straight has curvature wandering
+through zero, two rows 2.5 m apart could carry a 2.8 km radius each way, both
+"straight" by any reading, and the guard would leave a far column alone on one
+row and pull it **87 metres** inboard on the next. That is a sheared sheet, and
+what it looks like on screen is chunks that do not line up.
+
+It is now a soft minimum instead of an exponential approach:
 
 ```
-v' = L · (1 − e^(−|v|/L)),   L = 0.7 · R
+v' = |v| / (1 + (|v|/L)^p)^(1/p),   p = 6
 ```
 
-Outside offsets are left alone. This is why terrain far to the inside of a tight
-corner is slightly compressed — that is intentional, not a bug. It is also the
-reason for the one remaining faceting artefact: the mapping depends on the local
-curvature, which differs between adjacent rows, so a cell 600 m out is a skewed
-parallelogram and its normal is unreliable. Measured, **every** terrain cell in
-the corridor whose faces meet at more than 60° is on the inside of a bend.
+Same guarantees — strictly increasing, strictly below `L`, C-infinity — but the
+correction is O((|v|/L)^p), so it is numerically invisible until `|v|` is a real
+fraction of the radius, and its sensitivity to curvature falls with the *fifth*
+power of it instead of the first. The same pair of rows now disagree by 0.1 m.
 
----
+**2. The curvature it is given.** `frame.curv` is measured over ±10 m, which is
+right for banking and wrong here: the quantity that decides whether the mesh
+folds is the rate at which one row's frame rotates into the NEXT row's, and
+nothing else. A smoothed estimate under-reports it, which relaxes exactly the
+limit the guard exists to enforce. Measured across five seeds, the far corridor
+had been folding through itself in **1,240 to 4,353 cells per seed**, with the
+worst row spacing at **minus 54%** of nominal — a sheet turned inside out, drawn
+back-to-front, with garbage normals. It had been doing that since the guard was
+written.
+
+`path.js:_buildFoldLimits` now derives `frame.foldL` and `frame.foldR` from the
+actual frame-to-frame rotation, as a **running maximum over ±25 m, split by
+sign**. Running-max because the frame-to-frame rate is the noisiest estimate
+there is and its output is a lateral position hundreds of metres out, so noise
+becomes shear; a sliding-window maximum is conservative, continuous, and holds
+its value across the window so spikes become plateaux. Split by sign because the
+guard is ONE-SIDED and must stay that way — only the inside of a bend folds, and
+compressing both sides would end the world 115 m away on the outside of a
+hairpin.
+
+Measured after: **0 inverted cells** on five seeds, minimum row spacing exactly
+29% of nominal, which is the 0.7 margin by construction.
+
+### The foreign-road clamp — bug #55, fixed properly this time
+
+A chunk carries terrain to `CHUNK.halfExtent` (700 m) either side while being
+`CHUNK.length` (120 m) long. Where the route doubles back inside 700 m — which a
+router that follows contours does readily — one chunk's sheet covers another
+chunk's road, and over there it is uncarved hillside standing on a carriageway.
+`ROUTE.selfClear` cannot fix this: it keeps the two carriageways 300 m apart and
+the sheets are 700 m wide.
+
+`sampleGround` therefore also clamps against **other passes of the road**:
+`path.foreignSegments(s, x, z, range, out)` returns control-point segments whose
+arc length is more than `ROUTE.selfNear + 120` away, the minimum over them of a
+gentle cut plane is taken, and the sheet is pushed under it.
+
+Three details, each of which was a wrong answer first:
+
+- **Segments, not points.** Control points are 46 m apart, so a place standing on
+  the foreign carriageway can be 23 m from the nearest of them, and at the road's
+  own 62% cut slope that is 2.7 m of terrain left over the road — exactly the
+  step this was written to remove.
+- **A 10% slope and a 4 m sink** (`CHUNK.foreignSlope`, `foreignSink`), not the
+  road's own 62%. The sheet doing the cutting has 34 m columns out there, and the
+  mesh draws the CHORD across a V-shaped clamp: chord error is roughly
+  slope × spacing / 2, which at 62% is 17 m of terrain still standing.
+- **One smooth minimum, with `k` tied to the gap.** Smoothing inside the loop
+  compounds — thirty segments each conceding k/4 is nine metres quietly removed —
+  and a `if (lower) blend` guard steps by k/4 the moment it engages. Worse, a
+  FIXED blend width concedes k/4 unconditionally on the carriageway, where
+  ceiling, floor and result are all the same plane: measured, **0.875 m of trench
+  down the middle of the road**, met at 175 km/h as a 1361 m/s² hit with all four
+  wheels on the ground. That is trap #6 for the second time.
+
+Measured after: **0 steps over 30 cm across seven seeds**, where the default seed
+had 779.
 
 ## 4. Subsystem detail
 
 ### 4.1 Noise chain (`noise.js`)
 
 `createTerrain(seed)` returns `base`, `height`, `roadElevation`, `region`,
-`forestDensity`, `mask`, and three scalar accessors. The chain, in order:
+`forestDensity`, `mask`, `continent`, and three scalar accessors. The chain, in
+order:
 
 1. **`makeGradNoise`** — gradient noise returning value *and* both analytic
    derivatives, quintic interpolation. The derivatives are the point.
@@ -204,20 +310,72 @@ the corridor whose faces meet at more than 60° is on the inside of a bend.
 5. **`domainWarp`** — samples the field at a position displaced by another field.
 6. **`archetypes`** — six landform generators (`plainsH`, `hillsH`, `valleyH`,
    `mountainH`, `canyonH`, `plateauH`) blended by an exponential kernel over a
-   2D archetype space. Centres sit on a circle of radius 0.52; `SIGMA2 =
-   2·0.30²`.
+   2D archetype space. Centres sit on a circle of radius 0.52.
+7. **`continent`** — the surface all six of them sit on. New; see below.
+
+**THE CONTINENTAL TERM is what stops the world averaging to zero.** Every
+archetype is a field with a mean, so blending six of them gives a field with a
+mean: however dramatic the local shape, drive far enough and the ground comes
+back to where it started. A climb is always paid for by a descent, and the road,
+which follows the ground, inherits exactly that — it can never simply go up for
+five minutes. Real topography has two scales of relief: landforms sit on a
+continental surface whose wavelength is longer than anything visible from the
+ground, and you do not perceive it as a hill, you perceive it as having spent
+twenty minutes climbing.
+
+So: two octaves at 11 km and 5.5 km, ±340 m, added underneath everything.
+
+- The **wavelength** is measured against how far the road TRAVELS, not how far it
+  drives. A routed alignment covers roughly 0.4 m of ground per metre of tarmac,
+  so 18 km of driving is about 7 km of map. At the 19 km this started at, a whole
+  session barely turned the field over: 106 m of total elevation change over 18 km
+  of road. At 11 km the same drive gives 123–348 m, with sustained climbs of
+  2.6–3.4 km gaining 66–111 m and giving none of it back.
+- The **amplitude** is bounded by `ROAD.maxGrade`. 340 m over a 5.5 km half-cycle
+  is a mean gradient near 6% against a 9.5% limit, which leaves the alignment room
+  to traverse instead of being pinned to the clamp. Past that the router
+  saturates and the extra height buys earthwork rather than scenery.
+- It is evaluated at **full octave depth, always** — `lodOct` is saved and
+  restored around it. Everything else fades its finest octaves with the mesh's
+  lateral resolution, which is right for detail and catastrophic here: at this
+  amplitude a 20% change in an octave's weight between one column and the next is
+  metres of height, and the columns out there are 34 m apart.
+
+**Landform amplitudes were roughly tripled** with it. `mountainH` is now 620 m of
+ridge over a 150 m bulk, with the ridged field pushed through a smoothstep before
+scaling so most of a mountain region is flank and valley and only the crests
+reach the top of the range — a linear map spends its height budget on the middle,
+which is what made a "mountain" look like a plateau with texture on it. `hillsH`
+went 66 → 105, `valleyH`'s trough 62 → 128.
+
+**The archetype kernel was tightened**, `SIGMA2 = 2·0.245²` from `2·0.30²`. At the
+old width the winning archetype held about 0.66 of the blend and its two
+neighbours a fifth each, so a mountain region was two-thirds mountain and a third
+something flatter — an averaging that acts exactly like turning the amplitude
+down, and a large part of why the world read as "everything, mildly".
 
 **Octave budget (LOD).** `base(x, z, octaves)` sets a closure variable that every
 fBm variant reads, fading its last octave in and out rather than dropping it.
 `height(x, z, lateral)` derives the budget from the mesh's own lateral
 resolution — 8 octaves on the road, 3.2 at the corridor edge — because the
-columns out there are 55 m apart and the base field's finest wavelength is ~7 m.
-Sampling a 7 m feature every 55 m is aliasing, and aliased gradient noise reads
+columns out there are far apart and the base field's finest wavelength is short.
+Sampling a 7 m feature every 34 m is aliasing, and aliased gradient noise reads
 as spikes, not as distant detail.
 
-`plateauH` builds its terraces from a smoothstep rather than `floor()`, so the
-staircase is C1; `canyonH`'s wall was widened from `0.32..0.60` to `0.26..0.68`
-for the same reason.
+Measured route character, before → after (four seeds, `probe/route.mjs`):
+
+| | before | after |
+|---|---|---|
+| sidehill share | 29% | 51% |
+| corridor drops over 12 m | 1–14% | 30–46% |
+| earthwork | 3.9 m | 9.4 m |
+| grade p95 | 5.5% | 5.7% |
+
+`ROUTE.wEarthwork` went 2.4 → 6.0 to pay for it. The budget (`earthFree`) is
+unchanged at 7 m; what changed is that in country with 600 m of local relief the
+router now MEETS it everywhere, so the slope of the penalty past it is what
+decides whether it traverses a hillside or bulldozes across it. At 2.4 it
+bulldozed — 11.2 m mean earthwork, a motorway cutting for most of the drive.
 
 ### 4.2 Road path (`path.js`) — the alignment is ROUTED, not wandered
 
@@ -251,19 +409,36 @@ Three things about the cost function are worth knowing before touching it:
 - **`selfNear`/`selfFar`/`selfClear` are STRUCTURAL, not stylistic.** See bug
   #55 — every chunk carries terrain 700 m either side while being 120 m long, so
   two stretches of road passing near each other have sheets that disagree about
-  whose ground it is.
+  whose ground it is. They no longer have to be a complete defence: the terrain
+  now clamps against foreign road as well (§3), so a doubling-back is a cosmetic
+  problem rather than a wall across the carriageway.
 
 `probe/route.mjs` measures all of it: shelf share, earthwork, curvature, and the
 self-clearance invariant.
 
+**THREE WINDOWS, NOT ONE.** `_buildFrames` measures over `CURV_WINDOW` = ±10 m
+and `_buildFoldLimits` over `FOLD_WINDOW` = ±25 m, and mixing them up costs real
+things in both directions:
+
+- `tan`, `right`, `up`, `bank` and `curv` all come off the SHORT window.
+  Widening it was tried and reverted: banking is `curv · bankGain`, and a bank
+  that lags the corner is worse than no bank at all — through an S-bend the
+  smoothed curvature still says "left" while the road has gone right, and the
+  cross-slope throws the car off the outside. Measured, it took one seed's worst
+  lane error from 5.8 m to **16.8 m**.
+- `foldL` / `foldR` come off the LONG window, as a running maximum of the
+  frame-to-frame rotation, split by sign. Only the terrain fold guard reads them,
+  nothing the player can feel is derived from them, and a guard lagging a corner
+  by 25 m costs nothing. See §3.
+
 Key methods:
-- `frameAt(s, out)` → position, tangent, normal, right, curvature, bank, cover,
-  tunnel. **Pass `out`** — it allocates a frame otherwise, and it is called
-  several times per car per frame.
+- `frameAt(s, out)` → position, tangent, normal, right, curvature, `foldL`,
+  `foldR`, bank, cover, and `s`. **Pass `out`** — it allocates a frame otherwise,
+  and it is called several times per car per frame.
+- `foreignSegments(s, x, z, range, out)` → control-point pairs belonging to a
+  different pass of the road. Backs the terrain's foreign clamp; see §3.
 - `projectPoint(pos, sHint)` → arc length, searched in a window around the hint.
 - `lateralOffset(pos, s)` → signed `v`.
-- `_markTunnels()` → decides where the road passes *through* rock, based on how
-  much cover is overhead (`ROAD.tunnelCover`), gated by `ROAD.tunnels`.
 
 `ensureLength(sTarget)` extends the spline lazily as you drive.
 
@@ -272,31 +447,70 @@ Key methods:
 One chunk = `CHUNK.length` (120 m) of road plus terrain out to
 `CHUNK.halfExtent` (700 m) each side. `update(carS)` keeps `CHUNK.behind` (2)
 and `CHUNK.ahead` (6) alive and builds at most `buildPerFrame` (1) per frame.
+Measured build cost **20 ms** per chunk, down from 34–58 ms.
 
 Build order inside a chunk:
-1. `_buildTerrain` — the ground mesh, with `mouth[]` flags marking vertices cut
-   away for a tunnel portal.
-2. `_buildRoad` — the ribbon and its painted lines. Lane markings are a lateral
+1. `path.ensureLength(s1 + ROUTE.selfFar)` — the foreign clamp asks about road
+   1600 m AHEAD, and an answer that depends on how much of the route has been
+   generated is not a pure function of position (trap #10). Routing is greedy and
+   deterministic, so extending it early changes nothing about where it goes; it
+   only makes the question answerable.
+2. `_buildTerrain` — the ground mesh.
+3. `_buildRoad` — the ribbon and its painted lines. Lane markings are a lateral
    profile of coloured bands, not a texture — that is why they never stretch.
-3. `_buildTunnels` — inner lining (collidable), outer shell and end caps
-   (visual only). See §4.4.
-4. `_buildProps` — trees. Cluster-seeded, not Poisson.
-5. `_seamNormals` — averages normals across chunk boundaries.
+4. `_buildProps` — trees (currently off). Cluster-seeded, not Poisson.
 
-Two functions deserve special attention:
+Ground cover and stone are NOT part of the build. They have a shorter lifetime
+than the chunk that holds them, so they are streamed separately — see §4.14.
 
-- **`sampleGround(frame, rightFlat, v, out)`** — the cut-and-fill clamp. The
-  shoulder ramp is `t²/(t + shoulderRound)`, which starts with *zero* slope at
-  the verge. The smooth clamp's blend width is
-  `k = min(slopeBlend, (ceiling − floorY)·0.25)` — **tied to the gap it is
-  blending**, so on the carriageway (where ceiling and floor are the same plane)
-  it degrades to an exact clamp. Bug #17 is what happens when it does not.
+**GHOST ROWS.** `_buildTerrain` samples one row past each end of the chunk,
+computes normals over the extended mesh, and keeps only the interior. This
+replaced `_seamNormals`, which re-derived the boundary normal analytically from
+central differences of `sampleGround` — and the two are not the same answer.
+Every interior vertex gets the area-weighted average of its six adjacent
+triangles; an analytic tangent plane agrees with that only where the surface is
+locally flat, and out where a cell is 34 m across the ground is not. So the seam
+row was shaded differently from its own neighbours, on both sides, and the world
+grew a subtly mismatched line across it every 120 m. It fed `_colorTerrain` too,
+so the seam was a colour boundary as well as a shading one. With ghost rows both
+chunks agree because both evaluate the same function of position, not because two
+derivations were tuned to match.
+
+**The far column spacing cap went 55 m → 34 m.** 55 m was right for a world whose
+mountains topped out at 300 m; they now reach past a kilometre, and a hillside
+three times as steep sampled at the same spacing is three times the angle between
+neighbouring faces. Eleven percent more terrain vertices.
+
+Three functions deserve special attention:
+
+- **`sampleGround(frame, rightFlat, v, out)`** — the cut-and-fill clamp, plus the
+  foreign-road clamp (§3). The shoulder ramp is `t²/(t + shoulderRound)`, which
+  starts with *zero* slope at the verge. **Both** smooth clamps take
+  `k = min(slopeBlend, (ceiling − floorY)·0.25)` — tied to the gap they are
+  blending, so on the carriageway (where ceiling and floor are the same plane)
+  they degrade to exact min/max. Bug #17 is what happens when the first one does
+  not; bug #57 is what happens when the second one does not.
 - **`meshGroundPoint(s, s0, s1, v, out)`** — interpolates the whole position
   across the actual rendered triangle. Props placed with this sit exactly on the
   visible surface; props placed with `sampleGround` float or sink.
+- **`_gatherForeign(frame)`** — refreshes the foreign-segment list for the row at
+  `frame.s`. It is a CACHE keyed on `s`, not state: anything sampling out of row
+  order pays for a re-gather and gets the identical answer, which is what keeps
+  chunk seams exact.
 
 `groundAt(s, v)` is the cheap query used by traffic, respawn and the recovery
-check. Inside a bore it returns the **bore floor**, not the terrain.
+check.
+
+**Colour** (`_groundColor`) is now nine palette entries, not five, and the
+altitude cue is height above `terrain.continent(x, z)` rather than above zero —
+the map itself rises and falls by hundreds of metres, so an absolute ramp painted
+whole regions at the top of it. Two mottles at different scales (≈70 m and
+≈350 m) put patches inside regions rather than grading across them; dry
+sun-bleached ground is weighted toward higher, flatter sites; scrub takes over
+where grass cannot hold; snow needs both altitude AND a flat enough face, because
+snow on a vertical wall is the giveaway that a palette is keyed to height alone.
+The grass takes its instance colour from this same function, so it can never
+disagree with the ground it stands in.
 
 ### 4.4 Tunnels — REMOVED
 
@@ -352,6 +566,11 @@ One dynamic rigid body. Four rays cast straight down from anchor points.
   states. Took render jitter from 146 mm to 0.3 mm.
 - **`beginStep()`** — snapshots the previous pose *and* clamps chassis velocity
   to `VEHICLE.maxChassisSpeed` (100 m/s) and angular velocity to 12 rad/s.
+- **`steerLimit` is published.** `_updateSteering` writes the lock actually
+  available this frame, because `input.steer` is a NORMALISED command — full
+  stick is full available lock, which is right for a human and a factor of six
+  out for anything computing an angle. See §7's harness note; getting this wrong
+  looked exactly like the world being broken.
 
 **Ray filtering.** `EXCLUDE_SENSORS` plus a group mask
 (`(0x0001 << 16) | 0xfffd`). Both are now belt-and-braces: with traffic carrying
@@ -491,14 +710,29 @@ fixed lights. Nothing in it is procedural or seed-dependent.
   and `wheels` groups; `releaseCar` + `vehicle.reattachModel()` hand them back
   when a run starts. Two copies of a car are two things that can disagree about
   paint.
-- **The framing is measured, not tuned.** `frame(vw, vh, top, bottom)` is given
-  the band between the bottom of the wordmark and the top of the dock, read from
-  `getBoundingClientRect` every frame, and solves for the camera distance that
-  fits the car into it and the aim that centres it there. That is the whole
-  answer to "is the car visible on a phone": add a garage row, rotate the
-  device, open it on a tablet, and the framing follows the thing that changed.
-  A hand-tuned `CAMERA.garage.aim` did not, and bug #53 is what that looked
-  like.
+- **The framing is measured, not tuned.** `frame(vw, vh, rect)` is given the
+  free area — `#stage`, read from `getBoundingClientRect` every frame — and
+  solves for the camera distance that fits the car into it and the aim that
+  centres it there. That is the whole answer to "is the car visible on a phone":
+  add a garage row, rotate the device, open it on a tablet, and the framing
+  follows the thing that changed. A hand-tuned `CAMERA.garage.aim` did not, and
+  bug #53 is what that looked like.
+
+  It corrects on **both axes** now, and that is what changed when the title
+  screen became a half-and-half split. A vertical band could be centred by
+  tilting the camera about a fixed point; a rectangle off to one side needs the
+  same correction horizontally, and it has to be applied along the CAMERA's right
+  and up vectors rather than the world's, because the rig orbits. Aiming one way
+  moves the subject the other, which is why the horizontal term is negated and
+  the vertical one is not — screen Y counts downward while world Y counts up, so
+  that sign has already been paid.
+- **There is no turntable.** There was a dark disc with a lit rim, which is what
+  a motor show puts a car on, and at the distance the framing solves for it took
+  up as much of the picture as the car did. What the plate was actually doing
+  that mattered was CATCHING THE SHADOW — the cyclorama is drawn from the inside
+  with `depthWrite` off, so it cannot receive one, and a car with no shadow under
+  it hovers. It is now a `ShadowMaterial` plane: a surface that draws nothing
+  except what is shadowed onto it.
 - **It borrows the post chain.** `gfx.render(scene, camera)` swaps the
   `RenderPass`'s targets, so the showroom gets the same bloom, vignette and tone
   mapping as the game without a second composer.
@@ -528,15 +762,20 @@ level of detail worth spending it on — two-triangle impostors for distant tree
 rendered once per species at boot, which is what makes thousands affordable
 where hundreds were not.
 
-Rocks, bushes, plants, flowers and logs remain switched off pending a proper
-scatter design. Six canopy species are defined, in one group, 3 picks per chunk,
-cap 52. Ground cover is separate and live — see §4.14.
+Bushes, plants, flowers and logs remain switched off pending a proper scatter
+design. Six canopy species are defined, in one group, 3 picks per chunk, cap 52.
+Ground cover and stone are separate, generated rather than loaded, and live —
+see §4.14 and §4.16.
 
 `suitability(kind, {altitude, slope, lateral, region})` scores each species
 against the site. Placement is **clustered, not Poisson** — real forests grow in
 stands.
 
-### 4.12 Scene, camera, input, HUD
+The right home for a canopy is now `src/env/trees.js`, which does not exist yet.
+Nothing about the scatter has to change when it does; `CHUNK.trees` is the
+switch.
+
+### 4.12 Scene, camera, input, HUD, audio
 
 - `scene.js` — `FogExp2`, a gradient sky, directional sun + hemisphere fill, and
   a post chain: `RenderPass` → `UnrealBloomPass` → radial speed blur → vignette
@@ -548,20 +787,27 @@ stands.
   orbit for the title screen. `CAMERA.speedRef` was 165 m/s — 594 km/h, past
   anything in the roster — so every speed-dependent term was inert; at 68 m/s
   the field of view now opens by a useful 12° instead of 1.5°.
-- **The garage is the real car.** The title screen leaves the middle of the
-  screen transparent and orbits the actual vehicle, on the actual road, in the
-  actual scene. Paint is a live material property, so a colour click is
-  immediate; picking a car or an engine also blips the throttle, with the
-  gearbox forced to neutral so it revs freely instead of bogging against a
-  stopped driveline. The first click is what starts Web Audio — it is the user
-  gesture the API requires.
+- **The garage is the real car, in a studio of its own** — §4.10. It is the
+  actual vehicle's own `body` and `wheels` groups, re-parented rather than
+  cloned, so paint is a live material property and a colour click is immediate;
+  picking a car or an engine also blips the throttle, with the gearbox forced to
+  neutral so it revs freely instead of bogging against a stopped driveline. The
+  first click is what starts Web Audio — it is the user gesture the API
+  requires, and it is where the wind starts too.
 - `input.js` — keyboard, gamepad, and touch (`bindTouch`). Distinguishes held
   keys from one-shot presses; `flashHeld` drives headlight flash-to-pass.
   It reads `.tbtn` and the `data-hold` / `data-tap` attributes and nothing else,
   so the touch layout can be rearranged in `index.html` without touching it.
 - `hud.js` / `settings.js` — HUD readouts and the collapsible left drawer. The
   drawer is a deliberate **keyboard trap**: a focused `<input type=range>`
-  responds to arrow keys and would steer the car.
+  responds to arrow keys and would steer the car. It carries the engine's six
+  voice buses, the two tone controls, the gearbox and camera toggles, and a
+  **Wind** slider — which is not one of the engine's buses and gets its own
+  control rather than sitting under a heading that says "voice mix" and meaning
+  combustion.
+- `wind.js` — see §4.18. Shares the powertrain's `AudioContext`, follows the
+  global mute, and is the only audio in the project that `engine_sim` does not
+  make.
 
 ### 4.13 The stylesheet — one scale, no width breakpoints
 
@@ -574,8 +820,36 @@ carry three overlapping sets of rules each restating sizes the others had set
 (bug #45). `vmin` and not `vw`, so rotating the device moves things without
 resizing them.
 
-The only media queries left ask about **orientation** and **pointer** — real
-facts about how the thing is being held. There are no width breakpoints.
+The only media queries left ask about **orientation**, **pointer** and available
+**height** — real facts about how the thing is being held and how much room there
+is. There are no width breakpoints.
+
+**THE TITLE SCREEN IS HALF CAR AND HALF CONTROLS, AT EVERY SIZE.** It used to be
+a column with the panel pinned to the bottom and the car showing through
+whatever was left. That works on a tall screen and fails completely on a short
+one: with 390 px of height the dock is 80% of it and the car it exists to help
+you choose is behind the panel. Every fix for that is a different layout for a
+different screen, which is the road back to bug #45.
+
+So the screen splits in two, and **the split runs across the long axis**.
+Portrait puts the car above the controls; landscape — a phone on its side, and
+also every desktop monitor — puts them side by side. One rule, stated once: half
+the screen is the subject and half is the interface, so the car is never behind
+the panel and the panel never has to be told how tall it may be. `#stage` is the
+free half, and it exists so `showroom.frame` has a rectangle to MEASURE rather
+than a gap inferred from where two other things happened to land.
+
+Two cascade details that were each wrong once:
+
+- In a row the flex basis is a WIDTH, so `#dock` is not height-constrained by
+  it at all. `max-height: 100%` with `align-self: center` is the cap that was
+  missing: the panel is as tall as it needs to be and never taller than its half,
+  so a desktop gets a compact card and a phone on its side gets a full-height one
+  that scrolls inside. `align-self: stretch` instead gives the desktop a panel
+  with 400 px of empty floor under the keys.
+- The landscape override has to come **after** `#dock`'s own block or it loses
+  the cascade to it — same specificity, later wins. Putting it up beside the
+  `#overlay` rule looked tidier and did nothing at all.
 
 Two tokens do the load-bearing work:
 
@@ -594,11 +868,188 @@ is what you aim at when you re-find a pedal without looking. `.tbtn-lg` /
 
 ---
 
+### 4.14 Ground cover — TWO TIERS (`env/grass.js` + `chunks.js`)
+
+The near field wants tufts you can resolve: 0.55–1.4 m, dense enough that crossed
+cards close into a continuous surface. Extending that outward fails twice over —
+the instance count goes up with the area, and at 200 m a 1 m card is four pixels
+tall, so the count buys a faint dusting rather than a field. Rendered, the old
+single tier was a ribbon hugging the tarmac with bare ground beyond it.
+
+What reads at 200 m is a **layer**: something with a broken top edge standing
+proud of the ground, catching light differently from the sheet under it. That
+needs area, not count.
+
+| | near | far |
+|---|---|---|
+| chunks | ±1 (3 chunks, 360 m) | −1/+5 (7 chunks) — the view is in front |
+| lateral band | 62 m | 185 m |
+| card size | 0.55–1.4 m | ×1.55 tall, **×4.2 wide** |
+| density | 2.9/m² asked | area-preserving × 0.26 |
+| alive | ~99,000 instances, 396k tris | ~39,000 instances, 154k tris |
+| fade | out at 62→95 m | **in** at 55→110 m, out at 330→470 m |
+
+**Wide, not big.** Scaling a card uniformly by 4 makes it five metres tall, and
+five metres of grass is a tree: the first render of the far tier was a field of
+dark spines standing off the slope. `widthScale` and `heightScale` are separate
+for that reason, and the instance count divides by their product.
+
+**The tiers cross-fade by SCALE, not opacity.** The material is an alpha-test
+cutout, so there is no opacity to fade; a tuft shrinks about its own base, which
+sinks it into the ground rather than dissolving it. The far tier's fade-in
+window (55–110 m) deliberately overlaps the near tier's fade-out (62–95 m), so
+there is never a band with nothing in it and never a card that is both close and
+large.
+
+Both tiers are one `_buildGrass` and one geometry. A tier is a plain descriptor
+in `ChunkManager.grassTiers`; everything that differs is a number in it. The near
+tier is served first from a shared per-frame budget, because it is the one whose
+absence is visible.
+
+**`GRASS.density` is an ASK, not a count.** Samples landing on ground too steep
+for grass are dropped, so what is placed is always less — and how much less
+depends on the terrain. At 3.6 against the old, gentler ground a third were
+rejected and ~30,000 survived per chunk; against terrain with more flat shelf in
+it only a tenth are, and the same 3.6 delivered 41,000.
+
+### 4.15 The terrain's own detail (`env/ground.js`)
+
+Grass geometry fixes the first forty metres and nothing beyond it. The ground was
+one flat wash of green not because the palette was wrong but because a vertex
+colour was the only thing it had to say, and the vertices past the verge are
+metres apart — between them the interpolator draws a perfectly smooth ramp, and a
+perfectly smooth ramp over an area the size of a field is what "flat green"
+looks like.
+
+One tiling RGB map, all three channels LUMINANCE, multiplied into `diffuseColor`
+*after* the vertex colour. R is sward (clumps with 5:1 stretched streaks over
+them, because grass lies down in a direction and isotropic noise reads as
+gravel). G is rock (ridged, so the creases are lines rather than blobs). B is
+soil and gravel, with grain at the texel scale so mipmapping takes it away with
+distance — which is exactly the wanted behaviour.
+
+- **Slope picks between them**, by the same normal the palette uses, so the
+  texture can never disagree with the colour.
+- **Two scales, 5.5 m and 28 m.** Not a round ratio: two samples of one tiling
+  map at frequencies that do not divide beat against each other with a period of
+  their product, ~154 m, for one extra fetch. The near tile fades out over
+  45–130 m, because a 5.5 m tile at 120 m is under a pixel and a sub-pixel
+  pattern is not detail, it is a crawling shimmer.
+- **Planar in world XZ, not UV.** The sheet is parameterised in ROAD space, where
+  columns are 2.4 m on the carriageway and 34 m at the corridor edge, so a
+  UV-mapped texture would be stretched thirty-fold across one hillside. World XZ
+  costs two multiplies and lines up across chunk seams by construction.
+- **`NoColorSpace`, not sRGB.** It is a modulation mask, not a colour; decoding
+  it as sRGB bends the midpoint and the overlay darkens everything.
+
+Everything is centred on 1.0 and modulates by `GROUND.contrast*`, so switching
+the block off must not change how bright the world is.
+
+### 4.16 Stone (`env/rocks.js` + `chunks.js`)
+
+Not scenery — **texture**. A cut face is a smooth green ramp until there is
+broken rock spilling out of it, and a verge is a mown edge until there is gravel
+on it. Chips along the shoulder, scree out of a cutting, the occasional boulder
+in the grass; nothing you would call a landmark.
+
+A rock is a subdivided icosahedron, displaced by two octaves of value noise,
+squashed non-uniformly, then **clipped against a handful of random half-space
+planes** — which is what a fracture is, and without it the result is a potato.
+Normals are FLAT: a fractured solid whose faces all shade alike is a pebble made
+of clay. 20 triangles for scree, 80 for the rest, 59 mean across the library.
+
+One placement rule does all the work: **the steeper the ground, the more likely
+stone is, and the more of it is scree rather than boulders.** That single
+`smoothstep` produces talus under a cutting, chips along a bank and the occasional
+stone in a flat field without any of those being a separate case.
+
+Two budget details that are easy to undo:
+
+- **A chunk uses a WINDOW into the variant library, not all of it**
+  (`ROCKS.variantsPerChunk` = 2 per class, rotated per chunk). Every distinct
+  geometry in a chunk is another `InstancedMesh` and another draw call; with the
+  full library a chunk touched eleven of them for a hundred-odd rocks, which is
+  the cost model of not instancing at all. Now 5.8 batches per chunk.
+- **Scree never casts a shadow.** The sun's cascade is 78 m across 2048 px —
+  4 cm a texel — so a 15 cm chip is three texels and its shadow is noise, and
+  there are more chips than everything else put together.
+
+Measured: ~87 rocks and 3,985 triangles per chunk, ~16,000 alive against ~109,000
+for the whole terrain sheet.
+
+### 4.17 Tyre smoke and rubber (`fx.js`)
+
+Both are driven by ONE quantity, `wheel.slipAmount` — how far past its peak a
+tyre is, the same number the skid audio uses. There is deliberately no second
+opinion about whether a tyre is sliding; a visual effect that disagrees with the
+sound is worse than no visual effect.
+
+**Smoke is a pool integrated on the GPU.** 260 particles allocated once and
+recycled oldest-first, so a thirty-second burnout costs what a one-second one
+does and there is no allocation in the frame loop. Each instance carries an
+origin, a velocity and a birth time; the vertex shader solves the closed form of
+`x(t) = x0 + v0(1 − e^(−kt))/k + rise·t`, so the CPU writes to a particle exactly
+once — when it is born. They are billboards built in VIEW space, offset after the
+origin has been transformed, so the card faces the camera without anything on the
+CPU knowing where the camera is.
+
+**Rubber is a ring buffer of quads.** 3,000 of them, written round; the oldest is
+a couple of hundred metres behind by the time it is overwritten. Each quad
+bridges where a wheel was and where it is, at the tyre's own width, built from
+the direction BETWEEN those two points rather than the wheel's heading — a
+sliding tyre is not pointing where it is going, and a mark drawn across its own
+path is the giveaway. Age is a vertex attribute and the fade is in the shader.
+They are coplanar with the ground by construction, which is the one thing a depth
+buffer cannot resolve, so `polygonOffset` biases them forward and `depthWrite` is
+off.
+
+**`FX.smoke.minSlip` is 0.22, and that number is not a matter of taste.** The
+tyre model resolves an over-driven wheel by clamping the combined impulse to the
+friction circle, and `slipAmount` is how much it had to take away. A full-throttle
+standing start in the Sport measures **0.39–0.46** on the driven wheels — that is
+a car lighting up its rear tyres, and it is nowhere near 1. A threshold set by
+imagining what "full slip" ought to mean lands above everything the model ever
+produces, and the effect then silently never happens.
+
+Smoke also fades out over 14–34 m/s (`speedFade`). Tyre smoke is rubber being
+erased, and at 200 km/h a sliding tyre is doing the same thing per second but
+leaving the smoke a hundred metres behind, so there is never a cloud to see —
+which is also exactly the behaviour asked for: smoke when the revs are up and the
+car is not. Rubber has no such gate; a high-speed slide still marks.
+
+### 4.18 Wind (`wind.js`)
+
+The one sound the engine simulator cannot make, and the cheapest immersion in the
+project: at 200 km/h a car is loud in a way that has nothing to do with
+combustion.
+
+Synthesised, not sampled — a loop is a file, a file has a length, and a length is
+a period the ear finds. Brown-ish noise (a one-pole integration of white, which
+tilts it ~−6 dB/octave and puts the weight where air actually is) through two
+bands:
+
+- **RUSH**, low-passed, sweeping 260→1500 Hz. The body of the sound, present from
+  walking pace.
+- **WHISTLE**, a narrow band that arrives at 45% of the speed range and climbs
+  900→2600 Hz quadratically from there. That lateness is the whole effect — it is
+  what makes 200 km/h sound different from 120 km/h rather than simply louder.
+
+`WIND.exponent` is 2.2. Aeroacoustic POWER goes as roughly the sixth power of
+velocity, which is true and useless: it puts everything under 150 km/h at silence
+and everything over it at one level. This is an amplitude curve with a tilt.
+
+**It does not create an AudioContext.** It is handed the one `engine_sim` already
+made, so there is one clock and one output bus in the process — and it therefore
+starts inside the same user gesture, on the Drive click. Parameters move with
+`setTargetAtTime`, never `.value =`: a write lands at a block boundary and steps,
+which on a parameter this broadband is an audible edge. It has its own slider in
+the drawer, and follows the global mute.
+
 ## 5. The config contract, and the trap that has cost the most time
 
-`config.js` exports 11 blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `GRASS`,
-`VEHICLE`, `TRAFFIC`, `CAMERA`, `SHOWROOM`, `ATMOSPHERE`, `SCORE`,
-`TERRAIN_COLORS`.
+`config.js` exports **16** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `GRASS`,
+`GROUND`, `ROCKS`, `WIND`, `FX`, `VEHICLE`, `TRAFFIC`, `CAMERA`, `SHOWROOM`,
+`ATMOSPHERE`, `SCORE`, `TERRAIN_COLORS`.
 
 **THE TRAP.** Put a key in the wrong block and it reads as `undefined`. Then:
 
@@ -621,8 +1072,10 @@ for(const line of s.split('\n')){
   if(cur&&/^\};/.test(line)){cur=null;continue;}
   if(cur){const k=line.match(/^\s{2}(\w+):/); if(k)blocks[cur].add(k[1]);}}
 let bad=0;
-for(const f of fs.readdirSync('src')){ if(!f.endsWith('.js'))continue;
-  const t=fs.readFileSync('src/'+f,'utf8');
+const files=[...fs.readdirSync('src').map(f=>'src/'+f),
+             ...fs.readdirSync('src/env').map(f=>'src/env/'+f)];
+for(const f of files){ if(!f.endsWith('.js'))continue;
+  const t=fs.readFileSync(f,'utf8');
   for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|GRASS|VEHICLE|TRAFFIC|CAMERA|SHOWROOM|ATMOSPHERE)\.(\w+)/g)){
     if(blocks[m[1]]&&!blocks[m[1]].has(m[2])){console.log('MISSING '+m[0]+' in '+f);bad++;}}}
 console.log(bad?bad+' missing':'config audit clean');"
@@ -646,10 +1099,9 @@ report the whole block as dead. It is not.
 | Player ray membership | `0x0001`, mask `0xfffd` | belt and braces; see §4.5 |
 | Rapier `linearDamping` | **0** | see bug #4 |
 | `TRAFFIC.maxImpactDv` | 11 m/s | ceiling on Δv from one impact |
-| `chunks.TUNNEL_EPS` | 1e-4 | the *only* "is there a bore" threshold |
 
-**The player's car is the only rigid body in the world besides static terrain
-and tunnel colliders.** Nothing else is dynamic.
+**The player's car is the only rigid body in the world besides the static
+terrain trimeshes.** Nothing else is dynamic.
 
 ---
 
@@ -716,8 +1168,44 @@ are recorded because most of them are re-introducible.
 | 55 | **A hillside lying across the carriageway** | Every chunk carries terrain to `CHUNK.halfExtent` (700 m) either side while being `CHUNK.length` (120 m) long, so a chunk's sheet covers an enormous area — and each one is carved for ITS road and is natural ground over anyone else's. The old noise generator wandered too incoherently to double back within 700 m; a router that follows contours does it readily, because going round a hill is what following a contour means | `ROUTE.selfNear/selfFar/selfClear`: candidates coming back within 300 m of road laid between 260 m and 1600 m ago are penalised quadratically. Measured self-clearance 191–198 m across four seeds against a 160 m floor |
 | 56 | Title screen rendered in near-darkness | The garage orbited the real car on the real road, so it inherited the world — including facing the anti-sun side of the sky dome, on a seed that is bright and pleasant from the chase camera | Its own scene: cyclorama, turntable, three fixed lights (§4.10) |
 | 51 | **A frame-rate hitch yanked the car backwards** | `maxSubSteps · fixedStep` was 41.7 ms while `main.js` clamped the frame to a separate literal 50 ms. Every frame between the two ran the physics short and discarded the remainder, while the camera, traffic and trip meter were handed the full `dt` and acted on time the car never got. A 90 ms hitch advanced the world **46%** of its own frame; sustained 20 fps ran the whole game at **83% speed** | One number: the clamp is `WORLD.maxSubSteps * WORLD.fixedStep`, and `maxSubSteps` went 5 → 6 so the accumulator always drains. Advance/expected **0.848 → 1.000** across a hitch, **0.833 → 0.999** at 20 fps |
+| 57 | **A 1361 m/s² hit on a flat, straight carriageway with all four wheels down** | The new foreign-road clamp used a FIXED smooth-min width. On the carriageway `ceiling`, `floorY` and the result are all the same plane, so `smin(y, y, 3.5)` concedes k/4 unconditionally — a 0.875 m trench down the middle of the road, wherever a foreign road segment was within range. Trap #6, for the second time in this file | `k` tied to the gap, exactly as the cut/fill clamp already was. On the carriageway both operations degrade to exact min/max and the surface is the road plane to the bit |
+| 58 | **The far terrain sheared between adjacent rows; chunks "did not line up"** | `foldSafeOffset`'s exponential mapping starts bending immediately, so a road with curvature wandering through zero — i.e. a straight — had its far corridor squeezed by a different amount on every row. Two rows 2.5 m apart, both at a 2.8 km radius, moved a far column **87 m** | A soft minimum with p = 6 instead of an exponential approach. Correction is O((v/L)^6), so it is invisible until v is a real fraction of R, and its sensitivity to curvature falls with the fifth power. The same rows now disagree by 0.1 m |
+| 59 | **The terrain sheet was folding through itself — 1,240 to 4,353 cells per seed, worst row spacing MINUS 54% of nominal** | The fold guard was fed `frame.curv`, measured over ±10 m. The quantity that decides whether the mesh folds is the rate one row's frame rotates into the NEXT row's, and a smoothed estimate under-reports it — which relaxes precisely the limit the guard exists to enforce. It had been doing this since the guard was written | `path.js:_buildFoldLimits`: per-side running maximum of the actual frame-to-frame rotation over ±25 m. Conservative, continuous, and spikes become plateaux instead of shear. **0 inverted cells**, minimum spacing exactly 29% |
+| 60 | **A hillside standing 2.6 m across the carriageway** | Bug #55 again, and `ROUTE.selfClear` was never going to fix it: it keeps two carriageways 300 m apart and the sheets are 700 m wide. Chunk 29's sheet was drawing uncarved ground over chunk 23's road, which is in a cutting | `sampleGround` clamps against foreign road segments too (§3). First attempt used control POINTS — 46 m apart, so 23 m of error at a 62% cut slope leaves 2.7 m standing. Second used the road's own cut slope — the far sheet's 34 m columns draw the CHORD across the V, which is 17 m of error. Segments, a 10% slope and a 4 m sink: **0 steps over 30 cm on seven seeds** |
+| 61 | Chunk seams were a shading AND colour boundary every 120 m | `_seamNormals` re-derived the boundary normal analytically while every interior vertex got `computeVertexNormals`' area-weighted average. The two agree only where the surface is locally flat, and out where a cell is 34 m across it is not — and the normal feeds `_colorTerrain` as well | Ghost rows: sample one row past each end, compute normals over the extended mesh, keep the interior. Both chunks agree because both evaluate the same function |
+| 62 | **The far grass tier was a field of dark spines** | Scaling a grass card uniformly by 3.6 makes it five metres tall, and five metres of grass is a tree | `widthScale` and `heightScale` separately: ×4.2 wide, ×1.55 tall. Coverage is what the middle distance needs, not height |
+| 63 | Tyre smoke never appeared | `FX.smoke.minSlip` was set to 0.35 by imagining what "full slip" ought to mean. The tyre model's `slipAmount` is how much the friction circle had to take away, and a full-throttle standing start in the Sport measures **0.39–0.46** — a car lighting up its rears, nowhere near 1 | 0.22, and the number is now written down next to the measurement. `probe/env.mjs` drives the emission path against a stub carrying exactly that value, because a screenshot of no smoke looks like a screenshot taken at the wrong moment |
 
 ### Test-harness bugs that masqueraded as game bugs
+
+**The worst one yet, and it was pre-existing.** `probe/drive.mjs`'s autopilot
+computes a steering ANGLE and converted it to a command by dividing by
+`V.maxSteer`. But `input.steer` is NORMALISED — the vehicle multiplies it by
+whatever lock the grip and rollover limits leave at this speed, which is the
+right contract for a human holding a stick and is **a sixth** of `V.maxSteer` at
+160 km/h. The car therefore tracked a wider radius than the road, drifted out at
+about a millimetre a metre with **zero tyre slip** and a third of the lock it
+thought it was using, and reported the verge it eventually found as a fault in
+the world.
+
+It got worse as the alignment got more interesting, which is exactly the
+correlation that makes such a thing convincing: worst lane error went 1.77 m →
+16.77 m on one seed when the terrain grew, and every instinct said the road was
+now undrivable. Two red herrings were chased first — raising the cross-track gain
+(3.6 and 5.0 took the worst seed to 14.9 and 15.1 as the loop went unstable) and
+slowing the corner-entry model (no effect at all, because the car was never
+sliding).
+
+`vehicle.steerLimit` is now published for exactly this, and dividing by it took
+the lane error to **0.46–0.58 m across five seeds** — better than the numbers the
+project shipped with on a far gentler road.
+
+Two smaller ones fixed in the same pass: the autopilot read curvature at ONE
+lookahead station, so it held full throttle into a 270 m corner while looking at
+an 828 m radius 73 m up the road (it now scans the window and takes the worst);
+and it had no feed-forward term, so it carried the steady-state offset every
+purely proportional path tracker has against a constant-curvature path.
+
 
 Worth its own list, because measurement has been wrong more often than the game.
 
@@ -773,10 +1261,25 @@ it does have ANGLE's software rasteriser: `--use-angle=swiftshader` plus
 a run and screenshots the result. Two bugs fell out on the first run that
 nothing else could see (#52, #53).
 
+`probe/render.mjs` also takes a **teleport** as its third argument — SwiftShader
+covers a couple of hundred metres in a minute, so without one every shot is of
+the same kilometre — and a `SKID=1` flag that stops the car and floors it.
+
 What that still does NOT cover: the frame rate it reports is meaningless, MSAA
 and anisotropy behave differently from a GPU (so `alphaToCoverage` on the grass
-is unverified), and nobody has driven it far. Colour grading, bloom, tunnel
-interiors, tree density and the far horizon have been *glanced at*, not judged.
+is unverified), and nobody has driven it far. Colour grading and bloom have been
+*glanced at*, not judged.
+
+**The tyre effects have never been seen rendered, and `SKID=1` cannot show
+them.** At 20 fps the powertrain is stepped with `dt` = 50 ms, an order of
+magnitude outside what engine_sim's launch controller regulates at, and the
+engine never comes off idle: measured, 1,650 rpm and 8 kN at the contact patch
+where a real launch makes 25 kN. Eight kilonewtons does not overwhelm a 1.45
+friction coefficient, so no tyre slips and there is nothing to draw. Nothing is
+wrong with the effects; the car is not doing the thing. `probe/env.mjs` verifies
+the emission path directly instead, against a stub carrying the slip value the
+real car measures — which is deterministic, and can tell the difference between
+"no smoke" and "the screenshot was taken at the wrong moment".
 
 **The interface, separately, HAS now been rendered.** `probe/uishot.mjs`
 screenshots twelve real device viewports over the DevTools protocol against
@@ -805,17 +1308,30 @@ What that still does not cover:
   may well be glass. First thing to do with a real browser: open the garage,
   cycle all nine cars, and watch what the Trim swatches change.
 
-In particular the tunnel rework is verified **geometrically** — no terrain in the
-bore, no open sky, no gap the shell cannot cover, no step or hole in the
-collision surface — but nobody has looked at a portal.
+- **What the new scenery looks like on a real GPU.** The far grass tier, the
+  ground detail texture and the stone have been rendered through SwiftShader and
+  they read correctly, but MSAA, anisotropy and mip selection are all different
+  there. `GROUND`'s near tile in particular is fading out at 45–130 m against an
+  aliasing threshold that was reasoned about, not measured.
+- **The wind has never been heard.** The graph builds without error in a headless
+  context; every number in `WIND` was chosen by ear against expectation, which is
+  not the same as against a speaker.
 
 ### Known rough
 
-- **Faceting at the corridor edge.** 3 cells per seed out of 7560 in the
-  420–700 m band meet at over 60°, worst 97°. All are on the inside of a bend
-  and are the fold guard's skew (§3), not noise. Fog leaves ~1% of the colour
-  out there. Fixing it properly means making the fold mapping independent of
-  per-row curvature.
+- **Faceting at the corridor edge.** The p99 in the 200–700 m bands is 27–31°
+  and the worst cell reaches ~100°. The sheet no longer folds and no longer
+  shears (§3), so what is left is a real one: the ground now turns faster than a
+  34 m column can follow. Fog leaves ~1% of the colour past 500 m. The honest
+  fixes are more columns or fewer octaves out there, and both are budget
+  decisions nobody has taken.
+- **`GRASS.density` interacts with the terrain.** It is an ask; how many samples
+  survive the slope test depends on the landforms, so changing the terrain
+  changes the instance count by tens of percent without anything in `GRASS`
+  moving. Re-run `probe/grass.mjs` after any terrain change.
+- **Stone is only in the near four chunks** (`ROCKS.behind`/`ahead`). A cut face
+  five hundred metres ahead has no scree on it and gains some as you arrive. It
+  has not been looked at in motion.
 - **`_separate` runs one relaxation pass** over a list sorted before positions
   were adjusted. It has never failed a soak test, but it is not a proof.
 - **Impacts are box-vs-box in road space**, so a car struck at a sharp angle
@@ -825,58 +1341,77 @@ collision surface — but nobody has looked at a portal.
 
 ### Verified good (headless, this pass)
 
-- Carriageway surface: **0 steps over 30 cm and 0 holes in ~500k ray probes**
-  across three seeds and 3 km each, tunnels included.
-- Carriageway height equals the exact cut/fill clamp to **0.000000 m**.
-- Tunnels across six seeds: 0 vertices cut in a sealed bore, 0 standing in a
-  mouth, surviving edge on the clearance line.
-- Terrain faceting, adjacent-face angle, old → new:
+- Carriageway surface: **0 steps over 30 cm and 0 holes in ~220k ray probes per
+  seed** across **seven** seeds and 4 km each. The default seed had **779** of
+  them before the foreign-road clamp; every other seed that has one has it near
+  where the route doubles back.
+- Carriageway height equals the exact cut/fill clamp to **0.000000 m**, and the
+  foreign clamp is floored at this road's own fill line so it cannot touch it.
+- **The terrain sheet no longer folds.** 0 inverted cells across five seeds,
+  minimum longitudinal row spacing exactly **29% of nominal** — the fold guard's
+  0.7 margin, by construction. It was **1,240–4,353 inverted cells per seed**
+  with a worst spacing of minus 54%.
+- Terrain faceting, adjacent-face angle. The middle column is this project as
+  shipped; the right is now, on terrain whose vertical scale is roughly **three
+  times** larger. The p99 rising in the far bands is the ground genuinely turning
+  faster than a 34 m column can follow, not noise — the mean falling everywhere
+  is the fold guard and the seam normals:
 
-  | band | mean | p99 |
-  |---|---|---|
-  | 0–80 m | 2.69° → **1.95°** | 17.19° → **10.43°** |
-  | 80–200 m | 6.07° → **4.48°** | 29.62° → **17.79°** |
-  | 200–420 m | 9.01° → **6.34°** | 39.42° → **24.12°** |
-  | 420–700 m | 13.94° → **7.06°** | 56.25° → **27.72°** |
+  | band | shipped mean | now | shipped p99 | now |
+  |---|---|---|---|---|
+  | 0–80 m | 1.74° | **1.72°** | 9.65° | **9.85°** |
+  | 80–200 m | 3.88° | **3.51°** | 18.39° | **21.05°** |
+  | 200–420 m | 7.91° | **4.07°** | 46.44° | **30.55°** |
+  | 420–700 m | 8.87° | **3.40°** | 54.07° | **26.89°** |
 
+- Longitudinal terrain steps (`probe/cliff.mjs`): worst 0.4–2.1 m across five
+  seeds, none over 8 m.
+- Route character over 6 km, four seeds: sidehill **51%** (was 29%), corridor
+  drops over 12 m **30–46%** (was 1–14%), earthwork 9.4 m, grade p95 5.7%,
+  worst self-clearance 190 m against a 160 m floor.
+- Sustained elevation: road elevation range over 18 km of driving **129–249 m**
+  (was 106–214), longest climb with nothing given back **2.6–3.4 km for
+  +66 to +111 m**.
+- Chunk build cost **20 ms** (was 34–58). Grass scatter 4.7 ms mean per chunk for
+  the near tier, 3.2 ms for the far one, stone 0.8 ms.
+- Ground cover: near tier ~99,000 instances alive (396k triangles), far tier
+  ~39,000 (154k), **0 on the carriageway**, closest 9.06 m against a 7.4 m road
+  half-width, none beyond its band, and the two tiers' fade windows overlap.
+- Stone: 87 per chunk, ~16,000 triangles alive against ~109,000 of terrain,
+  **5.8 draw batches** per chunk, none inside the paved edge, every variant
+  normalised to unit width and standing exactly on y = 0.
+- Tyre effects, driven directly against a stub carrying the slip the real car
+  measures (0.44): 48 puffs and 22 mark quads after two seconds of burnout, **0**
+  puffs from a gripping tyre, **0** puffs at 180 km/h but rubber still laid.
 - Traffic, 4 minutes at 150 km/h, four seeds: nearest spawn 460 m, longest stall
   **0.00 s**, car-frames below 1 m/s **0.00%**, same-lane overlaps **0**, settled
   lane error 0.076 m, population 9/9.
 - End-to-end drive, 90 s flat out, four seeds: 0 non-finite states, **0.00%**
-  airborne, 0 hard hits away from traffic, 0 recoveries, deepest below the road
-  0.15–0.25 m (suspension travel).
-- Impact Δv peaks at exactly the 11 m/s cap; measured 658 m/s² against the
+  airborne, **0** hard hits away from traffic, 0 recoveries, worst lane error
+  **0.46–0.58 m**, worst yaw rate 0.74 rad/s, deepest below the road 0.23 m.
+- Impact Δv peaks at exactly the 11 m/s cap; measured 661 m/s² against the
   660 m/s² the cap implies at 60 Hz.
-- Tree grounding **0 mm** mean and p99 against the terrain collider; per-chunk
-  budget holds at 52 with 1.8–2.6 draw batches.
-- Tunnels: **0 sky leaks in 211k rays** from inside sealed bores; worst terrain
-  step away from a portal **1.4 m** across seven seeds; portal faces 6–9 m,
-  which is the intended rock face.
 - Handling, measured before and after on the same test: handbrake-turn yaw
   **3.22 → 2.27 rad/s**, catch **2.54 s / 169° → 0.82 s / 62°**, speed left after
   the catch **5 → 41 km/h**, drift exit **26 → 56 km/h**, unassisted catch
-  **3.45 s → 0.98 s**. Steering headroom at 200 km/h **4.6×** the tightest
-  corner. No rollover regression on monster / van / military / pickup in a 6 s
-  slalom at 90 km/h.
+  **3.45 s → 0.98 s**. No rollover regression on monster / van / military /
+  pickup in a 6 s slalom at 90 km/h.
 - Launch: Sport **5.2 → 9.9 m/s²** in the first frame from rest at full throttle
-  and **1.8 → 3.5** at a third throttle; top speed and 0–100 beyond a standing
-  start unchanged, which is the point of the fade.
+  and **1.8 → 3.5** at a third throttle.
 - Garage: engine blips 904 → 7819 rpm in neutral, selects first gear on Drive,
-  and the parked car moves **0.0 cm in five seconds** on a 4.7% grade.
-- Tunnel meshes: **0 coincident triangles** across four seeds (was 11.4%).
+  and the parked car moves **0.0 cm in five seconds** on a grade.
 - Traffic mode: 43 near misses detected in a 3-minute run (37 oncoming), closest
   1.07 m; scoring curve, oncoming bonus, chain build/decay/refill and cooldown
   all verified.
-- **40 DOM ids and 14 toggled classes** resolve against `index.html` — the only
-  guard there is against a typo silently killing a button.
-- Both paint slots and both lamp pairs populated on all 9 cars; the second
-  colour carries 8–34% of a car's triangles.
+- **45 DOM ids and 15 toggled classes** resolve against `index.html`.
+- Both paint slots and both lamp pairs populated on all 9 cars.
 - Render smoothness, camera space, ten frame-rate patterns from 144 fps to
   20 fps including 30% jitter, 90 ms hitches and cornering: worst springing
-  **9 mm**, world advance within 0.2% of `speed × dt` everywhere. Reverting
-  either fix alone reproduces the fault (4 patterns fail without `dampTrack`,
-  2 without the derived clamp).
-- All 18 modules parse; config audit clean.
+  **9 mm**, world advance within 0.2% of `speed × dt` everywhere.
+- The interface at **twelve device viewports**, portrait and landscape, phone to
+  desktop: no overflow anywhere, and "Drive" visible without scrolling at every
+  one of them.
+- Every module parses; config audit clean across `src/` and `src/env/`.
 - `engine_sim`'s own suites still pass (166 checks + the driving suite).
 
 ---
@@ -940,9 +1475,35 @@ collision surface — but nobody has looked at a portal.
     chunk at once and reported 33,110 steps on a carriageway that the height
     function and the drawn mesh both agreed was flat — all of them collisions
     between chunks that can never coexist.
-24. **`config.js` exports ELEVEN blocks.** `GRASS`, `ROUTE`, `SHOWROOM` and
-    `SCORE` join the seven the audit script in §5 used to check — add any new
-    block to that regex or it checks nothing.
+24. **`config.js` exports SIXTEEN blocks.** `GROUND`, `ROCKS`, `WIND` and `FX`
+    joined `GRASS`, `ROUTE`, `SHOWROOM` and `SCORE` — add any new block to the
+    audit regex in §5, and remember it now walks `src/env/` too, or it checks
+    nothing. The audit reads prose as well as code: write `GROUND.contrastNear`
+    in a comment, not the shorthand.
+25. **The fold guard's curvature is NOT `frame.curv`.** It is `foldL`/`foldR`,
+    and the difference is bugs #58 and #59. Anything that "simplifies" the guard
+    back onto the smoothed curvature re-folds the sheet, silently, in the far
+    field where nobody looks.
+26. **Anything that samples ground must be a pure function of `s`.** The
+    foreign-segment cache is keyed on `frame.s` for that reason, and `_build`
+    calls `path.ensureLength(s1 + ROUTE.selfFar)` so the answer cannot depend on
+    how far generation has got. Trap #10 with a new instance.
+27. **A tier is a descriptor, not a second code path.** Near and far ground cover
+    share one `_buildGrass`, one geometry and one shader program. Forking either
+    is how the two stop agreeing about where the ground is.
+28. **`input.steer` is normalised, not an angle.** Full stick is full *available*
+    lock, which at 160 km/h is a sixth of `V.maxSteer`. Anything computing a
+    steering angle must divide by `vehicle.steerLimit`. See §7's harness note —
+    this one cost a long detour spent blaming the terrain.
+29. **`slipAmount` does not reach 1.** A car lighting up its rear tyres measures
+    0.39–0.46. Any threshold on it belongs next to a measurement, not next to an
+    intuition. Bug #63.
+30. **The title screen's split is one rule.** Half the screen is the car, half is
+    the interface, along the long axis. `#stage` exists so the camera can measure
+    the free half; do not go back to inferring it from where two panels landed.
+31. **`src/env/` generators must survive having no canvas.** The probes stub
+    `document.createElement` and `getContext` returns null. Return `null`, do not
+    throw, and treat a missing map as "untextured" downstream.
 
 ---
 
@@ -959,24 +1520,33 @@ npm run probe
 
 | script | answers |
 |---|---|
-| `probe/tunnel.mjs` | Anything standing in the carriageway, or missing from under it? Exits non-zero on any step over 30 cm or any hole. |
-| `probe/roof.mjs` | Is the rock over a bore unbroken, and is the mouth open? |
-| `probe/traffic.mjs` | Spawn distance, stalls, overlaps, lane error, population, impact Δv. |
-| `probe/terrain.mjs` | Faceting, by distance band. |
-| `probe/props.mjs` | Do trees sit on the ground? Rays against the real collider. |
-| `probe/skyleak.mjs` | Can you see daylight from inside a bore? |
-| `probe/cliff.mjs` | Longitudinal terrain steps, portal faces counted separately. |
-| `probe/handling.mjs` | Steering by speed, slide recovery, drift, rollover safety. |
-| `probe/tunmesh.mjs` | Coincident faces and spurious portal rings. |
-| `probe/score.mjs` | The near-miss mechanic, without physics. |
 | `probe/ui.mjs` | Every DOM id a module reads exists; every class it toggles is styled. |
 | `probe/paint.mjs` | Both paint slots and both lamp pairs got triangles, on every car. |
+| `probe/grass.mjs` | Near-tier ground cover: count, scatter cost, density, and that none of it is on the carriageway. |
+| `probe/env.mjs` | **Everything in `src/env/`, plus `fx.js`.** Far-tier grass budget and band; rock geometry (normalised width, standing on y = 0), scatter, draw batches; and the tyre effects driven directly against a stub carrying the slip the real car measures. |
+| `probe/engine.mjs` | Does the bridge still match `engine_sim`'s API, and does every engine spin up? |
+| `probe/surface.mjs` | Is the carriageway drivable end to end? Exits non-zero on any step over 30 cm or any hole. The guard against a terrain change burying the road. |
+| `probe/cliff.mjs` | Longitudinal terrain steps. |
+| `probe/traffic.mjs` | Spawn distance, stalls, overlaps, lane error, population, impact Δv. |
+| `probe/score.mjs` | The near-miss mechanic, without physics. |
+| `probe/props.mjs` | Do trees sit on the ground? **Skips** while `CHUNK.trees` is off. |
+| `probe/handling.mjs` | Steering by speed, slide recovery, drift, rollover safety. |
 | `probe/smooth.mjs` | Is the car smooth **on screen** under frame-time jitter and hitches? Camera-space metric. |
+| `probe/terrain.mjs` | Faceting, by distance band. |
+| `probe/route.mjs` | Shelf share, earthwork, curvature, grade, corridor relief, self-clearance. Not in `npm run probe`. |
+| `probe/xsec.mjs` | Cross-sections — the fastest way to read what an alignment is doing. |
+| `probe/drive.mjs` | End-to-end: real car, real physics, real `engine_sim`, real traffic. |
 | `probe/uishot.mjs` | **What the interface looks like**, at twelve real device viewports, plus an overflow report. Not in `npm run probe` — needs a local Chrome. |
 | `probe/render.mjs` | **What the GAME looks like.** Boots the real thing through SwiftShader, drives it, screenshots the garage and the road. Not in `npm run probe` — needs a local Chrome and takes a minute. |
-| `probe/grass.mjs` | Ground cover: count, scatter cost, density, and that none of it is on the carriageway. |
-| `probe/props.mjs` | Tree scatter — **skips** while `CHUNK.trees` is off, rather than failing. |
-| `probe/drive.mjs` | End-to-end: real car, real physics, real engine_sim, real traffic. |
+
+`probe/render.mjs` takes `[seed] [seconds] [teleport]`; the third jumps the car
+to an arc length, because at 20 fps a minute of driving covers two hundred
+metres and every shot is otherwise of the same kilometre. `SKID=1` stops the car
+and floors it — see §8 for why that does not actually produce smoke here.
+
+**There is no probe for the wind**, and there is no obvious one: it has no
+geometry and no measurable output short of rendering audio. The graph builds
+without error in `engine_sim`'s Web Audio mock, and that is all that is checked.
 
 Each takes an optional seed as the first argument. `drive.mjs` also takes a
 duration in seconds.
@@ -985,7 +1555,7 @@ Syntax check across all modules:
 
 ```bash
 mkdir -p /tmp/frc
-for f in src/*.js; do cp "$f" "/tmp/frc/$(basename ${f%.js}).mjs"; \
+for f in src/*.js src/env/*.js; do cp "$f" "/tmp/frc/$(basename ${f%.js}).mjs"; \
   node --check "/tmp/frc/$(basename ${f%.js}).mjs" || echo "FAIL $f"; done
 rm -rf /tmp/frc
 ```

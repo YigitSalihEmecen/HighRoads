@@ -204,12 +204,17 @@ const stub = {
   })),
 };
 
-// Two seconds at 60 Hz, rolling forward at walking pace so marks have somewhere
-// to go.
-for (let f = 0; f < 120; f++) {
-  for (const w of stub.wheels) w.contact.z += stub.forwardSpeed / 60;
-  fx.update(1 / 60, stub);
+/** Runs the effect for `seconds`, carrying the wheels forward as it goes. */
+function run(seconds) {
+  const steps = Math.round(seconds * 60);
+  for (let f = 0; f < steps; f++) {
+    for (const w of stub.wheels) w.contact.z += stub.forwardSpeed / 60;
+    fx.update(1 / 60, stub);
+  }
 }
+
+// Two seconds rolling forward at walking pace, so marks have somewhere to go.
+run(2);
 
 const livePuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
 const liveMarks = [...fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.marks.life).length / 4;
@@ -228,7 +233,7 @@ check(liveMarks >= 2, 'both driven wheels mark separately', `${liveMarks} quads`
 // Nothing at all when the tyres are gripping — which is most of the time.
 fx.reset();
 for (const w of stub.wheels) w.slipAmount = 0.05;
-for (let f = 0; f < 60; f++) fx.update(1 / 60, stub);
+run(1);
 const quietPuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
 check(quietPuffs === 0, 'a gripping tyre makes nothing', `${quietPuffs} puffs`);
 

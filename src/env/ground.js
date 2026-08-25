@@ -58,8 +58,8 @@ import { makeCanvas, paint, tileFbm, tileRidged, tileNoise } from './textures.js
 /**
  * Draws the three-channel detail map.
  *
- * Everything is centred on 1.0 and modulates by `GROUND.contrast` in the
- * shader, so a channel that comes out at 0.5 darkens the ground there and one
+ * Everything is centred on 1.0 and the shader modulates by the two contrast
+ * uniforms, so a channel that comes out at 0.5 darkens the ground there and one
  * at 1.0 leaves it alone. Keeping the mean near the middle of the byte range is
  * what stops the overlay changing the world's overall brightness when it is
  * switched on.

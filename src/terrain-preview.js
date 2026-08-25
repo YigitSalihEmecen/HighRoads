@@ -109,13 +109,11 @@ export function drawTerrainMap(canvas, terrain, path, seed, gfx, chunks) {
     ctx.putImageData(imgData, 0, 0);
   }
 
-  // Update seed / terrain text info
-  const infoEl = document.getElementById('terrain-info');
-  if (infoEl) {
-    infoEl.textContent = `ROUTE PERSPECTIVE · SEED: ${seed}`;
-  }
+  // The badge under the snapshot names the world it is a snapshot of. There
+  // used to be a second caption next to it repeating the same seed with the
+  // words "ROUTE PERSPECTIVE" in front; the picture is the caption.
   const seedBadge = document.getElementById('seed-badge');
   if (seedBadge) {
-    seedBadge.textContent = `SEED: ${seed}`;
+    seedBadge.textContent = seed;
   }
 }
