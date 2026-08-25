@@ -1,7 +1,13 @@
 /**
- * Terrain cross-sections through a tunnel. Prints the ground profile across the
- * corridor at stations through a bore, so the shape the player actually sees
- * can be read rather than guessed at.
+ * Terrain cross-sections across the corridor.
+ *
+ * Prints the ground profile either side of the road at a series of stations, so
+ * the shape the player actually sees can be READ rather than guessed at. It was
+ * written to inspect tunnel portals; with those gone it is the fastest way to
+ * see what an alignment is doing — whether the road is on a shelf, in a
+ * cutting, on an embankment, or halfway up a hillside.
+ *
+ *   node probe/xsec.mjs [seed] [startS] [count]
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
@@ -11,37 +17,36 @@ import { RoadPath } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
 
 const seed = process.argv[2] || WORLD.seed;
+const startS = Number(process.argv[3] || 200);
+const count = Number(process.argv[4] || 12);
+const stepS = 80;
+
 const terrain = createTerrain(seed);
 const path = new RoadPath(terrain, seed);
 const chunks = new ChunkManager({ scene: new THREE.Scene(), world: null, RAPIER: null, path, terrain, foliage: new Map() });
-path.ensureLength(3000);
-
-let run = null;
-for (let s = 0; s < 2600; s += 2.5) {
-  const t = path.frameAt(s).tunnel;
-  if (t > 0) { if (!run) run = { a: s, b: s }; run.b = s; } else if (run) break;
-}
-if (!run) { console.log('no tunnel'); process.exit(0); }
-console.log(`tunnel ${run.a.toFixed(0)}..${run.b.toFixed(0)} m\n`);
+path.ensureLength(startS + count * stepS + 600);
 
 const UP = new THREE.Vector3(0, 1, 0);
 const right = new THREE.Vector3(), p = new THREE.Vector3();
-const cols = [0, 5, 9, 9.4, 11, 11.7, 14, 20, 30, 45, 60, 90];
-const at = [run.a - 12, run.a - 4, run.a + 1, run.a + 4, run.a + 10, run.a + 30,
-            (run.a + run.b) / 2, run.b - 30, run.b - 4, run.b + 4, run.b + 12];
+const cols = [-90, -60, -30, -14, 0, 14, 30, 60, 90];
 
-process.stdout.write('   s     tun  cover |');
+console.log(`\nseed "${seed}" — ground height relative to the road plane, metres\n`);
+process.stdout.write('    s   grade  cover |');
 for (const c of cols) process.stdout.write(String(c).padStart(7));
-console.log('\n' + '-'.repeat(24 + cols.length * 7));
-for (const s of at) {
+console.log('\n' + '-'.repeat(22 + cols.length * 7));
+
+let prev = null;
+for (let i = 0; i < count; i++) {
+  const s = startS + i * stepS;
   const f = path.frameAt(s);
   right.crossVectors(f.tan, UP).normalize();
-  process.stdout.write(`${s.toFixed(0).padStart(5)}  ${f.tunnel.toFixed(2)}  ${f.cover.toFixed(1).padStart(5)} |`);
+  const grade = prev === null ? 0 : (f.pos.y - prev) / stepS;
+  prev = f.pos.y;
+  process.stdout.write(`${s.toFixed(0).padStart(5)}  ${(grade * 100).toFixed(1).padStart(5)}%  ${f.cover.toFixed(1).padStart(5)} |`);
   for (const c of cols) {
     chunks.sampleGround(f, right, c, p);
     process.stdout.write((p.y - f.pos.y).toFixed(1).padStart(7));
   }
   console.log();
 }
-console.log('\n(height above the road plane, metres, at lateral offsets across the corridor)');
-console.log(`arch crown ${ROAD.tunnelCrown} m, bore half-width ${ROAD.tunnelHalfWidth} m, sill edge ${(ROAD.tunnelHalfWidth + ROAD.tunnelSill).toFixed(1)} m`);
+console.log('\ncover > 0 means the alignment sits below the natural surface (a cutting).');

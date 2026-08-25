@@ -22,6 +22,46 @@ export function damp(current, target, rate, dt) {
   return lerp(current, target, 1 - Math.exp(-rate * dt));
 }
 
+/**
+ * Exponential smoothing that tracks a MOVING goal without a frame-rate
+ * dependent lag.
+ *
+ * `damp()` above is the standard frame-rate-independent smoother, and for a
+ * goal that sits still it is exactly right. For a goal that is MOVING it is
+ * not, and the error is not small. Stepping `x += (g - x)·(1 - e^(-k·dt))` once
+ * per frame toward the goal's *end-of-frame* position settles at a lag of
+ *
+ *     L = v·dt·e^(-k·dt) / (1 - e^(-k·dt))
+ *
+ * which contains `dt`. So a chase camera following a car at 64 m/s sits 3.98 m
+ * behind at 60 fps and 3.51 m behind at 30 fps — and on a frame-time spike it
+ * moves between the two. That is the camera springing toward the car and back,
+ * and because the car itself is interpolated perfectly smoothly, what the
+ * player sees is the CAR lurching inside the frame.
+ *
+ * The fix is to integrate the goal's motion instead of ignoring it. Over one
+ * frame the goal is a ramp, g(t) = g0 + v·t, and ẋ = k·(g − x) has a closed
+ * form on that interval:
+ *
+ *     x1 = g1 − v/k + (x0 − g0 + v/k)·e^(-k·dt)
+ *
+ * whose steady-state lag is exactly v/k — a function of speed and stiffness
+ * only, with `dt` gone from the answer. Same cost, one exponential.
+ *
+ * @param {number} current  filter state
+ * @param {number} goalPrev goal at the START of this frame
+ * @param {number} goal     goal at the END of this frame
+ * @param {number} rate     stiffness k, 1/s
+ * @param {number} dt       seconds
+ */
+export function dampTrack(current, goalPrev, goal, rate, dt) {
+  if (!(dt > 0) || !(rate > 0)) return current;
+  const e = Math.exp(-rate * dt);
+  // Goal velocity over this frame, and the lag it sustains.
+  const lag = (goal - goalPrev) / dt / rate;
+  return goal - lag + (current - goalPrev + lag) * e;
+}
+
 /** Moves `current` toward `target` by at most `maxDelta`. */
 export function moveTowards(current, target, maxDelta) {
   const d = target - current;

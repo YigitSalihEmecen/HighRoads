@@ -14,7 +14,21 @@ export const WORLD = {
 
   /** Physics runs on a fixed 120 Hz clock, decoupled from the render loop. */
   fixedStep: 1 / 120,
-  maxSubSteps: 5,
+  /**
+   * Substeps one frame may run, and therefore the longest frame the simulation
+   * will follow in real time: `maxSubSteps * fixedStep` = 50 ms, or 20 fps.
+   *
+   * This is the spiral-of-death guard and it is also, deliberately, the ONLY
+   * place the frame-time ceiling is expressed — `main.js` clamps `dt` to
+   * exactly this product rather than to a separate magic number. When those two
+   * disagreed, they did so silently and expensively: the clamp was 50 ms while
+   * the budget covered only 41.7 ms, so every frame between those bounds ran
+   * the physics short and threw the remainder away. On a 90 ms hitch the world
+   * advanced 46% of what the rest of the frame assumed, which read as the car
+   * being yanked backwards. Keeping the ceiling derived means the accumulator
+   * always drains and no time is ever lost inside the clamp.
+   */
+  maxSubSteps: 6,
 };
 
 export const ROAD = {
@@ -87,51 +101,196 @@ export const ROAD = {
   /** Centre line: metres painted, then the same again unpainted. */
   dashLength: 3.0,
 
-  /** Master switch. Off, deep cuttings are what the cut-and-fill clamp gives. */
-  tunnels: true,
+};
+
+/**
+ * Road routing — how the alignment chooses where to go.
+ *
+ * The old generator integrated a heading from two octaves of noise and then
+ * chased a smoothed terrain elevation. It was completely BLIND to the shape of
+ * the ground: it wandered by noise and bulldozed whatever it met, which is why
+ * every drive felt the same and why the road spent so much of its life in a
+ * cutting or on an embankment for no visible reason.
+ *
+ * This replaces it with the standard approach from the literature — Galin et
+ * al., *Procedural Generation of Roads* (Computer Graphics Forum, 2010), where
+ * the alignment is the minimum of a cost function over terrain slope, curvature
+ * and obstacles — adapted to the one constraint that paper does not have: this
+ * world is INFINITE and streams. There is no global heightmap to run A* over
+ * and no destination to route to, so the global search becomes a GREEDY
+ * LOOKAHEAD: at every control point, fan out a set of candidate headings, score
+ * each one over the span it would create, and commit to the cheapest. O(1) per
+ * control point, and the road can still be extended forever.
+ *
+ * The reason this produces "intentional" roads is worth stating plainly,
+ * because it is not obvious that a cost function buys character. On a hillside,
+ * a road running ALONG the contour needs almost no earthwork; one running
+ * across it needs a deep cut on the uphill side and a tall fill on the
+ * downhill. Minimising earthwork therefore makes the road contour around hills,
+ * run along valley floors, and climb in traverses instead of straight up —
+ * every one of which is a thing real surveyors do for the same reason. Nothing
+ * here says "follow the hillside". It says "do not move earth", and following
+ * the hillside is what that turns out to mean.
+ */
+export const ROUTE = {
   /**
-   * A tunnel begins where the ground over the centreline exceeds this, so the
-   * mountain has already closed overhead before the bore starts and the car is
-   * never driving straight at a terrain surface. Shallower than this and the
-   * cut-and-fill clamp opens an ordinary cutting instead.
+   * Candidate headings fanned out per control point, across the full legal turn
+   * either way. Odd, so that "straight on" is always among them.
    */
-  tunnelCover: 11,
-  tunnelMinLength: 55,
-  /** Dips shallower than this are bridged rather than splitting one tunnel. */
-  tunnelBridge: 60,
-  tunnelHalfWidth: 9.2,
-  tunnelCrown: 7.6,
+  candidates: 13,
+
   /**
-   * Length of the portal transition, metres — the stretch over which the
-   * terrain goes from the ordinary cut-and-fill surface to the untouched
-   * mountain, and therefore the depth of the opening cut in the rock face.
+   * How far the corridor is sampled either side of the candidate centreline
+   * when estimating earthwork, and how many probes across it.
    *
-   * SHORT ON PURPOSE, and this is the whole trick. The old value was 18 m,
-   * over which the terrain climbed the full depth of the mountain — measured
-   * at up to 60 m — so the vertex left standing beside the hole sat 35 m above
-   * the arch while the shell reached only 8. That ring of nothing around every
-   * mouth was the "mesh gaps around the tunnel". Two rows of the terrain grid
-   * instead makes the transition a rock FACE, and the mouth a hole punched in
-   * it: the surviving edge can then only be one cell of cut slope above the
-   * arch, which the shell covers by construction rather than by luck.
+   * This has to be WIDER than the carriageway, and by a lot. Earthwork is not
+   * about the road surface — that is flat by construction — it is about the cut
+   * and fill slopes running out from the verge, which is where the volume is
+   * and what the eye actually reads as a scar.
    */
-  tunnelPortal: 6,
-  /** Headroom held clear above the arch, metres. */
-  tunnelRoof: 1.2,
-  /** Extra shell height above the arch, to swallow the cut edge. */
-  tunnelShellExtra: 7.0,
-  /** Floor slab either side of the bore, so a hole can never outrun the floor. */
-  tunnelSill: 2.5,
+  corridor: 38,
+  probes: 5,
+  /** Stations sampled along each candidate span. */
+  stations: 3,
+
   /**
-   * How far past the bore the required headroom decays to nothing, metres.
+   * Detail level the router sees, as a `terrain.height` lateral argument.
    *
-   * This is what shapes the hill the tunnel is bored through. The requirement
-   * itself is local — keep rock above the arch — but applying it over only the
-   * sill width put a 62-degree shoulder either side of the bore, a creased berm
-   * running its whole length. Decayed over 45 m on a smoothstep it merges into
-   * the hillside instead.
+   * Deliberately coarser than the surface the mesh builds. The router is
+   * choosing a route through a LANDFORM; letting it see 7 m bumps makes it
+   * swerve around things that the cut-and-fill clamp will flatten anyway.
    */
-  tunnelBerm: 45,
+  lod: 90,
+
+  /** Ride height of the finished carriageway over the natural surface. */
+  rideHeight: 0.9,
+
+  // ---- cost weights. Relative only; the winner is an argmin. -------------
+  /**
+   * Earthwork is a BUDGET, not an objective, and finding that out cost a
+   * rewrite.
+   *
+   * Minimising it outright works exactly as the literature says and produces
+   * the wrong road: measured against the old noise generator it cut mean
+   * earthwork 6.4 m → 4.9 m and simultaneously cut sidehill cross-sections
+   * 12% → 8%, because the cheapest place to put a road is a flat field. The
+   * router had found the boring routes, efficiently.
+   *
+   * So earthwork costs nothing at all up to `earthFree` and then bites hard.
+   * Below the threshold the router is indifferent between a level road and a
+   * shelf cut into a hillside, which lets the terms below — the ones that are
+   * actually about the drive — decide. Above it, no amount of view justifies
+   * a fifteen-metre cutting.
+   */
+  earthFree: 7.0,
+  wEarthwork: 2.4,
+  /** Steepness, as a fraction of the legal maximum, squared. */
+  wGrade: 14,
+  /**
+   * Turn taken, and the CHANGE in turn between spans.
+   *
+   * Both were three times this and the result was a road that barely turned at
+   * all — one seed measured a 95th-percentile curvature of 0.00 mrad/m, which
+   * is a straight line four kilometres long. A cost function will happily buy
+   * smoothness with every corner you have if you let it.
+   */
+  wTurn: 2.5,
+  wTurnChange: 12,
+  /**
+   * Deviation from the intended bearing.
+   *
+   * The one term that stops the road being clever to death. Pure earthwork
+   * minimisation on a hillside is a contour line, and a contour line around a
+   * hill is a CIRCLE — the road would spiral and never arrive anywhere. A
+   * slowly drifting compass bearing gives it somewhere to be going, and the
+   * terrain decides how it gets there. That is also what a real alignment is:
+   * two fixed points, and a survey party arguing about the middle.
+   */
+  wBearing: 8,
+  // Swept over six seeds against shelf share, earthwork and net progress. 5
+  // bought a couple more points of shelf and took the worst seed's progress to
+  // 0.07 — a road going nowhere. 8 is the largest value that never spiralled.
+  /** How fast the intended bearing drifts, in radians per metre of road. */
+  bearingDrift: 0.0016,
+
+  // ---- character. What makes one stretch of road unlike another. --------
+  /**
+   * Scale over which the route's personality changes, in metres.
+   *
+   * 2.2 km, so a drive has chapters rather than moods: long enough to settle
+   * into a valley and come out of it, short enough that a ten-minute run is not
+   * all one thing.
+   */
+  characterScale: 2200,
+  /**
+   * How far the personality can push the earthwork weight down. At 1 the router
+   * ignores earthwork entirely on its most direct setting and drives straight
+   * through hills in cuttings, which is a real kind of road and a good contrast
+   * to the contour-hugging one.
+   */
+  directness: 0.72,
+  /**
+   * Reward for seeking high ground or low ground, per metre of elevation
+   * difference from the neighbourhood. The sign comes from the character noise,
+   * so the road spends a while preferring ridgelines and a while preferring
+   * valley floors.
+   */
+  wSeek: 0.55,
+  /**
+   * Reward for a genuine SHELF: ground rising on one side of the road while it
+   * falls away on the other.
+   *
+   * This is the "driving along the side of a hill" term and it is the single
+   * most important number in the block. It is not the same as rewarding a big
+   * height difference across the corridor — a road on top of a ridge has that
+   * too, with both sides falling. This scores `min(rise, fall)`, which is zero
+   * unless one side really is up and the other really is down.
+   */
+  wShelf: 2.4,
+  /**
+   * Reward for being in interesting country at all: the vertical range of the
+   * ground across the corridor.
+   *
+   * Without it the router is content on a plain, because a plain satisfies
+   * every engineering term perfectly. This is what sends the road looking for
+   * hills to be on the side of.
+   */
+  wRelief: 0.85,
+
+  /**
+   * SELF-AVOIDANCE. The road must not come back alongside itself.
+   *
+   * Not an aesthetic rule — a structural one, and the new router is what made
+   * it necessary. Every chunk carries terrain out to `CHUNK.halfExtent` (700 m)
+   * either side while being only `CHUNK.length` (120 m) long, so a chunk's
+   * sheet covers an enormous area. Where two stretches of road pass near each
+   * other, each one's sheet is carved for ITS road and is natural ground over
+   * the other's — so one carriageway ends up with a hillside lying across it.
+   *
+   * Measured: with the cost router turning consistently to follow a contour,
+   * chunk 0's carriageway was being covered by chunk 23's sheet, 2.8 km away
+   * along the road and doubled back to within a few hundred metres of it. The
+   * old noise generator wandered too incoherently to loop like that; a router
+   * that follows hillsides does it readily, because going round a hill is what
+   * following a contour means.
+   *
+   * So: candidates that come within `selfClear` of any part of the road between
+   * `selfNear` and `selfFar` behind are penalised, hard and smoothly. The band
+   * matters at both ends — closer than `selfNear` is simply the road you are
+   * on, and further than `selfFar` cannot be loaded at the same time.
+   */
+  selfNear: 260,
+  selfFar: 1600,
+  selfClear: 300,
+  wSelf: 900,
+
+  /**
+   * Distance over which a candidate must beat the incumbent to be chosen, as a
+   * fraction of the incumbent's cost. Without a margin the argmin flickers
+   * between near-equal candidates from one span to the next, and the road gets
+   * a fine tremor that reads as noise rather than as decision.
+   */
+  hysteresis: 0.04,
 };
 
 export const CHUNK = {
@@ -210,8 +369,128 @@ export const CHUNK = {
    */
   horizonFalloff: 520,
   horizonDrop: 30,
+  /**
+   * Master switch for the tree scatter.
+   *
+   * OFF. The measured cost is 468 instances for **1,030,000 triangles** — 90%
+   * of the geometry on screen, against 109,000 for the whole terrain sheet —
+   * because the Quaternius canopies are solid meshes at 1,700–2,900 each. What
+   * that buys is 10.3 trees per hectare, where real woodland is 200–1,000.
+   *
+   * Be clear about what this switch is and is not. It is not a fix: the trees
+   * were the only vertical thing in the world and the horizon is emptier
+   * without them. It is the honest way to hold a triangle budget until the
+   * canopy has a level of detail worth spending it on — distant trees as
+   * two-triangle impostors rendered once per species at boot, which is what
+   * makes thousands affordable where hundreds are not.
+   *
+   * Turning it back on is this line. Nothing else changed; `foliage.js` and the
+   * whole scatter are intact.
+   */
+  trees: false,
+
   /** Lateral distance at which the player counts as having left the world. */
   recoverLateral: 300,
+};
+
+/**
+ * Ground cover.
+ *
+ * The single biggest lever on whether the world reads as flat, and the numbers
+ * below are a triangle budget as much as a look. A tuft is four triangles
+ * carrying seven painted blades (see grass.js), so the counts here are large in
+ * a way the rest of the project's scatter numbers are not: `CHUNK.propSamples`
+ * is 420 attempts for at most 52 trees, and this places tens of thousands.
+ *
+ * Only the chunks either side of the car carry any, because grass is invisible
+ * long before a chunk streams out — building it for all nine would be six
+ * chunks of geometry nobody can resolve.
+ */
+export const GRASS = {
+  enabled: true,
+
+  /**
+   * Tufts per square metre at the verge. Each is seven blades, so 3.2 here is
+   * roughly 22 blades/m^2 — well under a real sward, and enough that crossed
+   * cards close up into a continuous field rather than reading as objects.
+   */
+  density: 3.6,
+  /** Lateral band: from the paved edge out to here, metres. */
+  halfExtent: 62,
+  /**
+   * Full density out to here, then tapering to nothing at `halfExtent`.
+   *
+   * The taper is what hides the SIDEWAYS edge of the field — the density
+   * reaches zero exactly at the band edge, so there is nothing to see stopping.
+   * The distance fade below cannot do that job: a tuft directly beside the car
+   * at the band edge is only as far away as the band is wide, so a fade tuned
+   * to hide it would take the grass up the road with it.
+   */
+  denseTo: 34,
+
+  /**
+   * Camera distance over which a tuft shrinks away, metres.
+   *
+   * Deliberately LONGER than the lateral band: most of the grass a driver sees
+   * is up the road ahead, not out to the side, and cutting it at the band width
+   * would empty the verge fifty metres in front of the car. The sideways edge
+   * is hidden by `denseTo`'s taper instead. Gradual either way — a card popping
+   * out at a threshold is visible precisely because the player is driving
+   * toward it.
+   */
+  fadeStart: 62,
+  fadeEnd: 95,
+
+  /**
+   * How much larger a tuft grows at the edge of the band than at the verge.
+   *
+   * This is the whole reason the field can reach the middle distance at all.
+   * Rendered, grass at a constant size looked like a ribbon hugging the tarmac
+   * with bare ground beyond it — not because nothing was placed out there, but
+   * because a low camera compresses forty metres of verge into a few dozen
+   * pixels, and individual cards at that scale are gaps with grass between them
+   * rather than the other way round.
+   *
+   * Bigger cards cover more ground for the same instance, and detail nobody can
+   * resolve is detail nobody needs: the count per unit area is divided by the
+   * square of this, so coverage extends while the triangle budget does not.
+   */
+  farScale: 2.4,
+
+  /** Chunks either side of the car that carry grass. 1 = three chunks, 360 m. */
+  chunkRadius: 1,
+  /** Grass chunks built per frame. Scattering one is thousands of samples. */
+  buildPerFrame: 1,
+
+  /**
+   * Tuft height, metres. Taller than a lawn on purpose: this is roadside rough,
+   * and the first render showed why it matters — at 0.4 m the cards read as
+   * scattered spikes standing on the ground rather than as a surface, because
+   * you see the gap between them before you see them.
+   */
+  height: [0.55, 1.40],
+  /**
+   * Width as a fraction of height. A square-ish card is what makes neighbours
+   * overlap into a continuous field; taller-than-wide leaves visible gaps at
+   * any density a browser can afford.
+   */
+  widthRatio: 1.0,
+
+  /**
+   * Steepest ground grass grows on. Higher than the trees' limits on purpose:
+   * grass holds a bank that a tree cannot, and a bare cut face beside a verge
+   * full of grass is exactly the seam this is meant to remove.
+   */
+  maxSlope: 1.6,
+
+  /** Wind direction (world XZ), strength in metres of tip travel, and rate. */
+  windDir: { x: 0.86, z: 0.51 },
+  windStrength: 0.22,
+  windSpeed: 1.35,
+
+  /** Blades drawn into one card, and the card texture's size in pixels. */
+  bladesPerCard: 7,
+  textureSize: 256,
 };
 
 export const VEHICLE = {
@@ -593,7 +872,16 @@ export const CAMERA = {
    * frame, so aiming at a point below the car lifts the car up the screen and
    * out from behind the dock of buttons along the bottom.
    */
-  garage: { dist: 7.0, height: 2.1, spin: 0.22, aim: -0.55 },
+  /**
+   * `aim` is NEGATIVE, and it is how far BELOW the car the rig looks. The
+   * look-at point sits at the centre of the frame, so aiming low lifts the car
+   * up the screen and clear of the dock along the bottom.
+   *
+   * -2.2 rather than -0.55 because the dock got taller when it gained a second
+   * paint row: rendered at 1280x720 the car sat exactly behind the panel, which
+   * is a poor outcome for a screen whose entire job is showing it.
+   */
+  garage: { dist: 7.2, height: 2.3, spin: 0.22, aim: -2.2 },
 
   /**
    * Leaving the garage, the rig sweeps to the chase position rather than
@@ -602,6 +890,60 @@ export const CAMERA = {
    */
   snapTime: 1.1,
   snapBoost: 2.6,
+};
+
+/**
+ * The showroom — the title screen's own little world.
+ *
+ * Nothing here is procedural or seed-dependent, which is the point: a product
+ * shot should look the same every time, and the road behind the old garage
+ * screen did not. See showroom.js.
+ */
+export const SHOWROOM = {
+  fov: 38,
+  /** Cyclorama radius, metres. Large enough that no car can approach the wall. */
+  radius: 60,
+
+  /** Backdrop, floor upward. Cool and dim, so warm paint reads against it. */
+  floorColor: 0x171a22,
+  wallColor: 0x333a48,
+  topColor: 0x4a5468,
+  /** The pool of light thrown on the wall behind the car. */
+  glowColor: 0x3a4560,
+
+  plateRadius: 3.6,
+  plateColor: 0x1b1e25,
+  ringColor: 0xffb457,
+
+  // ---- three-point lighting, fixed ------------------------------------
+  keyColor: 0xfff2e0,
+  keyIntensity: 3.0,
+  fillColor: 0xc8d8ff,
+  fillIntensity: 0.85,
+  rimColor: 0xffd9a8,
+  rimIntensity: 2.2,
+  hemiSky: 0x9fb4d6,
+  hemiGround: 0x1a1d24,
+  hemiIntensity: 0.75,
+
+  // ---- framing ---------------------------------------------------------
+  /**
+   * Fraction of the free band the car is allowed to fill.
+   *
+   * 0.6, not 0.8. The band is measured to the EDGES of the interface, and a car
+   * filling it edge to edge touches the panel and the wordmark — it needs air
+   * around it to read as a subject rather than as a crop.
+   */
+  fill: 0.60,
+  /** Never closer than this, whatever the arithmetic says. */
+  minDistance: 6.0,
+  /** Camera distance as a multiple of the solved distance, and its lift. */
+  orbitRadius: 0.92,
+  eyeLift: 0.30,
+
+  /** Turntable rate, radians per second, and where it starts. */
+  spin: 0.22,
+  startAngle: 2.35,
 };
 
 export const ATMOSPHERE = {

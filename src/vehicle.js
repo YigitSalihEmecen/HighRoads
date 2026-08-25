@@ -312,6 +312,20 @@ export class RaycastVehicle {
     this.scene.add(this.group);
   }
 
+  /**
+   * Takes the model's groups back after the showroom has borrowed them.
+   *
+   * The title screen re-parents the very same body and wheel groups onto its
+   * turntable rather than cloning them, so that paint, trim and lamp state are
+   * shared by construction. Starting a run has to put them back.
+   */
+  reattachModel() {
+    this.group.add(this.model.body);
+    for (let i = 0; i < this.wheelMeshes.length; i++) this.group.add(this.wheelMeshes[i]);
+    // Poses are rewritten by syncVisuals on the next frame anyway; this only
+    // has to make sure nothing is left parented to the plate.
+  }
+
   /** Removes this vehicle from the scene and the physics world. */
   dispose() {
     this.scene.remove(this.group);

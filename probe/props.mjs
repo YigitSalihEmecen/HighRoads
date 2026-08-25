@@ -3,6 +3,12 @@
  * builds a stretch of chunks with scenery, checking that trees land on the
  * drawn surface rather than the analytic one, and that the per-chunk budget
  * holds now that canopy is the only group left.
+ *
+ * SKIPS, rather than fails, when `CHUNK.trees` is off. A probe that goes red
+ * because a feature is deliberately switched off is a probe nobody reads: the
+ * red means "somebody made a decision", which is not what red is for, and after
+ * a week of it the genuine failures are invisible too. The scatter itself is
+ * untouched and this comes straight back the moment the switch does.
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
@@ -14,6 +20,12 @@ import { RoadPath } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
 import { foliageModelNames } from '../src/foliage.js';
 import { parseOBJ } from '../src/assets.js';
+
+if (!CHUNK.trees) {
+  console.log('\n  [skip] tree scatter — CHUNK.trees is off, nothing is placed.');
+  console.log('         Turn it on in config.js to exercise this again.\n');
+  process.exit(0);
+}
 
 const DIR = 'assets/Forest_Assets/Ultimate Nature Pack by Quaternius/OBJ';
 const foliage = new Map();

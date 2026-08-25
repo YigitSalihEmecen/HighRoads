@@ -125,11 +125,22 @@ let maxLat = 0, maxYaw = 0;
 const input = { steer: 0, throttle: 1, brake: 0, handbrake: false };
 
 for (let i = 0; i < steps; i++) {
-  // Stanley-style lane keeping: a heading term plus a cross-track term whose
-  // authority falls off with speed. A bare proportional controller on lateral
-  // position oscillates and then leaves the road, which the project's own
-  // ledger records as having been mistaken for vehicle instability once
-  // already — an unstable autopilot measures the autopilot, not the car.
+  /**
+   * Stanley-style lane keeping: a heading term plus a cross-track term whose
+   * authority falls off with speed. A bare proportional controller on lateral
+   * position oscillates and then leaves the road, which the project's own
+   * ledger records as having been mistaken for vehicle instability once
+   * already — an unstable autopilot measures the autopilot, not the car.
+   *
+   * Two "improvements" were tried here and both were worse, which is worth
+   * recording. Lengthening the 6 m reference point to scale with speed took the
+   * lane error from 5.8 m to 18 m and the car started spinning: Stanley's
+   * cross-track term is derived for a reference AT THE FRONT AXLE, and a long
+   * lookahead double-counts the correction. Replacing the whole thing with pure
+   * pursuit was worse again — its gain falls off as the lookahead grows, so it
+   * tracks a path it is already on beautifully and cannot recover onto one it
+   * has left. The controller was never the problem.
+   */
   const lat = path.lateralOffset(vehicle.pos, carS);
   {
     const f = path.frameAt(carS + 6);
@@ -140,6 +151,40 @@ for (let i = 0; i < steps; i++) {
     // of DECREASING lateral offset. Hence the sign on the cross-track term.
     const crossTrack = Math.atan2(2.2 * (lat - ROAD.laneWidth * 0.5), Math.abs(vehicle.forwardSpeed) + 4);
     input.steer = Math.max(-1, Math.min(1, (headingErr + crossTrack) / vehicle.V.maxSteer));
+
+    /**
+     * ...and it lifts for corners, which is the one thing that actually needed
+     * fixing.
+     *
+     * The alignment used to barely turn, so "90 s flat out" was a fair
+     * description of a lap and the throttle could be pinned at 1. The cost
+     * router puts real bends in it — measured, the tightest need about 265 km/h
+     * against a top speed of 250 — and a test that refuses to brake for those
+     * is measuring what happens when you do not brake. "Worst lane error" stops
+     * meaning anything about the road or the car.
+     *
+     * Corner speed from the curvature ahead and the grip actually available:
+     * v = sqrt(a / kappa), at 85% of the tyres' limit so it is a driver's
+     * margin rather than a computer's.
+     */
+    const look = path.frameAt(carS + Math.min(90, 25 + Math.abs(vehicle.forwardSpeed) * 1.2));
+    const kappa = Math.abs(look.curv);
+    const aMax = vehicle.V.tyreFriction * Math.abs(WORLD.gravity) * 0.85;
+    const vCorner = kappa > 1e-5 ? Math.sqrt(aMax / kappa) : 1e3;
+    const speed = Math.abs(vehicle.forwardSpeed);
+    input.throttle = speed < vCorner ? 1 : 0;
+    input.brake = speed > vCorner * 1.1 ? 0.6 : 0;
+
+    // And it lifts when it is running wide, which is the other thing a driver
+    // does and the reason this matters here: the autopilot is a fixed-gain
+    // controller with no sense of its own error, so on a road with corners in
+    // it, it will hold the throttle open while drifting onto the verge and then
+    // report the ditch it finds there as a fault in the world.
+    const wide = Math.abs(lat - ROAD.laneWidth * 0.5);
+    if (wide > 2.4) {
+      input.throttle = 0;
+      if (wide > 3.6) input.brake = Math.max(input.brake, 0.45);
+    }
   }
 
   vehicle.setSurface(0);

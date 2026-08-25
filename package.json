@@ -6,7 +6,7 @@
   "description": "Infinite procedural driving \u2014 Three.js + Rapier + engine_sim",
   "scripts": {
     "start": "npx --yes serve -l 8137 .",
-    "probe": "node probe/ui.mjs && node probe/paint.mjs && node probe/engine.mjs && node probe/tunnel.mjs && node probe/roof.mjs && node probe/skyleak.mjs && node probe/tunmesh.mjs && node probe/cliff.mjs && node probe/traffic.mjs && node probe/score.mjs && node probe/props.mjs && node probe/handling.mjs && node probe/terrain.mjs && node probe/drive.mjs",
+    "probe": "node probe/ui.mjs && node probe/paint.mjs && node probe/grass.mjs && node probe/engine.mjs && node probe/surface.mjs && node probe/cliff.mjs && node probe/traffic.mjs && node probe/score.mjs && node probe/props.mjs && node probe/handling.mjs && node probe/smooth.mjs && node probe/terrain.mjs && node probe/drive.mjs",
     "probe:deps": "npm install --no-save --no-audit --no-fund three@0.169.0 @dimforge/rapier3d-compat@0.14.0",
     "engine:update": "git submodule update --remote engine_sim && node probe/engine.mjs"
   }

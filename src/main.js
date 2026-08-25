@@ -27,6 +27,7 @@ import { Powertrain } from './powertrain.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { createScene } from './scene.js';
+import { createShowroom } from './showroom.js';
 import { Settings } from './settings.js';
 import { ScoreRun } from './score.js';
 
@@ -99,7 +100,12 @@ export async function boot() {
   const roster = CARS.filter((c) => models.has(c.id));
   if (!roster.length) throw new Error('no car models could be loaded');
 
-  const chunks = new ChunkManager({ scene: gfx.scene, world, RAPIER, path, terrain, foliage });
+  const chunks = new ChunkManager({
+    scene: gfx.scene, world, RAPIER, path, terrain, foliage,
+    // Grass cards are seen at a very grazing angle down the verge, which is the
+    // one case anisotropic filtering exists for.
+    anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
+  });
 
   bootEl.textContent = 'carving terrain…';
   chunks.preload(START_S);
@@ -356,6 +362,13 @@ class Game {
     this.overlayEl = document.getElementById('overlay');
     this.gameOverEl = document.getElementById('gameover');
 
+    /**
+     * The title screen's own scene. Separate from the world on purpose — see
+     * showroom.js; the road was the wrong backdrop for choosing a car, and it
+     * was also whatever the seed happened to make it that kilometre.
+     */
+    this.showroom = createShowroom();
+
     this.input = new Input();
     this.hud = new HUD();
     this.powertrain = new Powertrain();
@@ -408,6 +421,7 @@ class Game {
       model,
     });
     this.carId = spec.id;
+    if (this.inGarage) this.showroom.setCar(model, model.metrics);
     // A car the player has never coloured takes its own default; once they
     // choose, that choice follows them from car to car.
     if (!this.colorId) this.colorId = spec.defaultColor || CAR_COLORS[0].id;
@@ -451,6 +465,11 @@ class Game {
     this.overlayEl.classList.remove('gone');
     this.cam.setGarage(true);
     this.hud.hide();
+    // Take the car off the road and put it on the turntable. The model's groups
+    // are re-parented, not cloned: same meshes, same materials, so a paint
+    // click is still one property write and there is no second copy to drift.
+    const model = this.models.get(this.carId);
+    if (model) this.showroom.setCar(model, model.metrics);
     // The on-screen driving controls belong to driving. Left up over the title
     // screen they are a steering wheel on top of a menu — live, tappable, and
     // attached to a car that is parked.
@@ -467,6 +486,9 @@ class Game {
     this.cam.setGarage(false);
     this.hud.show();
     document.body.classList.add('driving');
+    // Hand the car back to the vehicle, which owns those groups while driving.
+    this.showroom.releaseCar();
+    if (this.vehicle) this.vehicle.reattachModel();
     this.hud.setMode(this.mode);
     if (!this.settings) this.settings = new Settings(this);
     this.input.bindTouch(document);
@@ -543,8 +565,24 @@ class Game {
   loop(now) {
     requestAnimationFrame(this.loop);
 
-    // Clamp: a long frame must not be simulated in one bite.
-    const dt = Math.min((now - this.lastTime) / 1000, 0.05);
+    /**
+     * Clamp: a long frame must not be simulated in one bite.
+     *
+     * The ceiling is DERIVED from the substep budget rather than written down
+     * again. A clamp looser than `maxSubSteps * fixedStep` cannot be honoured —
+     * the loop below runs out of substeps, the leftover is discarded, and the
+     * world quietly advances less than the frame it is part of. Everything
+     * downstream (the camera, traffic, the trip meter) is handed this same `dt`
+     * and has no way to know, so it acts on time the car never got. That
+     * disagreement is what a frame-rate hitch looked like: not a pause, but the
+     * car lurching backwards inside the frame.
+     *
+     * At this value the accumulator always drains, so `dt` is time the whole
+     * game agrees on. Beyond it the frame is genuinely too long and everything
+     * slows down together, which is a hitch and looks like one.
+     */
+    const maxFrame = WORLD.maxSubSteps * WORLD.fixedStep;
+    const dt = Math.min((now - this.lastTime) / 1000, maxFrame);
     this.lastTime = now;
 
     this.input.update(dt);
@@ -605,6 +643,9 @@ class Game {
     // If we hit the substep ceiling we are behind. Clamp rather than zero the
     // debt: zeroing throws away the sub-step remainder that the interpolator
     // needs, which shows up as a hitch precisely when frames are already late.
+    // With `dt` capped at the substep budget this cannot fire — the loop always
+    // drains. Kept as a guard against the two ever drifting apart again, since
+    // the failure is silent.
     if (this.accumulator > h) this.accumulator = h * 0.999;
 
     // Draw where the car actually is *between* steps, not at the last one.
@@ -612,6 +653,9 @@ class Game {
 
     // ---- world streaming -------------------------------------------------
     this.carS = this.path.projectPoint(this.vehicle.pos, this.carS);
+    // The wind runs on wall time, not simulation time: it is scenery, and
+    // nothing about the car depends on where a blade of grass is pointing.
+    this.chunks.advanceTime(dt);
     this.chunks.update(this.carS);
 
     if (this.active && this.traffic) {
@@ -633,10 +677,25 @@ class Game {
     this._checkRecovery(dt);
 
     // ---- presentation ----------------------------------------------------
+    // On the title screen the world is not what is on screen. The simulation
+    // above still runs — the car settles, the engine idles, chunks stream — but
+    // the camera, the sky dome and the speed blur all belong to the road, and
+    // none of them has anything to say about a studio.
+    if (this.inGarage) {
+      this.showroom.update(dt);
+      this._frameShowroom();
+      this.gfx.render(this.showroom.scene, this.showroom.camera);
+      this.input.endFrame();
+      return;
+    }
+
     // Camera first: follow() re-centres the sky dome on the camera, so it must
     // see this frame's position, not last frame's.
     this.cam.update(dt, this.vehicle);
-    this.gfx.follow(this.vehicle.pos, dt);
+    // The interpolated pose, not the raw physics one: the sun's shadow frustum
+    // is centred here, and stepping it in 8.3 ms jumps while the car moves
+    // smoothly crawls the shadows across everything at speed.
+    this.gfx.follow(this.vehicle.renderPos, dt);
     // Periphery streaks with speed; the centre of the screen, where the car is,
     // stays sharp. Nothing at all on the title screen.
     this.gfx.setSpeedBlur(
@@ -664,6 +723,32 @@ class Game {
 
     // Anything that did not consume its one-shot press this frame loses it.
     this.input.endFrame();
+  }
+
+  /**
+   * Hands the showroom the slice of screen the interface is not using.
+   *
+   * Measured from the DOM every frame rather than assumed, because the dock's
+   * height depends on the viewport, the safe area and how many rows the garage
+   * has — and a camera tuned by hand against one of those puts the car behind
+   * the panel the moment another changes. That is bug #53 exactly. A layout
+   * query per frame would be indefensible in the driving loop and costs nothing
+   * on a menu that is not moving anything else.
+   */
+  _frameShowroom() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (!this._brandEl) {
+      this._brandEl = document.getElementById('brand');
+      this._dockEl = document.getElementById('dock');
+    }
+    const brand = this._brandEl ? this._brandEl.getBoundingClientRect() : null;
+    const dock = this._dockEl ? this._dockEl.getBoundingClientRect() : null;
+    this.showroom.frame(
+      vw, vh,
+      brand ? brand.bottom : vh * 0.18,
+      dock ? dock.top : vh * 0.72
+    );
   }
 
   _handleActions() {

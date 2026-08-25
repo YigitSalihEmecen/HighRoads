@@ -17,7 +17,7 @@
  */
 
 import * as THREE from 'three';
-import { ROAD } from './config.js';
+import { ROAD, ROUTE } from './config.js';
 import { clamp, lerp } from './util.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -41,9 +41,14 @@ export class RoadPath {
     this.frames = [];
 
     this.framedUpTo = -1;
-    /** Last sample whose tunnel flag is final. See _markTunnels. */
-    this.markedUpTo = -1;
+    /** Current tangent heading, radians, 0 = -Z. */
     this.heading = 0;
+    /** The slowly drifting compass the router is trying to follow. */
+    this.bearing = 0;
+    /** Turn taken on the last span, for the turn-change cost. */
+    this.lastTurn = 0;
+    /** Largest turn one span may take, from the curvature limit. */
+    this.maxTurn = ROAD.maxCurvature * ROAD.ctrlSpacing;
     /** Next control-point segment to sample (segment i spans ctrl[i]..ctrl[i+1]). */
     this.nextSegment = 1;
 
@@ -57,58 +62,228 @@ export class RoadPath {
     return this.framedUpTo >= 0 ? this.pts[this.framedUpTo].s : 0;
   }
 
-  /** Arc length whose tunnel flags are settled and will not change again. */
-  get markedLength() {
-    return this.markedUpTo >= 0 ? this.pts[this.markedUpTo].s : 0;
-  }
-
   // ------------------------------------------------------------- building --
 
+  /**
+   * The route's personality at a point, blended from two slow noise fields.
+   *
+   * Returns the weights the cost function should use here, not a mode name.
+   * Blending weights rather than switching between named modes is deliberate:
+   * a discrete mode change lands as a kink in the alignment at the exact
+   * station it happens, and there is no natural place to put one on an infinite
+   * road. Weights that drift produce a road that is *becoming* a valley road
+   * for a kilometre before it is one.
+   */
+  _character(s) {
+    const t = this.terrain;
+    const f = ROUTE.characterScale;
+    // Two independent fields: one says how hard to avoid moving earth, the
+    // other whether to prefer height or depth.
+    const direct = t.nA(s / f, 41.7);        // -1..1
+    const seek = t.nB(s / f + 5.3, 88.1);    // -1..1
+
+    return {
+      // 1 at its most careful, (1 - directness) at its most bloody-minded.
+      earth: ROUTE.wEarthwork * (1 - ROUTE.directness * Math.max(0, direct)),
+      // > 0 seeks high ground, < 0 seeks low ground.
+      seek: ROUTE.wSeek * seek,
+      // Always some appetite for a hillside, more on half the cycle. Never
+      // zero: a stretch of road with no shelf at all is the flat default this
+      // whole block exists to get away from.
+      shelf: ROUTE.wShelf * (0.55 + 0.45 * Math.max(0, -direct)),
+    };
+  }
+
+  /**
+   * How badly a candidate at (x, z) doubles back on the road already laid.
+   *
+   * 0 when clear, rising to 1 at zero separation. See ROUTE.selfClear — this is
+   * a structural constraint, not a stylistic one: two stretches of road within
+   * a few hundred metres of each other have terrain sheets that disagree about
+   * which of them the ground belongs to.
+   */
+  _selfProximity(x, z) {
+    const spacing = ROAD.ctrlSpacing;
+    const n = this.ctrl.length;
+    // Control points are evenly spaced in ARC LENGTH, so the band converts to a
+    // simple index range and no distances have to be accumulated.
+    const lo = Math.max(0, n - Math.ceil(ROUTE.selfFar / spacing));
+    const hi = n - Math.ceil(ROUTE.selfNear / spacing);
+    let worst = 0;
+    for (let i = lo; i < hi; i++) {
+      const c = this.ctrl[i];
+      const dx = c.x - x;
+      const dz = c.z - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= ROUTE.selfClear * ROUTE.selfClear) continue;
+      const t = 1 - Math.sqrt(d2) / ROUTE.selfClear;
+      if (t > worst) worst = t;
+    }
+    return worst;
+  }
+
+  /** Natural ground the router routes over. Coarser than the mesh — see ROUTE.lod. */
+  _ground(x, z) {
+    return this.terrain.height(x, z, ROUTE.lod);
+  }
+
+  /**
+   * Cost of running a span from `prev` to (x, y, z) on the given heading.
+   *
+   * Lower is better and the units are metres-ish: the earthwork term is a real
+   * mean vertical error over the corridor, and every other term is scaled
+   * against it. Nothing here is normalised globally, because only the ORDER of
+   * the candidates matters — this is an argmin, not a measurement.
+   */
+  _spanCost(prev, x, y, z, heading, turn, grade, ch) {
+    const spacing = ROAD.ctrlSpacing;
+
+    // ---- earthwork ------------------------------------------------------
+    // Mean |natural − road| over a grid of stations along the span and probes
+    // across the corridor. This is the term that makes the road contour.
+    let earth = 0;
+    let n = 0;
+    const right = { x: Math.cos(heading), z: Math.sin(heading) };
+    for (let a = 1; a <= ROUTE.stations; a++) {
+      const t = a / ROUTE.stations;
+      const cx = lerp(prev.x, x, t);
+      const cz = lerp(prev.z, z, t);
+      const cy = lerp(prev.y, y, t);
+      for (let b = 0; b < ROUTE.probes; b++) {
+        // Spread across the corridor, both sides, skipping the centreline
+        // (which the elevation choice has already fitted).
+        const f = (b + 0.5) / ROUTE.probes;
+        const v = (f * 2 - 1) * ROUTE.corridor;
+        earth += Math.abs(this._ground(cx + right.x * v, cz + right.z * v) - cy);
+        n++;
+      }
+    }
+    earth /= Math.max(1, n);
+
+    // ---- the view -------------------------------------------------------
+    // Ground either side at the end of the span. Read at two distances: a shelf
+    // is a local thing and a valley is not, and one probe cannot see both.
+    const D = ROUTE.corridor;
+    const gl = this._ground(x - right.x * D, z - right.z * D) - y;
+    const gr = this._ground(x + right.x * D, z + right.z * D) - y;
+    const fl = this._ground(x - right.x * D * 2.4, z - right.z * D * 2.4) - y;
+    const fr = this._ground(x + right.x * D * 2.4, z + right.z * D * 2.4) - y;
+
+    // Height sought relative to the country around, so `seek` means ridge or
+    // valley rather than merely high or low.
+    const stand = -(fl + fr) * 0.5;
+
+    /**
+     * A genuine shelf: one side up AND the other down. `min(rise, fall)` is
+     * zero for a ridge top (both fall) and zero for a valley floor (both rise),
+     * and only positive where the road is cut into a slope — which is the
+     * cross-section being asked for.
+     */
+    const shelf = Math.max(
+      Math.min(Math.max(0, gl), Math.max(0, -gr)),
+      Math.min(Math.max(0, gr), Math.max(0, -gl))
+    );
+
+    // How much vertical range there is out here at all. A plain scores zero and
+    // the router goes looking for somewhere with a shape to it.
+    const relief = Math.max(gl, gr, fl, fr, 0) - Math.min(gl, gr, fl, fr, 0);
+
+    // ---- the engineering ------------------------------------------------
+    const gradeN = Math.abs(grade) / ROAD.maxGrade;
+    const turnN = Math.abs(turn) / this.maxTurn;
+    const turnDelta = Math.abs(turn - this.lastTurn) / this.maxTurn;
+
+    // Deviation from the intended bearing. `1 - cos` rather than the raw angle
+    // so it is flat near zero (small corrections are free) and grows hard past
+    // a right angle.
+    const off = 1 - Math.cos(heading - this.bearing);
+
+    // Coming back alongside road already laid. Squared, so the penalty is
+    // negligible at the edge of the exclusion and overwhelming inside it.
+    const self = this._selfProximity(x, z);
+
+    // Earthwork is free up to the budget and quadratic past it — see
+    // ROUTE.earthFree for why minimising it outright is the wrong objective.
+    const over = Math.max(0, earth - ROUTE.earthFree);
+
+    return (
+      ch.earth * over * over +
+      ROUTE.wGrade * gradeN * gradeN +
+      ROUTE.wTurn * turnN * turnN +
+      ROUTE.wTurnChange * turnDelta * turnDelta +
+      ROUTE.wBearing * off +
+      ROUTE.wSelf * self * self -
+      ch.seek * stand -
+      ch.shelf * shelf -
+      ROUTE.wRelief * relief
+    );
+  }
+
+  /**
+   * Lays down the next control point by choosing, rather than by wandering.
+   *
+   * Every candidate is legal by construction — the turn is bounded by
+   * `maxCurvature` and the elevation is clamped to `maxGrade` and
+   * `maxGradeChange` before it is ever scored — so the router only ever picks
+   * among roads that could be built. It cannot produce an alignment the rest of
+   * the project has to defend against.
+   */
   _addControlPoint() {
     const i = this.ctrl.length;
     const t = this.terrain;
 
-    let x, z;
     if (i === 0) {
-      x = 0;
-      z = 0;
-    } else {
-      // Integrate heading with a two-octave noise curvature signal. The second
-      // octave breaks up the rhythm so corners don't arrive metronomically.
-      const k =
-        (t.nA(i * ROAD.curveFreq, 77.7) * 0.78 + t.nB(i * ROAD.curveFreq * 2.7, 12.3) * 0.32) *
-        ROAD.maxCurvature;
-      this.heading += clamp(k, -ROAD.maxCurvature, ROAD.maxCurvature) * ROAD.ctrlSpacing;
-
-      const prev = this.ctrl[i - 1];
-      x = prev.x + Math.sin(this.heading) * ROAD.ctrlSpacing;
-      z = prev.z - Math.cos(this.heading) * ROAD.ctrlSpacing;
+      this.grade = 0;
+      this.lastTurn = 0;
+      this.bearing = 0;
+      this.heading = 0;
+      this.ctrl.push(new THREE.Vector3(0, this._ground(0, 0) + ROUTE.rideHeight, 0));
+      return;
     }
 
-    // Elevation: chase the neighbourhood-averaged terrain, low-passed, then
-    // hard-clamped to a legal gradient. Where the clamp bites, the road ends up
-    // cutting into a hillside or standing on fill — which is the good part.
-    const target = t.roadElevation(x, z) + 0.9;
-    let y;
-    if (i === 0) {
-      y = target;
-      this.grade = 0;
-    } else {
-      const prevY = this.ctrl[i - 1].y;
-      y = lerp(prevY, target, 1 - ROAD.elevationSmoothing);
+    const prev = this.ctrl[i - 1];
+    const spacing = ROAD.ctrlSpacing;
+    const s = i * spacing;
 
-      // Gradient, limited twice: absolute steepness, and how fast it is allowed
-      // to change. The second is the vertical curve — without it the profile
-      // can go from climbing hard to falling hard within one span, and vertical
-      // acceleration (v^2 x curvature) launches the car off the crest.
-      let grade = (y - prevY) / ROAD.ctrlSpacing;
+    // The compass. Drifts slowly and blindly; the terrain decides how the road
+    // gets there. See ROUTE.wBearing for why this has to exist at all.
+    this.bearing += t.nA(s * ROUTE.bearingDrift, 19.4) * ROAD.maxCurvature * spacing;
+
+    const ch = this._character(s);
+    let best = null;
+
+    for (let c = 0; c < ROUTE.candidates; c++) {
+      const frac = ROUTE.candidates === 1 ? 0 : (c / (ROUTE.candidates - 1)) * 2 - 1;
+      const turn = frac * this.maxTurn;
+      const heading = this.heading + turn;
+      const x = prev.x + Math.sin(heading) * spacing;
+      const z = prev.z - Math.cos(heading) * spacing;
+
+      // Elevation is an OUTPUT, not an input. Aim at the natural surface here
+      // — which on a hillside is the balanced cut-and-fill line — then clamp to
+      // a legal profile. The old generator chased a neighbourhood average,
+      // which oversmooths: it floats the road over dips and buries it in rises,
+      // and both of those are earthwork the router is trying to avoid.
+      const want = this._ground(x, z) + ROUTE.rideHeight;
+      let grade = (want - prev.y) / spacing;
       grade = clamp(grade, this.grade - ROAD.maxGradeChange, this.grade + ROAD.maxGradeChange);
       grade = clamp(grade, -ROAD.maxGrade, ROAD.maxGrade);
-      this.grade = grade;
-      y = prevY + grade * ROAD.ctrlSpacing;
+      const y = prev.y + grade * spacing;
+
+      const cost = this._spanCost(prev, x, y, z, heading, turn, grade, ch);
+      // Straight on is the incumbent and has to be beaten by a margin, or the
+      // argmin flickers between near-equal candidates and the road develops a
+      // tremor. See ROUTE.hysteresis.
+      const bias = c === (ROUTE.candidates - 1) / 2 ? 1 - ROUTE.hysteresis : 1;
+      if (!best || cost * bias < best.score) {
+        best = { score: cost * bias, x, y, z, heading, turn, grade };
+      }
     }
 
-    this.ctrl.push(new THREE.Vector3(x, y, z));
+    this.heading = best.heading;
+    this.lastTurn = best.turn;
+    this.grade = best.grade;
+    this.ctrl.push(new THREE.Vector3(best.x, best.y, best.z));
   }
 
   /** Samples one control-point segment onto the arc-length table. */
@@ -172,14 +347,12 @@ export class RoadPath {
       const up = new THREE.Vector3().crossVectors(right, tan).normalize();
 
       // How much ground sits over the centreline here. Positive means the
-      // alignment is below the natural surface — a cutting, or a tunnel.
+      // alignment is below the natural surface — a cutting.
       const cover = this.terrain.base(b.p.x, b.p.z) - b.p.y;
 
-      this.frames[i] = { tan, right, up, bank, curv, cover, tunnel: 0 };
+      this.frames[i] = { tan, right, up, bank, curv, cover };
       this.framedUpTo = i;
     }
-
-    this._markTunnels();
 
     // The leading samples never get a symmetric window; mirror the first real
     // frame back onto them so s = 0 is addressable.
@@ -193,97 +366,15 @@ export class RoadPath {
           bank: f.bank,
           curv: f.curv,
           cover: f.cover,
-          tunnel: 0,
         };
       }
     }
   }
 
-  /**
-   * Promotes sustained deep cuttings into tunnels.
-   *
-   * This is a MORPHOLOGICAL filter on the cover signal, and it is deliberately
-   * stateless: the answer for a sample is a pure function of the cover values
-   * within a bounded window around it, so it does not matter when — or how many
-   * times — it is computed.
-   *
-   * The previous version grew runs incrementally and committed one only once it
-   * looked "settled" relative to the generation frontier. That made the result
-   * depend on the order samples happened to be framed in, and it froze runs
-   * mid-mountain: measured, 32 m of road where the rock was 11–14 m deep but no
-   * bore had been marked. Outside a bore the cut-and-fill clamp flattens the
-   * corridor to road level, so those 32 m became a 15 m vertical cliff straight
-   * across the carriageway at the tunnel exit. That is the "roof does not
-   * integrate with the terrain" artefact: not a seam, a missing tunnel.
-   *
-   * Four steps, all standard 1-D morphology:
-   *
-   *   1. threshold   cover >= tunnelCover
-   *   2. CLOSE       dilate then erode by tunnelBridge/2 — merges runs split by
-   *                  a shallow spot too short to be worth surfacing for
-   *   3. OPEN        erode then dilate by tunnelMinLength/2 — deletes runs too
-   *                  short to be worth boring
-   *   4. ramp        distance to the nearest non-bore sample, over tunnelPortal
-   *
-   * Results are only written where they are final — at least `support` samples
-   * inside the recomputed window at both ends — and `markedUpTo` records how
-   * far that reaches. `ensureLength` waits on it, so no chunk is ever built
-   * against a flag that might still change.
-   */
-  _markTunnels() {
-    const f = this.frames;
-    if (this.framedUpTo < CURV_WINDOW) return;
-
-    const rad = (metres) => Math.max(1, Math.round(metres / ROAD.sampleStep));
-    const bridgeR = rad(ROAD.tunnelBridge * 0.5);
-    const minR = rad(ROAD.tunnelMinLength * 0.5);
-    const portalR = rad(ROAD.tunnelPortal);
-    const support = 2 * bridgeR + 2 * minR + portalR + 4;
-
-    const from = Math.max(CURV_WINDOW, this.framedUpTo - 900);
-    const n = this.framedUpTo - from + 1;
-    if (n < 2 * support + 2) return;
-
-    let a = new Uint8Array(n);
-    if (ROAD.tunnels) {
-      for (let k = 0; k < n; k++) {
-        const fr = f[from + k];
-        a[k] = fr && fr.cover >= ROAD.tunnelCover ? 1 : 0;
-      }
-    }
-
-    a = erode(dilate(a, bridgeR), bridgeR);   // close short shallow spots
-    a = dilate(erode(a, minR), minR);         // open away short runs
-
-    // Distance (in samples) to the nearest sample that is not a bore.
-    const dist = new Int32Array(n);
-    let run = 0;
-    for (let k = 0; k < n; k++) { run = a[k] ? run + 1 : 0; dist[k] = run; }
-    run = 0;
-    for (let k = n - 1; k >= 0; k--) {
-      run = a[k] ? run + 1 : 0;
-      if (run < dist[k]) dist[k] = run;
-    }
-
-    const lo = from + support;
-    const hi = this.framedUpTo - support;
-    for (let i = lo; i <= hi; i++) {
-      if (!f[i]) continue;
-      // dist === 1 is the outermost bore sample, which must read as 0.
-      f[i].tunnel = clamp(((dist[i - from] - 1) * ROAD.sampleStep) / ROAD.tunnelPortal, 0, 1);
-    }
-    if (hi > this.markedUpTo) this.markedUpTo = hi;
-  }
-
-  /**
-   * Grows the spline until arc length `sTarget` is not merely sampled but
-   * has FINAL tunnel flags. Waiting on `length` instead lets a chunk be built
-   * against a flag the next pass will change, and a chunk carries its terrain
-   * hole and its bore geometry from the moment it is built.
-   */
+  /** Grows the spline until arc length `sTarget` is sampled and framed. */
   ensureLength(sTarget) {
     let guard = 0;
-    while (this.markedLength < sTarget && guard++ < 4096) {
+    while (this.length < sTarget && guard++ < 4096) {
       this._extendSamples();
       this._buildFrames();
     }
@@ -332,7 +423,6 @@ export class RoadPath {
     out.bank = lerp(fa.bank, fb.bank, t);
     out.curv = lerp(fa.curv, fb.curv, t);
     out.cover = lerp(fa.cover || 0, fb.cover || 0, t);
-    out.tunnel = lerp(fa.tunnel || 0, fb.tunnel || 0, t);
     out.s = s;
     return out;
   }
@@ -415,7 +505,6 @@ export function makeFrame() {
     bank: 0,
     curv: 0,
     cover: 0,
-    tunnel: 0,
     s: 0,
   };
 }
