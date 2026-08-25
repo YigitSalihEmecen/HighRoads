@@ -14,7 +14,8 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE } from './config.js';
 import { loadFoliage, loadCarTexture, loadCarModel } from './assets.js';
 import { foliageModelNames } from './foliage.js';
-import { CARS, CAR_COLORS, ENGINE_OPTIONS, DEFAULT_CAR, carById, colorById, buildCarParams } from './cars.js';
+import { CARS, CAR_COLORS, CAR_TRIM_COLORS, ENGINE_OPTIONS, DEFAULT_CAR, DEFAULT_TRIM,
+         carById, colorById, trimColorById, buildCarParams } from './cars.js';
 import { smoothstep } from './util.js';
 import { createTerrain } from './noise.js';
 import { RoadPath } from './path.js';
@@ -270,6 +271,32 @@ function buildGarage(game, roster) {
     swatches.set(c.id, el);
   }
 
+  // ---- second colour -----------------------------------------------------
+  // The swatch every model carries that the paint picker never reached. See
+  // cars.CAR_TRIM_COLORS.
+  const trimList = document.getElementById('trim-list');
+  const trims = new Map();
+  const pickTrim = (id) => {
+    game.setTrim(id);
+    for (const [tid, el] of trims) el.setAttribute('aria-pressed', String(tid === id));
+  };
+  for (const c of CAR_TRIM_COLORS) {
+    const el = document.createElement('button');
+    el.className = 'swatch';
+    el.type = 'button';
+    el.title = c.name;
+    if (c.hex === null) {
+      // "Stock" has no colour of its own to show, so it reads as an outline.
+      el.classList.add('swatch-stock');
+    } else {
+      el.style.background = '#' + c.hex.toString(16).padStart(6, '0');
+    }
+    el.setAttribute('aria-pressed', 'false');
+    el.addEventListener('click', () => pickTrim(c.id));
+    trimList.appendChild(el);
+    trims.set(c.id, el);
+  }
+
   // ---- engine -----------------------------------------------------------
   const engineList = document.getElementById('engine-list');
   const engineChips = new Map();
@@ -295,6 +322,7 @@ function buildGarage(game, roster) {
   garage.classList.add('ready');
   select(game.carId, false);   // no audio before the player has clicked anything
   pickColor(game.colorId);
+  pickTrim(game.trimId);
   pickMode(game.mode);
 }
 
@@ -315,6 +343,7 @@ class Game {
     this.headlights = false;
     this.flashing = false;
     this.colorId = null;
+    this.trimId = DEFAULT_TRIM;
     this.engineChoice = 'stock';
     /** Seconds of throttle blip left on the title screen. */
     this.previewing = false;
@@ -383,6 +412,9 @@ class Game {
     // choose, that choice follows them from car to car.
     if (!this.colorId) this.colorId = spec.defaultColor || CAR_COLORS[0].id;
     this.setColor(this.colorId);
+    // Each model carries its own stock second colour, so this has to be
+    // reapplied per car rather than surviving from the last one.
+    this.setTrim(this.trimId);
     this.powertrain.setCar(this.car());
     this.respawn(this.carS);
   }
@@ -390,6 +422,12 @@ class Game {
   setColor(id) {
     this.colorId = id;
     if (this.vehicle) this.vehicle.setColor(colorById(id).hex);
+  }
+
+  /** The second paint colour. `stock` restores whatever the model shipped with. */
+  setTrim(id) {
+    this.trimId = id;
+    if (this.vehicle) this.vehicle.setTrimColor(trimColorById(id).hex);
   }
 
   setMode(id) {
@@ -413,6 +451,10 @@ class Game {
     this.overlayEl.classList.remove('gone');
     this.cam.setGarage(true);
     this.hud.hide();
+    // The on-screen driving controls belong to driving. Left up over the title
+    // screen they are a steering wheel on top of a menu — live, tappable, and
+    // attached to a car that is parked.
+    document.body.classList.remove('driving');
     if (this.traffic) this.traffic.dispose();
     this.respawn(this.carS);
     this.vehicle.setParked(true);
@@ -424,6 +466,7 @@ class Game {
     this.inGarage = false;
     this.cam.setGarage(false);
     this.hud.show();
+    document.body.classList.add('driving');
     this.hud.setMode(this.mode);
     if (!this.settings) this.settings = new Settings(this);
     this.input.bindTouch(document);

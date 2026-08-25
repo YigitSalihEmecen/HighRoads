@@ -212,13 +212,60 @@ const WHEEL_RE = /_(FL|FR|BL|BR)_Tire$/i;
 
 /** Material slots the body mesh is re-grouped into. Order matters. */
 const SLOT_BODY = 0;   // textured trim, glass, bumpers — left alone
-const SLOT_PAINT = 1;  // the one palette swatch that is the car's colour
-const SLOT_HEAD = 2;   // forward-facing lamps
-const SLOT_TAIL = 3;   // rear lamps
+const SLOT_PAINT = 1;  // the palette swatch that is the car's main colour
+const SLOT_TRIM = 2;   // the next largest swatch — the car's second colour
+const SLOT_HEAD = 3;   // forward-facing lamps
+const SLOT_TAIL = 4;   // rear lamps
+const SLOT_COUNT = 5;
 
 /** The atlas is a 16x16 grid of flat swatches; this is which cell a UV lands in. */
+const ATLAS_GRID = 16;
 function cellKey(u, v) {
-  return `${Math.floor(u * 16)},${Math.floor(v * 16)}`;
+  return `${Math.floor(u * ATLAS_GRID)},${Math.floor(v * ATLAS_GRID)}`;
+}
+
+/**
+ * Reads the flat colour out of one atlas cell.
+ *
+ * The second paint slot has to default to the colour the artist put there, or
+ * every car would arrive in the garage already wearing a change nobody asked
+ * for. Each cell is a single flat swatch, so one pixel from the middle of it is
+ * the whole answer.
+ *
+ * Cached on the texture: nine cars share one atlas and the canvas readback is
+ * the only part of loading that touches the 2D context at all. Returns null
+ * when there is no decoded image to read — headless probes pass no texture, and
+ * a tainted canvas throws — and every caller has a fallback for that.
+ */
+function sampleCell(texture, key) {
+  if (!texture || !texture.image || !key) return null;
+  try {
+    let ctx = texture.userData && texture.userData._atlasCtx;
+    if (!ctx) {
+      const img = texture.image;
+      const w = img.width || 0, h = img.height || 0;
+      if (!w || !h) return null;
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      ctx.drawImage(img, 0, 0);
+      texture.userData = texture.userData || {};
+      texture.userData._atlasCtx = ctx;
+    }
+    const [cx, cy] = key.split(',').map(Number);
+    const cw = ctx.canvas.width / ATLAS_GRID;
+    const ch = ctx.canvas.height / ATLAS_GRID;
+    // The texture is loaded with flipY = false, so v maps straight to rows and
+    // the cell's row index is its y index — no flip to undo here.
+    const px = Math.min(ctx.canvas.width - 1, Math.floor((cx + 0.5) * cw));
+    const py = Math.min(ctx.canvas.height - 1, Math.floor((cy + 0.5) * ch));
+    const d = ctx.getImageData(px, py, 1, 1).data;
+    return (d[0] << 16) | (d[1] << 8) | d[2];
+  } catch (err) {
+    return null;
+  }
 }
 
 /** Per-triangle material index, from whatever groups the importer produced. */
@@ -233,12 +280,25 @@ function triangleMaterials(geo, triCount) {
 }
 
 /**
- * Finds the palette cell carrying the car's paint: the one covering the most
- * surface area across every non-emissive group. Because each cell is a single
- * flat colour, those triangles can then be moved onto a plain material and
- * recoloured by setting `.color` — no texture rewriting, and instant.
+ * Ranks the palette cells the bodywork uses by the surface area they cover,
+ * largest first, across every non-emissive group.
+ *
+ * The first is the car's paint. The SECOND is the reason this returns a list at
+ * all: every model in the pack has one, it is always a large flat block of
+ * colour, and until now it kept whatever the artist chose no matter what the
+ * player picked — the Hatchback's green upper body, the Van's brown roof, the
+ * Interceptor's grey, the Muscle car's dark trim. Those are the "permanently
+ * coloured sections". Because each cell is a single flat colour, both can be
+ * moved onto plain materials and recoloured by setting `.color` — no texture
+ * rewriting, and instant.
+ *
+ * Ranking by raw surface area does count geometry nobody sees, so it was
+ * checked against the alternative: six orthographic z-buffers over each model,
+ * counting only the cells actually visible from outside. Across the nine
+ * roster cars the two metrics agree on the top cell every time and on the
+ * second for seven of nine, so the cheap one stands.
  */
-function findPaintCell(meshes, bloomIndex) {
+function rankPaintCells(meshes, bloomIndex) {
   const area = new Map();
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
   const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), cr = new THREE.Vector3();
@@ -271,22 +331,20 @@ function findPaintCell(meshes, bloomIndex) {
     }
   }
 
-  let best = null, bestArea = -1;
-  for (const [key, v] of area) if (v > bestArea) { bestArea = v; best = key; }
-  return best;
+  return [...area].sort((a, b) => b[1] - a[1]).map(([key]) => key);
 }
 
 /**
- * Rebuilds one body mesh's material groups into the four slots above.
+ * Rebuilds one body mesh's material groups into the five slots above.
  *
  * The importer hands us dozens of tiny groups alternating between two
  * materials, and both lamps share one of them. Triangles are reclassified —
  * emissive ones split front/rear by their z sign (the models face +Z, so
- * positive is the front), the rest by whether they sit on the paint swatch —
- * then an index buffer is written that orders them by slot, so each class is
- * one contiguous group and therefore one draw call.
+ * positive is the front), the rest by which of the two paint swatches they sit
+ * on, if either — then an index buffer is written that orders them by slot, so
+ * each class is one contiguous group and therefore one draw call.
  */
-function regroupBody(mesh, paintCell, bloomIndex, materials) {
+function regroupBody(mesh, paintCell, trimCell, bloomIndex, materials) {
   const geo = mesh.geometry;
   const pos = geo.attributes.position;
   const uv = geo.attributes.uv;
@@ -308,7 +366,7 @@ function regroupBody(mesh, paintCell, bloomIndex, materials) {
         (uv.getX(i0) + uv.getX(i1) + uv.getX(i2)) / 3,
         (uv.getY(i0) + uv.getY(i1) + uv.getY(i2)) / 3
       );
-      slot[t] = key === paintCell ? SLOT_PAINT : SLOT_BODY;
+      slot[t] = key === paintCell ? SLOT_PAINT : key === trimCell ? SLOT_TRIM : SLOT_BODY;
     } else {
       slot[t] = SLOT_BODY;
     }
@@ -316,7 +374,7 @@ function regroupBody(mesh, paintCell, bloomIndex, materials) {
 
   const order = [];
   geo.clearGroups();
-  for (let s = 0; s <= SLOT_TAIL; s++) {
+  for (let s = 0; s < SLOT_COUNT; s++) {
     const start = order.length;
     for (let t = 0; t < triCount; t++) {
       if (slot[t] !== s) continue;
@@ -365,6 +423,21 @@ export function buildCarFromObject(root, texture, label = 'model') {
     color: 0xc0392b,
     roughness: 0.42,
     metalness: 0.28,
+  });
+  /**
+   * The second paint slot.
+   *
+   * Same idea as `paint`, one swatch further down: the largest flat colour on
+   * the model that is NOT the main bodywork. On most of the roster that is a
+   * genuine two-tone feature — the Hatchback's upper body, the Van's roof, the
+   * Muscle car's trim — and it is what stayed put whatever colour the player
+   * chose. Slightly less metallic than the main paint, because on a real car
+   * this is usually the part that is plastic, matte or a contrast wrap.
+   */
+  const secondary = new THREE.MeshStandardMaterial({
+    color: 0x9aa0a6,
+    roughness: 0.52,
+    metalness: 0.18,
   });
   // "Color Bloom" is the exporter's name for the lamps. The atlas cell behind
   // the rear lamps is actually blue, so the lights are given their own
@@ -449,12 +522,17 @@ export function buildCarFromObject(root, texture, label = 'model') {
     mesh.scale.set(1, 1, 1);
   }
 
-  // Re-group the bodywork so paint and each pair of lamps are independently
-  // addressable. Done after baking, while the geometry is still in the model's
-  // own +Z-forward space — the front/rear split reads the sign of z directly.
-  const paintCell = findPaintCell(bodyParts, bloomIndex);
-  const bodyMaterials = [trim, paint, headlight, taillight];
-  for (const part of bodyParts) regroupBody(part, paintCell, bloomIndex, bodyMaterials);
+  // Re-group the bodywork so both paint colours and each pair of lamps are
+  // independently addressable. Done after baking, while the geometry is still
+  // in the model's own +Z-forward space — the front/rear split reads the sign
+  // of z directly.
+  const [paintCell = null, trimCell = null] = rankPaintCells(bodyParts, bloomIndex);
+  // Second colour starts as whatever the artist painted it, so a car arrives in
+  // the garage looking exactly as it always did until somebody changes it.
+  const trimStock = sampleCell(texture, trimCell);
+  if (trimStock !== null) secondary.color.setHex(trimStock, THREE.SRGBColorSpace);
+  const bodyMaterials = [trim, paint, secondary, headlight, taillight];
+  for (const part of bodyParts) regroupBody(part, paintCell, trimCell, bloomIndex, bodyMaterials);
 
   // Body group, yawed to face -Z and dropped so y = 0 is the contact plane.
   // A yaw about Y leaves y untouched, so combining it with the drop in a single
@@ -504,6 +582,9 @@ export function buildCarFromObject(root, texture, label = 'model') {
     },
     materials: bodyMaterials,
     paintCell,
+    trimCell,
+    /** The colour the artist gave the second slot; null if the atlas was unreadable. */
+    trimStock,
 
     /**
      * Head lamps. `flash` overdrives them well past "on" — a flash reads as a
@@ -516,6 +597,16 @@ export function buildCarFromObject(root, texture, label = 'model') {
     /** Repaints the car. One property write — the paint slot has no texture. */
     setColor(hex) {
       paint.color.setHex(hex, THREE.SRGBColorSpace);
+    },
+
+    /**
+     * Repaints the second colour. Passing null restores the swatch the model
+     * shipped with, which is what the garage's "Stock" option asks for.
+     */
+    setTrimColor(hex) {
+      const value = hex == null ? trimStock : hex;
+      if (value == null) return;
+      secondary.color.setHex(value, THREE.SRGBColorSpace);
     },
 
     /**

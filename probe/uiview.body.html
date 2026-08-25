@@ -1,0 +1,77 @@
+<!--
+  probe/uiview.html — the interface, without the game.
+
+  `index.html` cannot be screenshotted on its own: it boots WebGL, and a
+  headless Chrome has no GPU, so the page dies before the overlay is populated.
+  This copies the shell, drops the module boot, and fills the garage, the HUD
+  and the settings drawer with the same option lists the real modules build —
+  so what gets rendered is the actual stylesheet under actual content.
+
+  It also reports its own overflow into the corner of the page, which is how the
+  layout bugs listed in probe/README.md were found.
+
+  Query flags: ?hud=1 driving HUD  ?settings=1 drawer open  ?over=1 game over
+               ?touch=0 desktop (no touch layer)
+
+  Regenerate after editing index.html:  node probe/uishot.mjs --build
+-->
+<script>
+// Static harness: fills the garage with the real option lists and switches on
+// the touch layer and the HUD, so the whole interface can be looked at without
+// a WebGL context. Numbers are the real ones from src/cars.js.
+const CARS = ['Sport','Muscle','Classic','Hatchback','Interceptor','Pick-Up','Van','Military','Monster Truck'];
+const COLORS = ['#c0392b','#d97a1a','#d8b224','#2f6b45','#2a7f86','#2a5ca8','#6a3d8f','#dcdcd6','#9aa0a6','#24262b'];
+const TRIMS = [null,...COLORS,'#3a3d44','#e6dcc4'];
+const ENGINES = ['Stock','V-twin','I3 turbo','Rotary','I4','Boxer-4','I5 turbo','I6 turbo','I6 diesel','V6','V6 twin-turbo','Flat-6','V8 cross','V8 twin-turbo','V8 flat','V10','V12'];
+const mk = (cls, text, pressed) => { const b = document.createElement('button'); b.className = cls; b.type='button'; b.textContent = text; b.setAttribute('aria-pressed', String(!!pressed)); return b; };
+for (const [i,m] of ['Traffic','Zen'].entries()) document.getElementById('mode-list').append(mk('car-chip', m, i===0));
+for (const [i,c] of CARS.entries()) document.getElementById('car-list').append(mk('car-chip', c, i===0));
+for (const [i,c] of COLORS.entries()) { const b = mk('swatch','',i===0); b.style.background=c; document.getElementById('color-list').append(b); }
+for (const [i,c] of TRIMS.entries()) { const b = mk('swatch','',i===0); if (c) b.style.background=c; else b.classList.add('swatch-stock'); document.getElementById('trim-list').append(b); }
+for (const [i,e] of ENGINES.entries()) document.getElementById('engine-list').append(mk('eng-chip', e, i===0));
+document.getElementById('car-detail').innerHTML =
+  '<b>Sport</b> — Light, low and rear-driven. The quickest thing here, and the least forgiving.' +
+  '<div id="car-stats"><span>Mass<b>1180 kg</b></span><span>Engine<b>V8 flat-plane 4.5</b></span>' +
+  '<span>Layout<b>RWD</b></span><span>Redline<b>9000</b></span></div>' +
+  '<div style="margin-top:6px;opacity:.6">rear-wheel drive — Points for near misses. One crash ends the run.</div>';
+document.getElementById('seed-input').value = 'fastroads-01';
+document.getElementById('garage').classList.add('ready');
+document.getElementById('start').disabled = false;
+document.getElementById('start').textContent = 'Drive';
+document.getElementById('boot').textContent = '26 plants · 9 vehicles';
+// The settings drawer, built the same way settings.js builds it.
+const body = document.getElementById('settings-body');
+const sec = (t) => { const d=document.createElement('div'); d.className='set-section'; d.textContent=t; body.append(d); };
+const btn = (t,on) => { const b=document.createElement('button'); b.className='set-btn'+(on?' on':''); b.textContent=t; body.append(b); };
+const sld = (n,v) => { const r=document.createElement('label'); r.className='set-row';
+  r.innerHTML = `<span class="set-name">${n}</span><input type="range" min="0" max="2" step="0.01" value="${v}"><span class="set-val">${v.toFixed(2)}</span>`; body.append(r); };
+sec('Driving'); btn('Gearbox: auto'); btn('Camera: chase');
+sec('Audio'); sld('Master',0.62);
+sec('Voice mix'); for (const [n,v] of [['Exhaust',1],['Intake',0.6],['Gearbox',0.22],['Turbo',0.5],['Transients',0.4],['Sub',1]]) sld(n,v);
+sec('Tone'); sld('Rumble',1.1); sld('Brightness',0.72);
+
+const q = new URLSearchParams(location.search);
+if (q.get('touch') !== '0') document.body.classList.add('touch');
+if (q.get('hud') === '1') { document.getElementById('hud').classList.add('live','traffic');
+  document.getElementById('overlay').classList.add('gone');
+  document.body.classList.add('driving');
+  document.getElementById('speed-val').textContent='187';
+  document.getElementById('stats').textContent='60 FPS · 9 CHUNKS';
+  document.getElementById('trip-km').textContent='4.31';
+  document.getElementById('trip-alt').textContent='212';
+  document.getElementById('gear').textContent='4';
+  document.getElementById('score').textContent='12,480';
+  document.getElementById('chain').classList.add('live');
+  document.getElementById('mult').textContent='x6';
+  document.querySelector('#chain-bar i').style.transform='scaleX(0.62)';
+  const f=document.getElementById('tach-fill'); const L=f.getTotalLength();
+  f.style.strokeDasharray=L+' '+L; f.style.strokeDashoffset=String(L*0.28);
+  const r=document.getElementById('tach-red'); r.style.strokeDasharray=(L*0.12)+' '+L; r.style.strokeDashoffset=String(-L*0.88);
+}
+if (q.get('settings') === '1') { document.getElementById('settings').classList.add('open'); }
+if (q.get('over') === '1') { document.getElementById('gameover').classList.add('show');
+  document.getElementById('go-points').textContent='12,480'; document.getElementById('go-best').textContent='18,240';
+  document.getElementById('go-detail').textContent='43 near misses · 4.31 km'; }
+document.body.style.background = '#233042';   // stand in for the 3D scene
+
+</script>

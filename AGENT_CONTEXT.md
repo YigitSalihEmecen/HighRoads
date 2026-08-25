@@ -351,9 +351,15 @@ One dynamic rigid body. Four rays cast straight down from anchor points.
   **0.68 s**, and the tall vehicles are unaffected because a saturated tyre does
   not make more lateral force just because the wheel is turned further.
 - **`_stability` slide containment** — a yaw damper faded in between
-  `driftAngle` (23°) and `spinAngle` (49°) of chassis slip. Below the first it
-  does nothing at all, so ordinary cornering and a held drift are untouched;
-  past the second a spin decays instead of being unrecoverable.
+  `driftAngle` (29°) and `spinAngle` (60°) of chassis slip. Below the first it
+  does nothing at all, and the tyres peak around 7° of slip, so ordinary
+  cornering and a held drift are untouched; past the second a spin decays
+  instead of being unrecoverable. It is now a small part of the recovery — see
+  bug #41.
+- **Yaw inertia is inflated 1.6×** in `_buildBody`, the same way roll already
+  was. A solid box implies a yaw radius of gyration of 0.29·length; real cars
+  measure 0.35–0.40 because the mass is at the ends. This is the largest single
+  contributor to the car feeling like it has weight.
 - **`syncVisuals(alpha)`** — interpolates pose between the last two physics
   states. Took render jitter from 146 mm to 0.3 mm.
 - **`beginStep()`** — snapshots the previous pose *and* clamps chassis velocity
@@ -374,7 +380,19 @@ damping, anti-roll bar rate, and steering limits from those measurements plus a
 handful of character values in the roster (`grip`, `mass`, `power`).
 
 Roster (9): `sport`, `muscle`, `classic`, `hatchback`, `police`, `pickup`,
-`van`, `military`, `monster`. 10 colours. 12 engine options.
+`van`, `military`, `monster`. 10 body colours, 13 second colours, 17 engines.
+
+**Two paint slots, both discovered rather than declared.**
+`assets.js:rankPaintCells` orders the atlas cells the bodywork uses by surface
+area. The largest is the paint; the second largest is the car's other colour,
+which is the thing that used to be stuck at whatever the artist chose (bug #44).
+Its default is sampled straight out of the atlas image through a 2D canvas, so
+`CAR_TRIM_COLORS[0]` — `stock`, `hex: null` — leaves each model looking exactly
+as it did. `probe/paint.mjs` counts what lands in each slot.
+
+**Traffic clones share the roster's materials** (`traffic.js:_instance`), and
+always has. Painting the player's Sport therefore repaints every Sport in
+traffic. Pre-existing, not a regression, and it has not been treated as one.
 
 **There is no torque tuning here.** `engine_sim` owns the curve, the clutch and
 the shift logic; the roster's old `peakTorque` / `peakTorqueRpm` and the derived
@@ -394,6 +412,23 @@ The game feeds it wheel omega; it returns propshaft torque `Tp`, which becomes
 force at the contact patch. So the engine is not a sound effect layered on top
 of a separate physics model — it *is* the drivetrain. Gearing, clutch slip,
 and engine braking all fall out of it for free.
+
+**Two things the bridge has to correct, both consequences of that override.**
+
+- `_launchFloor` — because `_stepVehicle` is overridden, the drivetrain never
+  sees the load on the wheels, only that wheel speed is not rising. Its launch
+  controller regulates on road speed, so a car that cannot get going leaves the
+  clutch half open forever. Below 7 m/s, in first, the host asserts a floor of
+  `0.72 × peakTorque × throttle` through the gear. See bug #42.
+- `_retuneLaunch` — engine_sim computes `launchRate` once in its constructor
+  from whichever preset it was built with and neither `setVehicle` nor
+  `setEngine` revisits it. Both it and `launchFlareRpm` are read live, so the
+  bridge writes them per car. Bug #43.
+
+**`mix.mechanical` is 0.** That layer is band-passed pink noise standing in for
+valvetrain clatter and block resonance; at driving volume it is broadband hiss.
+Clunks and lash live on `transients`, which stays. The slider is gone from the
+drawer too — see settings.js.
 
 ### 4.8 Traffic (`traffic.js`) — rewritten; read the file header
 
@@ -497,9 +532,40 @@ stands.
   gesture the API requires.
 - `input.js` — keyboard, gamepad, and touch (`bindTouch`). Distinguishes held
   keys from one-shot presses; `flashHeld` drives headlight flash-to-pass.
+  It reads `.tbtn` and the `data-hold` / `data-tap` attributes and nothing else,
+  so the touch layout can be rearranged in `index.html` without touching it.
 - `hud.js` / `settings.js` — HUD readouts and the collapsible left drawer. The
   drawer is a deliberate **keyboard trap**: a focused `<input type=range>`
   responds to arrow keys and would steer the car.
+
+### 4.13 The stylesheet — one scale, no width breakpoints
+
+`index.html` is the whole interface, and its rule is worth stating because it is
+easy to undo by accident: **every size is a `clamp()` against `vmin`**, the short
+edge of the viewport. A control at 14vmin is a thumb's width on a 390 px phone
+and still a thumb's width on a 1024 px tablet, because a thumb is the same size
+on both; a pixel breakpoint cannot express that, which is why the file used to
+carry three overlapping sets of rules each restating sizes the others had set
+(bug #45). `vmin` and not `vw`, so rotating the device moves things without
+resizing them.
+
+The only media queries left ask about **orientation** and **pointer** — real
+facts about how the thing is being held. There are no width breakpoints.
+
+Two tokens do the load-bearing work:
+
+- `--ctl-zone` is 0 by default and becomes the height of a pedal under
+  `body.touch`. The HUD offsets itself by it, so the instruments clear the
+  driving controls without either layout knowing the other exists.
+- `--edge-*` fold the safe-area insets into the ordinary gutters, so nothing
+  else in the file has to `max()` against a notch.
+
+Driving controls are circles (`border-radius: 50%`, `aspect-ratio: 1`): a thumb's
+contact patch is round, and a circle is unambiguous about its own centre, which
+is what you aim at when you re-find a pedal without looking. `.tbtn-lg` /
+`.tbtn-sm` / `.tbtn-go` are the only variants.
+
+`probe/ui.mjs` is the only guard on any of this — 40 ids and 14 toggled classes.
 
 ---
 
@@ -608,6 +674,15 @@ are recorded because most of them are re-introducible.
 | 38 | **The slide assist was obvious** | The yaw damper engaged at 23° of chassis slip at strength 3.0 — an ordinary slide — so the car was being straightened out from under the driver. The lock also jumped straight to full, which read as the steering ratio changing | Damper 36°–72° at 1.3; lock opening proportional, capped at 4× the steady-state limit. Recovery 0.68 s → **2.54 s**, of which the assist accounts for 0.9 s |
 | 39 | Camera cut hard when the run started | `setGarage(false)` reset `initialised`, so the rig teleported from the orbit to the bumper | Keeps its position and sweeps, damping stiffened for `snapTime` |
 | 40 | Car hidden behind the buttons | The garage rig aimed *above* the car, pushing it down the frame | `CAMERA.garage.aim` is negative |
+| 41 | **The car was too easy to lose** | Four things at once: `tyreShape` 1.32 dropped 11% of grip the moment the tyre went past its peak, and the rear axle reaches its peak first under power; front/rear cornering stiffness 14/11.5 let the car keep rotating before the rear built force to stop it; a solid-box yaw tensor (radius of gyration 0.29·L against a real car's 0.35–0.40) meant the body could be rotated for free; and 6.2 rad/s put full lock 94 ms from a keypress | 1.22 / 15 / 13, `Iy × 1.6`, `steerRate` 5.0, grip +12% with CoM two points lower to pay for it. Handbrake-turn yaw 3.22 → **2.27 rad/s**; catch 2.54 s and 169° → **0.82 s and 62°**; speed left after the catch 5 → **41 km/h**; drift exit 26 → **56 km/h**. With the assist off the catch is 0.98 s, so it is the tyres and the inertia doing it, not the damper |
+| 42 | **First gear had no torque; a slope was impassable** | `_stepVehicle` is overridden, so engine_sim's launch controller never sees the load on the wheels — only that wheel speed is not rising. It regulates on ROAD SPEED, so a stationary car pins `geared` at 0, the demanded rpm never moves, and the clutch sits half open transmitting a fraction of the engine forever. Measured against a pinned wheel: manual/DCT cars 5.0–8.4 m/s² at full throttle against 12–17 for the converter autos, and a flat 1.3–2.8 m/s² at a third throttle. Gravity is 16 m/s², so a 10% grade costs 1.6 | `powertrain._launchFloor`: below 7 m/s, in first, take the max of the drivetrain's force and `0.72 × peakTorque × throttle` through the gear. A floor, not a replacement; fades to nothing by 7 m/s; still goes through the friction circle and traction control, so it cannot invent grip. Sport 5.2 → **9.9 m/s²** in the first frame, 1.8 → **3.5** at a third throttle. Top speeds unchanged |
+| 43 | Every car launched to the wrong schedule | engine_sim derives `launchRate` once, in its constructor, from whichever preset it was built with; neither `setVehicle` nor `setEngine` revisits it. Across the roster it was out by up to 2× in both directions — the Muscle car wound up at twice the rate it can pull, the Hatchback at three quarters | `_retuneLaunch()` recomputes it, and `launchFlareRpm`, per car on `setCar`. Both are read live inside engine_sim, so nothing there is edited |
+| 44 | **Paint sections that no colour could change** | `findPaintCell` took the single largest atlas cell. Every model's *second* largest is a big flat block too — the Hatchback's upper body, the Van's roof, the Interceptor's panels — and it kept the shared texture, so it stayed put whatever the player chose | `rankPaintCells` returns the ordering; the top two get their own materials. Second colour defaults to the swatch sampled from the atlas, so nothing looks different until asked. 8–34% of each car's triangles land in the new slot |
+| 45 | The interface was three designs | Three overlapping width breakpoints (`max-width: 640px`, `max-height: 520px`, and the base) each restated sizes the others had already set, so the desktop dock was a bare column and the mobile one a blurred card, chips were defined four ways, and the HUD dodged the touch controls with hard-coded pixel offsets | Every size is a `clamp()` against `vmin`; the only media queries left ask about orientation and pointer. `--ctl-zone` lets the HUD clear the driving controls without either layout knowing the other exists. §4.13 |
+| 46 | Handbrake button through the middle of the tachometer | `--ctl-zone`, the strip the HUD keeps clear for the driving controls, was measured as one pedal — but the right pad is a *stack*, handbrake above brake | Zone = `ctl + ctl-sm + gap + gutter`. Found by `probe/uishot.mjs`; invisible to every other check |
+| 47 | Score squeezed against the auxiliary buttons | Six aux controls in a 3-wide grid left 67 px in the middle of a 375 px phone for a five-figure score | 2 columns × 3 rows, and `#run` reserves that width on both sides so the score centres in the free strip |
+| 48 | **Car blurb drawn straight through the paint swatches** | Garage rows are flex items in a height-constrained column, so the default `flex-shrink: 1` squeezed each one proportionally — and a row squeezed below its content does not scroll, it overflows | `#garage > * { flex: 0 0 auto }`; the garage overflows as a whole and scrolls |
+| 49 | Wordmark running under the panel on a landscape phone | The brand was moved to the corner under `orientation: landscape`, which is also every desktop monitor; and at full size it did not clear the dock on a 393 px-tall screen | The query is `max-height: 620px` — height was always the actual constraint — and the title drops a size with the tagline hidden there |
 
 ### Test-harness bugs that masqueraded as game bugs
 
@@ -624,6 +699,14 @@ Worth its own list, because measurement has been wrong more often than the game.
 - **An autopilot with an inverted cross-track sign** steered the test car off the
   road four times in 90 s and made the whole build look broken. It covered 79 m;
   with the sign fixed and a heading term added, 4736 m.
+- **`handling.mjs` charged the car for the test's own cornering.** The slide
+  recovery test holds full opposite lock and half throttle for four seconds,
+  which is what a driver catching a slide does — but a car that recovers early
+  then spends the rest of that time obeying the input and driving a steady
+  circle the other way, and the probe integrated heading straight through it. A
+  tune that caught the slide in 0.82 s after 62° was reported as "240 deg, WENT
+  ROUND" *because it recovered in time to start turning*. Heading is now
+  integrated only until the yaw is arrested.
 - **Checking prop placement by going back through `(s, v)`** reported trees
   floating 3.97 m. The scatter runs the offset through `foldSafeOffset` before
   placing, so recovering `v` from the finished world position applies the
@@ -640,11 +723,34 @@ Be honest about this section. It is the most useful part of the file.
 
 ### Never seen running
 
-**No browser has ever rendered this.** The Chrome connector reports no browsers
-(`list_connected_browsers` → `[]`). Every claim about behaviour comes from
-headless measurement. Nothing here has been visually confirmed: colour grading,
-sky gradient, bloom, depth of field, tunnel interiors as they *look*, tree
-density, HUD layout, the garage screen, touch controls.
+**No GPU has ever rendered the 3D scene.** The Chrome connector still reports
+no browsers (`list_connected_browsers` → `[]`), and a headless Chrome has no
+WebGL context, so the game does not boot under one. Every claim about the world
+comes from headless measurement, and none of this has been looked at: colour
+grading, sky gradient, bloom, tunnel interiors as they *look*, tree density, the
+cars themselves.
+
+**The interface, separately, HAS now been rendered.** `probe/uishot.mjs`
+screenshots twelve real device viewports over the DevTools protocol against
+`probe/uiview.html` — the live stylesheet, with the module boot removed and the
+garage, HUD and drawer filled by hand, so there is no WebGL to die on. It found
+four layout bugs on its first run (#46–#49) that `probe/ui.mjs` could not see,
+because "every id resolves" and "no two controls overlap" are different
+questions. Phone, tablet and desktop, portrait and landscape, all report no
+overflow.
+
+What that still does not cover:
+
+- The interface has only been seen over the **flat background the harness
+  paints**, never over the actual scene. The overlay's gradients and the HUD's
+  text shadows are what separate it from the world behind it, and nothing has
+  checked they are enough against a bright sky.
+- **Which swatch the second paint colour actually moves.** `probe/paint.mjs`
+  proves the slot owns triangles; it cannot tell you they are the roof rather
+  than the windscreen. The z-buffer check in §4.6 says the second cell is a body
+  panel on seven cars of nine — the Sport and the Classic are the two where it
+  may well be glass. First thing to do with a real browser: open the garage,
+  cycle all nine cars, and watch what the Trim swatches change.
 
 In particular the tunnel rework is verified **geometrically** — no terrain in the
 bore, no open sky, no gap the shell cannot cover, no step or hole in the
@@ -693,18 +799,25 @@ collision surface — but nobody has looked at a portal.
 - Tunnels: **0 sky leaks in 211k rays** from inside sealed bores; worst terrain
   step away from a portal **1.4 m** across seven seeds; portal faces 6–9 m,
   which is the intended rock face.
-- Handling: spin recovery **0.68 s** (was 3.96 s and went round); steering
-  headroom at 200 km/h **4.6×** the tightest corner (was 1.85×); speed retained
-  through a drift **51 km/h** (was 15); no rollover regression on monster / van
-  / military / pickup in a 6 s slalom at 90 km/h.
+- Handling, measured before and after on the same test: handbrake-turn yaw
+  **3.22 → 2.27 rad/s**, catch **2.54 s / 169° → 0.82 s / 62°**, speed left after
+  the catch **5 → 41 km/h**, drift exit **26 → 56 km/h**, unassisted catch
+  **3.45 s → 0.98 s**. Steering headroom at 200 km/h **4.6×** the tightest
+  corner. No rollover regression on monster / van / military / pickup in a 6 s
+  slalom at 90 km/h.
+- Launch: Sport **5.2 → 9.9 m/s²** in the first frame from rest at full throttle
+  and **1.8 → 3.5** at a third throttle; top speed and 0–100 beyond a standing
+  start unchanged, which is the point of the fade.
 - Garage: engine blips 904 → 7819 rpm in neutral, selects first gear on Drive,
   and the parked car moves **0.0 cm in five seconds** on a 4.7% grade.
 - Tunnel meshes: **0 coincident triangles** across four seeds (was 11.4%).
 - Traffic mode: 43 near misses detected in a 3-minute run (37 oncoming), closest
   1.07 m; scoring curve, oncoming bonus, chain build/decay/refill and cooldown
   all verified.
-- **39 DOM ids and 13 toggled classes** resolve against `index.html` — the only
+- **40 DOM ids and 14 toggled classes** resolve against `index.html` — the only
   guard there is against a typo silently killing a button.
+- Both paint slots and both lamp pairs populated on all 9 cars; the second
+  colour carries 8–34% of a car's triangles.
 - All 18 modules parse; config audit clean.
 - `engine_sim`'s own suites still pass (166 checks + the driving suite).
 
@@ -741,6 +854,11 @@ collision surface — but nobody has looked at a portal.
     blur-on-release handlers.
 14. `assets/` is **user-supplied**. Never regenerate, never overwrite.
 15. **Never ray-probe on the mesh lattice.** §7, harness bugs.
+16. **Overriding `_stepVehicle` blinds engine_sim's clutch to load.** Anything
+    in that project which regulates on road speed is reasoning about a car it
+    cannot see. Bug #42 is the first case; assume it is not the last.
+17. **No width breakpoints in `index.html`.** §4.13. Adding one puts the file
+    back on the road to bug #45.
 
 ---
 
@@ -768,6 +886,8 @@ npm run probe
 | `probe/tunmesh.mjs` | Coincident faces and spurious portal rings. |
 | `probe/score.mjs` | The near-miss mechanic, without physics. |
 | `probe/ui.mjs` | Every DOM id a module reads exists; every class it toggles is styled. |
+| `probe/paint.mjs` | Both paint slots and both lamp pairs got triangles, on every car. |
+| `probe/uishot.mjs` | **What the interface looks like**, at twelve real device viewports, plus an overflow report. Not in `npm run probe` — needs a local Chrome. |
 | `probe/drive.mjs` | End-to-end: real car, real physics, real engine_sim, real traffic. |
 
 Each takes an optional seed as the first argument. `drive.mjs` also takes a

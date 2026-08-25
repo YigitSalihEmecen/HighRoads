@@ -278,20 +278,44 @@ export const VEHICLE = {
    * than something that happens to you. 1.32 sits between the two: enough
    * falloff that the limit is still something you can feel arriving, enough
    * grip past it that the car does not simply leave.
+   *
+   * Now 1.22, which keeps 94%. At 1.32 the tyre still shed 11% of its grip the
+   * moment it went past the peak, and because the rear axle reaches the peak
+   * first under power that loss arrives as the back of the car leaving — the
+   * "lost it out of nowhere" the car was being criticised for. Losing 6%
+   * instead leaves the limit something you can feel arriving and then drive
+   * through, which is the whole point of using a Magic Formula rather than a
+   * friction cone.
    */
-  tyreShape: 1.32,
-  corneringStiffnessFront: 14, // B — peak near 7.6 deg: crisp turn-in
-  corneringStiffnessRear: 11.5,// softer rear: slip builds progressively
-  /** Rear peak grip > front, so the front washes out first (safe understeer). */
-  rearGripBias: 1.02,
+  tyreShape: 1.22,
+  corneringStiffnessFront: 15,  // B — peak near 7.1 deg: crisp turn-in
+  /**
+   * The rear used to be much softer than the front (11.5 against 14), which
+   * reads as a rear axle that takes its time deciding — the car rotates well
+   * past where the driver aimed it before the back tyres have built the force
+   * to stop it. Closing the gap makes the rear answer nearer the front's
+   * timing, so the car settles into a corner instead of continuing to swing.
+   */
+  corneringStiffnessRear: 13.0,
+  /**
+   * Rear peak grip > front, so the front washes out first (safe understeer).
+   * 1.07 rather than 1.02: understeer you can see coming and lift out of is a
+   * mistake with a way back, and oversteer at 200 km/h is not.
+   */
+  rearGripBias: 1.07,
   /** Below this speed band, slip angle is meaningless; blend to velocity-cancelling. */
   slipBlendSpeed: [0.6, 3.5],
   /**
    * Traction control: how far drive torque may exceed the friction left over
    * after cornering. 1.0 would be a perfect nanny; 1.4 still allows wheelspin
    * and power-on rotation but stops a stab of throttle ending in a spin.
+   *
+   * 2.0 rather than 2.4. A stab of throttle mid-corner was still enough to
+   * break the rear axle away in one step, which is the single most common way
+   * the car was being lost. The margin is still well clear of 1.0, so wheelspin
+   * and power-on rotation both survive — they just have to be asked for.
    */
-  tractionControl: 2.4,
+  tractionControl: 2.0,
 
   /** Effective mass per tyre for the low-speed velocity-cancelling fallback. */
   lateralGripMass: 0.30,
@@ -301,7 +325,7 @@ export const VEHICLE = {
    * Tyre forces are applied this far above the contact patch. Real weight
    * transfer stays, but the roll moment shrinks enough to stop silly flips.
    */
-  frictionAnchorLift: 0.22,
+  frictionAnchorLift: 0.24,
   rollingResistance: 320,
   /**
    * Surface drag off the asphalt. Grass and gravel both rob rolling resistance
@@ -348,8 +372,18 @@ export const VEHICLE = {
    */
   minSteer: 0.075,
   steerGripMargin: 1.6,
-  steerRate: 6.2,          // rad/s toward full lock
-  steerReturnRate: 8.0,    // rad/s back to centre when input released
+  /**
+   * Slew rates toward full lock and back to centre, rad/s.
+   *
+   * Down from 6.2 / 8.0. These are most of what "weight" means for a car you
+   * steer with a key or a thumb: a digital input snapped to full lock in
+   * 94 ms gives a car that darts, and darting is indistinguishable from
+   * twitchiness at speed. 5.0 puts full lock 200 ms away, which is about how
+   * long a real driver's hands take, and the lock still opens on the same curve
+   * so nothing about catching a slide changes.
+   */
+  steerRate: 5.0,          // rad/s toward full lock
+  steerReturnRate: 6.6,    // rad/s back to centre when input released
 
   // ----------------------------------------------------------- powertrain --
   /**
@@ -380,7 +414,14 @@ export const VEHICLE = {
    * property of the car, not of a solver setting.
    */
   linearDamping: 0.0,
-  angularDamping: 0.30,
+  /**
+   * Angular damping, 1/s. Raised from 0.30: it is a first-order resistance to
+   * being rotated at all, so it reads directly as mass in the body rather than
+   * as a correction — the car stops pivoting the instant the steering asks and
+   * starts taking a moment to come round. It is small enough that a deliberate
+   * slide still happens; it is the flick that it takes the edge off.
+   */
+  angularDamping: 0.45,
   /** Self-righting torque so a bad landing doesn't end the run. */
   uprightTorque: 5.5,
   /** Pitch/yaw authority while airborne. */
@@ -406,9 +447,22 @@ export const VEHICLE = {
    * and the strength is less than half, so it is a net that catches a genuine
    * spin rather than a hand on the wheel.
    */
-  driftAngle: 0.62,        // ~36 deg — a real slide, and entirely the driver's
-  spinAngle: 1.25,         // ~72 deg — past here the car is going round
-  spinRecovery: 1.3,       // damper strength, N·m·s per rad/s per kg
+  /**
+   * Now 29 deg / 60 deg at strength 1.9, from 36 / 72 at 1.3.
+   *
+   * Bug #38 pulled this band deliberately late because at 23 deg and strength
+   * 3.0 the assist was straightening the car out from under the driver. That
+   * was right, and it went one stop too far: at 36 deg the net only catches a
+   * car that is already most of the way round, so everything between an
+   * ordinary slide and a spin was unassisted and a mistake there was
+   * unrecoverable. Measured, a provoked spin took 2.54 s and 167 deg to arrest.
+   * 29 deg is still past anything ordinary cornering reaches — the tyres peak
+   * around 7 deg of slip — so a held drift is untouched, but the net is now
+   * under the part of the range where the car was actually being lost.
+   */
+  driftAngle: 0.50,        // ~29 deg — past any ordinary slide
+  spinAngle: 1.05,         // ~60 deg — past here the car is going round
+  spinRecovery: 1.9,       // damper strength, N·m·s per rad/s per kg
 
   /**
    * Chassis slip angles over which the steering lock opens beyond the
