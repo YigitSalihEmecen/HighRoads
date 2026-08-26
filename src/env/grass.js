@@ -86,7 +86,7 @@ import { makeCanvas, rng } from './textures.js';
  * placement path without ever needing pixels, and everything downstream treats
  * a missing map as "untextured", not as an error.
  */
-function bladeTexture(size, blades) {
+function bladeTexture(size, blades, opts = {}) {
   const target = makeCanvas(size);
   if (!target) return null;
   const { canvas, ctx } = target;
@@ -95,16 +95,34 @@ function bladeTexture(size, blades) {
 
   // Deterministic: the same card every session, so nothing about the look
   // depends on which frame the texture happened to be built on.
-  const rnd = rng(0x9e3779b9);
+  const rnd = rng(opts.seed || 0x9e3779b9);
+  // `long` is the woodland-floor card: every blade reaches most of the way up,
+  // leaning further and bowing harder. Roadside rough is short and dense
+  // because it is grazed; what grows in a wood is tall and floppy, and drawing
+  // it with the same card at a bigger scale gives coarse roadside grass rather
+  // than a different plant.
+  //
+  // The blades are WIDER than the roadside card's, not narrower. The first
+  // version halved the root width on the reasoning that long grass is fine, and
+  // the tier photographed as a clump of black bristles: a card is read as a
+  // surface only when its blades close up, and at 2 m tall a thin blade is a
+  // hair with a gap either side of it.
+  const long = !!opts.long;
+  const tipLo = long ? 0.02 : 0.06;
+  const tipHi = long ? 0.16 : 0.42;
+  const leanK = long ? 0.52 : 0.34;
+  const bowK = long ? 0.34 : 0.22;
+  const rootLo = long ? 0.038 : 0.030;
+  const rootHi = long ? 0.030 : 0.026;
 
   for (let i = 0; i < blades; i++) {
     // Spread across the card with jitter, so the blades are not a comb.
     const x = ((i + 0.5) / blades + (rnd() - 0.5) * 0.5) * size;
-    const rootW = size * (0.030 + rnd() * 0.026);
+    const rootW = size * (rootLo + rnd() * rootHi);
     // Tall blades reach the top of the card; short ones fill the gaps between.
-    const tipY = size * (0.06 + rnd() * 0.42);
-    const lean = (rnd() - 0.5) * size * 0.34;
-    const bow = (rnd() - 0.5) * size * 0.22;
+    const tipY = size * (tipLo + rnd() * tipHi);
+    const lean = (rnd() - 0.5) * size * leanK;
+    const bow = (rnd() - 0.5) * size * bowK;
 
     const tipX = x + lean;
     const midX = x + lean * 0.35 + bow;
@@ -127,6 +145,11 @@ function bladeTexture(size, blades) {
     // the ground colour — so a field read as a dark stripe along the verge
     // rather than as grass growing out of it. Ambient occlusion in a sward is
     // real but gentle.
+    // The SAME luminance as the roadside card, and deliberately so. Woodland
+    // grass is in shade, but the shade is already in the ground colour the
+    // instance takes and in the tint `chunks.js` applies — darkening the card
+    // as well multiplies two occlusion terms together and the tier comes out
+    // black. That is bug #52, which cost the near tier its first render.
     const root = Math.round(255 * 0.55 * v);
     const tip = Math.round(255 * v);
     g.addColorStop(0, `rgb(${root},${root},${root})`);
@@ -308,8 +331,24 @@ export function createGrassAssets({ anisotropy = 1 } = {}) {
   const map = bladeTexture(GRASS.textureSize, GRASS.bladesPerCard);
   if (map) map.anisotropy = anisotropy;
 
+  // The woodland floor gets its own card, not a scaled copy of the roadside
+  // one. See `bladeTexture`: it is a different plant, and at 2 m tall the
+  // difference is the whole point of having a third tier at all.
+  const woodMap = GRASS.wood.enabled
+    ? bladeTexture(GRASS.textureSize, GRASS.wood.bladesPerCard,
+      { long: true, seed: 0x6c1f0a3d })
+    : null;
+  if (woodMap) woodMap.anisotropy = anisotropy;
+
   const near = grassMaterial(map, [GRASS.fadeStart, GRASS.fadeEnd], null);
   const far = grassMaterial(map, GRASS.far.fadeOut, GRASS.far.fadeIn);
+  // Gated on the CONFIG, never on whether the texture exists. `bladeTexture`
+  // returns null wherever there is no 2D canvas, which is every headless probe
+  // — so keying the tier off the map made the whole woodland floor invisible to
+  // measurement while it rendered fine in a browser. `src/env/README.md` rule 2.
+  const wood = GRASS.wood.enabled
+    ? grassMaterial(woodMap, GRASS.wood.fadeOut, null)
+    : null;
 
   return {
     geometry,
@@ -317,16 +356,21 @@ export function createGrassAssets({ anisotropy = 1 } = {}) {
     material: near.material,
     /** The middle distance: large cards, sparse, out to `GRASS.far.halfExtent`. */
     farMaterial: far.material,
+    /** Long shade grass, under the canopy only. Null when switched off. */
+    woodMaterial: wood ? wood.material : null,
     /** Advances the wind. Seconds since the run began. */
     setTime(t) {
       near.uniforms.uTime.value = t;
       far.uniforms.uTime.value = t;
+      if (wood) wood.uniforms.uTime.value = t;
     },
     dispose() {
       geometry.dispose();
       near.material.dispose();
       far.material.dispose();
+      if (wood) wood.material.dispose();
       if (map) map.dispose();
+      if (woodMap) woodMap.dispose();
     },
   };
 }

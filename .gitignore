@@ -1,4 +1,5 @@
 node_modules
+style_examples
 package-lock.json
 .DS_Store
 dist

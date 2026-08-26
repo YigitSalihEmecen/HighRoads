@@ -588,19 +588,18 @@ export const CHUNK = {
 };
 
 /**
- * The canopy — see `src/env/trees.js` and `src/foliage.js`.
+ * The canopy — see `src/env/trees.js`, `src/env/lowpoly.js` and `src/foliage.js`.
  *
- * Trees used to be OFF, and the note that switched them off is worth keeping
- * because it is the specification this block satisfies: 468 instances of the
- * Quaternius pack measured **1,030,000 triangles**, 90% of the geometry on
- * screen against 109,000 for the whole terrain sheet, and bought 10.3 trees per
- * hectare where real woodland carries 200 to 1,000. It said the way out was
- * "distant trees as impostors rendered once per species at boot, which is what
- * makes thousands affordable where hundreds are not". That is what this is.
+ * Trees used to be OFF, and the note that switched them off is the
+ * specification this block still satisfies: 468 instances of the Quaternius
+ * pack measured **1,030,000 triangles**, 90% of the geometry on screen against
+ * 109,000 for the whole terrain sheet, and bought 10.3 trees per hectare where
+ * real woodland carries 200 to 1,000.
  *
- * The budget now: a near tree is 160-360 triangles of grown geometry, an
- * impostor is 4, and the numbers below hold the whole canopy to roughly twice
- * the terrain sheet.
+ * The budget now: a near tree is a faceted solid of 110-330 triangles and a far
+ * one is the SAME BUILDER at a lower subdivision, 25-45. Both tiers are opaque,
+ * untextured and single-sided; there is no atlas and no billboard left in the
+ * canopy at all.
  */
 export const TREES = {
   enabled: true,
@@ -609,7 +608,7 @@ export const TREES = {
    * Geometries built per species at boot, and species drawn per chunk.
    *
    * BOTH ARE DRAW-CALL DECISIONS, not look ones. An InstancedMesh exists per
-   * (chunk, geometry), so `picks * 2` (near plus impostor) is the batch count a
+   * (chunk, geometry), so `picks * 2` (near plus far) is the batch count a
    * chunk costs before a single tree is shaded. Six species from a table of
    * eight, one variant of each, chosen from the chunk's own index: neighbouring
    * chunks draw different things, a chunk unloaded and reloaded comes back
@@ -621,60 +620,70 @@ export const TREES = {
   variants: 3,
   picks: 6,
 
-  /** Atlas sizes. Bark and three leaf masses; then one silhouette per species. */
-  textureSize: 512,
-  impostorTextureSize: 512,
+  /**
+   * How far a single face's colour may stray from its palette, +/-.
+   *
+   * The whole low-poly read is that neighbouring facets of one lump are not
+   * quite the same colour. Zero here and a crown is a smooth object with hard
+   * creases drawn on it; much over 0.1 and it is television static.
+   */
+  faceJitter: 0.075,
 
   /**
-   * Where the grown mesh hands over to the impostor, metres of camera distance.
+   * How much bigger a far tree's lumps are, as an exponent on the count ratio.
+   *
+   * A far crown has two lumps where a near one has five or six, and if they are
+   * the same size the far tree is a SMALLER tree — which is exactly the "they
+   * scale down as I get close" complaint the whole rewrite exists to answer.
+   * Under a half because the lumps overlap, so covered volume grows faster than
+   * the count: 0.42 matches the two silhouettes to within a few per cent.
+   */
+  lodGrow: 0.42,
+
+  /**
+   * Where the near tier hands over to the far one, metres of camera distance.
    *
    * The near tier shrinks out over EXACTLY the same window the far tier grows
-   * in over, and that is deliberate: `1 - smoothstep(a,b)}` and
-   * `smoothstep(a,b)}` are complementary, so a tree's total scale never
-   * changes as it crosses the band — it is one full tree the whole way
-   * through. When the two windows differed (near 55-95, far 45-80) a tree
-   * swelled by ~40% where both tiers were present, then shrank back as the
-   * near tier finished leaving — a de-grow/regrow right beside the player.
+   * in over, and that is deliberate: `1 - smoothstep(a,b)` and `smoothstep(a,b)`
+   * are complementary, so a tree's total scale never changes as it crosses the
+   * band — it is one full tree the whole way through. When the two windows
+   * differed (near 55-95, far 45-80) a tree swelled by ~40% where both tiers
+   * were present, then shrank back — a de-grow/regrow right beside the player.
    *
-   * The band itself sits at 260-420 m: the grown mesh is what reads as "a tree",
-   * so it owns the whole near field, and the card takes over across the same
-   * window the fog starts doing its work, keeping the look honest about the
-   * haze the world now ends in.
+   * Since both tiers are now the same builder at different subdivisions, and
+   * `env/trees.js:matchWidth` makes their crowns the same width to within 2%,
+   * the handover is a change of face count and nothing else.
    */
   lodFade: [260, 420],
   farFadeIn: [260, 420],
   /**
-   * And where the impostors stop.
+   * And where the far tier stops.
    *
-   * They live and die with their chunk out to `CHUNK.ahead`, and that edge is
-   * folded into the fog: the cards shrink back out over 620-720 m — a band the
-   * fog has already rendered to under a tenth of its colour by the far end —
-   * so what kills a tree is the haze, never a pop when its chunk leaves the
+   * It lives and dies with its chunk out to `CHUNK.ahead`, and that edge is
+   * folded into the fog: far trees shrink back out over 620-720 m — a band the
+   * fog has already rendered to under a tenth of its colour by the far end — so
+   * what kills a tree is the haze, never a pop when its chunk leaves the
    * window.
    */
   farFade: [620, 720],
 
   /**
-   * Fade-in for an impostor that has NO grown mesh behind it, metres.
+   * Fade-in for a far tree that has NO near mesh behind it, metres.
    *
-   * `nearCap` and `farCap` are not the same number and cannot be: a grown tree
-   * is 563 triangles and an impostor is 4, so a chunk affords 130 of the first
-   * and 760 of the second. That is a five-to-one density difference between
+   * `nearCap` and `farCap` are not the same number and cannot be: a near tree
+   * is 217 triangles and a far one is 51, so a chunk affords 180 of the first
+   * and 760 of the second. That is a four-to-one density difference between
    * what the distance shows and what arrives, and with one fade window for
-   * both, six hundred and thirty trees per chunk shrank into the ground as the
-   * player drove at them — the wood visibly thinning from the inside out. It is
-   * the most obvious thing wrong with the canopy and it reads as the LOD being
-   * broken, which it was.
+   * both, the surplus shrank into the ground as the player drove at it — the
+   * wood visibly thinning from the inside out, which reads as the LOD being
+   * broken, and was.
    *
    * The surplus can only be honest about being a distance effect: it appears
-   * where a 20 m tree is a few per cent of the screen and no one can see it
-   * arrive, and the paired impostors — the ones with somewhere to hand over
-   * to — pick the tree up in the `farFadeIn` window. Density falling off with
-   * distance is standard and invisible; density falling off at forty-five
-   * metres is neither.
-   *
-   * Sits just inside the chunk edge so the far density ramp has the last of
-   * the window to work with, after the paired cards are already up.
+   * where a 20 m tree is a few per cent of the screen and nobody can see it
+   * arrive, and the paired far trees — the ones with somewhere to hand over
+   * to — pick the tree up in the `farFadeIn` window instead. Density falling
+   * off with distance is standard and invisible; density falling off at
+   * forty-five metres is neither.
    */
   loneFadeIn: [480, 660],
 
@@ -682,28 +691,34 @@ export const TREES = {
    * Scatter attempts per chunk, and the caps on what survives.
    *
    * `samples` is an ASK. Most attempts are rejected — by slope, by the tree
-   * line, by the stand mask, by the species' own habitat — so the surviving
-   * count is always well under it and depends on the terrain, exactly as
-   * `GRASS.density` does. The caps are the triangle budget and they are what
-   * actually binds: `nearCap` x ~250 triangles is the per-chunk canopy cost.
+   * line, by the stand mask, by the species' own habitat, and now by crown
+   * spacing — so the surviving count is always well under it and depends on the
+   * terrain, exactly as `GRASS.density` does. The caps are the triangle budget
+   * and they are what actually binds: `nearCap` x ~217 triangles is the
+   * per-chunk canopy cost.
+   *
+   * `nearCap` went 130 -> 180 with the switch to faceted solids, which took a
+   * near tree from 563 triangles to 217. Denser is also more necessary than it
+   * was: a solid crown occludes what is behind it, so a stand that read as full
+   * when it was made of alpha cards reads as sparse when it is made of lumps.
    */
-  samples: 1600,
-  nearCap: 130,
+  samples: 2000,
+  nearCap: 180,
   farCap: 760,
 
   /**
-   * Chunks either side of the car that carry the GROWN canopy.
+   * Chunks either side of the car that carry the NEAR canopy.
    *
-   * The impostors live as long as their chunk, out to 480 m ahead; the grown
-   * mesh lives only as long as it can be resolved, which `lodFade` puts at
-   * 360 m. Building the grown mesh with the chunk would submit every chunk's
-   * tree geometry at once — 520,000 triangles alive to render 110,000 of
-   * them, the rest scaled to nothing by the shader and still costing a vertex
-   * each — so the grown window is kept to exactly the handover it needs.
+   * The far tier lives as long as its chunk, out to 480 m ahead; the near mesh
+   * lives only as long as it can be resolved, which `lodFade` puts at 420 m.
+   * Building the near mesh with the chunk would submit every chunk's tree
+   * geometry at once — most of it scaled to nothing by the shader and still
+   * costing a vertex each — so the near window is kept to exactly the handover
+   * it needs.
    *
-   * `ahead` covers the handover's outer edge (4 chunks = 480 m) and `behind`
-   * a margin behind the car so a tree passed at speed is still a grown tree
-   * while it recedes.
+   * `ahead` covers the handover's outer edge (4 chunks = 480 m) and `behind` a
+   * margin behind the car, so a tree passed at speed is still a near tree while
+   * it recedes.
    */
   behind: 2,
   ahead: 4,
@@ -725,8 +740,81 @@ export const TREES = {
    */
   clusterCount: 9,
   clusterShare: 0.72,
-  clusterRadius: [16, 46],
   clusterSpecies: 0.8,
+
+  /**
+   * What weight a GUILD-MATE keeps inside another species' stand. Anything from
+   * a different guild is excluded outright — see `chunks.js:_buildProps`.
+   *
+   * The rule this replaces left any off-species tree at 0.32 of its weight, so
+   * about one tree in six of a bright birch copse came out a dark conifer,
+   * which is the single most obviously wrong thing the old woods did. A birch
+   * wood does carry the odd aspen; it does not carry a spruce.
+   */
+  clusterMix: 0.22,
+
+  /**
+   * Stand radius, metres, drawn on a POWER LAW rather than uniformly.
+   *
+   * `r = lo * (hi/lo)^(u^2)`, so most stands come out near the bottom of the
+   * range and a few reach the top. A uniform draw over a narrow range gave nine
+   * copses all much the same size, which reads as a texture; a landscape has
+   * mostly thickets with the occasional real wood among them.
+   */
+  clusterRadius: [11, 78],
+
+  /**
+   * How hard a stand thins toward its rim. Acceptance is `1 - (d/r)^falloff`.
+   *
+   * Below 1 the stand has a wall round it. Above about 2 it is a smear with no
+   * edge at all. 1.6 leaves a stand with a definite outline and a fringe.
+   */
+  clusterFalloff: 1.6,
+
+  /**
+   * Crown spacing: two crowns may overlap by this much of their combined radii
+   * before the second is rejected. Grid cell must exceed the widest pair.
+   *
+   * This exists because of the switch to solid geometry. Two interpenetrating
+   * alpha cards were invisible; two interpenetrating faceted crowns are the
+   * most obvious artefact in the scene. 0.5 is roughly what a closed canopy
+   * does — the crowns touch and merge, they do not occupy each other.
+   */
+  crownGap: 0.5,
+  spacingCell: 14,
+
+  /**
+   * Age structure inside a stand, and it is worth two numbers because a wood
+   * whose trees are all one size reads as planted no matter how it is placed.
+   *
+   * `vigour` is the fraction of full height a tree loses at the rim of its
+   * stand — the middle is oldest because it grew first. `saplings` is the share
+   * of the whole draw taken down to a third height wherever it lands, which is
+   * the regeneration underneath.
+   */
+  vigour: 0.42,
+  saplings: 0.18,
+
+  /**
+   * Chance a placed tree gets a second (and sometimes third) stem from the same
+   * stool, touching, same species, shorter.
+   *
+   * Every reference image of a low-poly wood has them. They skip the spacing
+   * check on purpose: touching is the whole idea.
+   */
+  coppice: 0.14,
+
+  /**
+   * How much of the ground's own colour a tree takes, and how much one tree
+   * differs from the next. Both apply to a per-instance modulation near 1.0.
+   *
+   * The hue is in the GEOMETRY now — one palette per variant, see
+   * `foliage.js:TREE_FORMS` — so this is no longer where a tree gets its
+   * colour. Taking the ground colour raw, which is what it used to do, flattens
+   * the palettes back into mud.
+   */
+  groundTint: 0.16,
+  instanceVary: 0.14,
   /** Sharpens stand edges — the density is squared, then scaled by this. */
   standBias: 2.7,
 
@@ -792,21 +880,41 @@ export const BUSHES = {
 
   variants: 3,
   picks: 2,
-  textureSize: 256,
 
   /**
    * Camera distance over which a shrub shrinks away, metres.
    *
-   * Much shorter than the canopy's, and there is no impostor tier: a bush is
-   * already four to eight triangles, and a four-triangle stand-in for a
-   * four-triangle object is not a saving. Past 105 m the ground detail texture
-   * and the far grass tier carry the middle distance.
+   * Much shorter than the canopy's, and there is no second tier: a bush is
+   * already about forty triangles, and a cheap stand-in for that is not a
+   * saving. Past 105 m the ground detail texture and the far grass tier carry
+   * the middle distance.
    */
   fade: [70, 105],
 
-  /** Attempts per chunk and the cap on survivors. Mean 12 triangles each. */
-  samples: 1150,
-  cap: 450,
+  /**
+   * Attempts per chunk and the cap on survivors.
+   *
+   * The cap came down twice with the switch from cards to faceted lumps: a
+   * shrub went from a mean of 12 triangles to 45 as crystals and then to 87 as
+   * rounded domes, which is what it takes to read as foliage rather than as
+   * broken rock (see `env/bushes.js`). The per-chunk cost is roughly where it
+   * started. The coverage is not: a solid lump reads at three times the
+   * distance a card does, so fewer of them is not fewer of them.
+   */
+  samples: 900,
+  cap: 150,
+
+  /**
+   * Thicket seeds per chunk, the share of shrubs drawn near one, and their
+   * radius in metres.
+   *
+   * The EDGE signal in `foliage.js` already puts scrub where woodland thins,
+   * but it puts it there EVENLY, and an even scatter along a wood's fringe is a
+   * hedge. Real scrub goes in patches with bare ground between them.
+   */
+  clusterCount: 5,
+  clusterShare: 0.62,
+  clusterRadius: [7, 30],
 
   /** Lighter than the canopy: a shrub is stiff and close to the ground. */
   windStrength: 0.18,
@@ -930,6 +1038,55 @@ export const GRASS = {
   /** Blades drawn into one card, and the card texture's size in pixels. */
   bladesPerCard: 7,
   textureSize: 256,
+
+  /**
+   * The THIRD tier: the woodland floor.
+   *
+   * What grows under a canopy is not roadside rough at a bigger scale — it is a
+   * different plant. Tall, sparse, floppy, dark, and it only exists where there
+   * is a canopy over it, which is why it hangs off `vegetation()`'s `floor`
+   * signal rather than off `ground`. `ground` is thinned BY shade and is the
+   * meadow; `floor` is what replaces the meadow once the shade closes over.
+   *
+   * Without it a wood is trees standing on a lawn, and the lawn is the giveaway:
+   * `TREES.shadeFloor` keeps a quarter of the meadow sward under a closed canopy
+   * so the stand does not draw its own outline in bare earth, and a quarter of a
+   * mown-looking sward still looks mown.
+   *
+   * Near-field only. At 2 m it is taller than the roadside grass, so it needs
+   * the shorter window rather than the longer one — a 2 m card at 150 m is
+   * still only three pixels, and there are trees in front of it.
+   */
+  wood: {
+    enabled: true,
+    behind: 1,
+    ahead: 1,
+    /** Lateral band, metres. Trees start at `CHUNK.plantClear`; this follows. */
+    halfExtent: 120,
+    /** Tufts per square metre asked, before `floor` scales it down. */
+    density: 1.35,
+    /** Height range, metres. Waist to chest — this is what a wood floor has. */
+    height: [1.1, 2.4],
+    /**
+     * Nearly square, like the roadside card. 0.62 was tried first, on the
+     * reasoning that long grass hangs — and a tall narrow card with sparse
+     * blades on it is a bristle, not a plant. What makes cards read as a
+     * surface is that neighbours OVERLAP, and that is a width decision.
+     */
+    widthRatio: 0.82,
+    /**
+     * Still brighter than the ground it stands on, as all ground cover is.
+     * Lower than the meadow's 1.20-1.55 because a wood floor is not lit like a
+     * field — but not below 1, which was the first attempt and came out black:
+     * the shade is ALREADY in the ground colour this multiplies. Bug #52.
+     */
+    lift: [1.02, 1.28],
+    /** As many blades as the roadside card; they are just longer and floppier. */
+    bladesPerCard: 7,
+    /** Shrinks out here. Short, because trees occlude it and it is not cheap. */
+    fadeOut: [78, 118],
+    maxSlope: 1.2,
+  },
 
   /**
    * The SECOND tier: the middle distance.
@@ -1079,6 +1236,31 @@ export const ROCKS = {
   /** Relative weight of each class on ordinary ground, and on a cut face. */
   mix: { scree: 0.62, stone: 0.31, boulder: 0.07 },
   screeMix: { scree: 0.86, stone: 0.13, boulder: 0.01 },
+
+  /**
+   * Stone hues, one drawn per instance and multiplied by a brightness jitter.
+   *
+   * STONE DOES NOT TAKE THE GROUND'S COLOUR, and it is the one thing in
+   * `src/env/` that does not — rule 5 of `src/env/README.md` has a carve-out
+   * for it. Grass and foliage are the ground's own colour because they grow out
+   * of it and a green tuft on a grey scree slope is wrong; a rock is mineral,
+   * it does not photosynthesise, and taking the verge's green gave the whole
+   * shoulder a mossy tint that read as algae.
+   *
+   * The luminance still lives in the geometry (`env/rocks.js` builds grey
+   * vertex colours), so this is a hue and the shading is not baked into it.
+   */
+  palette: [
+    [0.55, 0.55, 0.55],  // medium granite grey
+    [0.62, 0.60, 0.58],  // light warm granite
+    [0.46, 0.46, 0.47],  // cool slate
+    [0.52, 0.47, 0.40],  // earthy warm stone
+    [0.43, 0.39, 0.34],  // dark earth stone
+    [0.64, 0.61, 0.55],  // sandy limestone
+    [0.35, 0.34, 0.33],  // charcoal basalt
+  ],
+  /** Per-instance brightness jitter around the palette entry. */
+  shade: [0.85, 1.15],
 
   /**
    * Size classes. `detail` is the icosahedron subdivision — 0 is 20 triangles,
@@ -1910,29 +2092,47 @@ export const TERRAIN_COLORS = {
 /* =============================================================== graphics == */
 
 /**
- * The three levels of graphical fidelity, chosen from the title screen..
+ * The three levels of graphical fidelity, chosen from the title screen or the
+ * settings panel.
  *
  * The override below REWRITES parts of the config objects above before anyone
- * has built an atlas or a shader, which is the only honest way to change what
+ * has built a geometry or a shader, which is the only honest way to change what
  * the world is made of: materials bake their fade windows and the asset
- * libraries bake their densities at boot, so a mid-run tweak would be half-
+ * libraries bake their densities at boot, so a mid-run tweak would be half
  * applied. Changing the level therefore saves it and reloads the page; the
- * fresh boot comes up configured. Important controls stay readable on all
- * levels, and `probe/props.mjs` runs at High because Node has no storage.
+ * fresh boot comes up configured. `probe/props.mjs` runs at High, because Node
+ * has no storage.
  *
- *   HIGH    the current defaults — dense worlds, long draw distance.
- *   MEDIUM  fewer trees, tufts, shrubs and stones, and half the draw distance.
- *   LOW     no grass, shrubs or rocks at all; trees as their blobby silhouette
- *           cards only (no grown geometry), with a short draw distance.
+ *   HIGH    the current defaults — dense woods, long draw distance.
+ *   MEDIUM  half the draw distance, and about half of everything in it.
+ *   LOW     the FAR TIER ONLY — no near canopy, no grass, no shrubs, no stone —
+ *           at the shortest draw distance.
+ *
+ * ── what Low means now ─────────────────────────────────────────────────────
+ *
+ * It used to mean "trees as their blobby silhouette cards only", because the
+ * far tier was a painted billboard. There are no billboards left: both tiers
+ * are faceted solids from the same builder, and the far one is a fifth of the
+ * triangles at the same silhouette. So Low is no longer a different-looking
+ * world with the detail removed — it is the same world drawn at the
+ * subdivision the distance tier already uses, all the way to the bonnet. That
+ * is a much better Low than the old one and it is the rewrite that paid for it.
  */
 export const GRAPHICS_LEVELS = ['high', 'medium', 'low'];
 
 const GRAPHICS_KEY = 'highroads.graphics';
 
 export function graphicsLevel() {
-  if (typeof localStorage === 'undefined') return 'high';
-  const v = localStorage.getItem(GRAPHICS_KEY);
-  return GRAPHICS_LEVELS.includes(v) ? v : 'high';
+  // Wrapped, not guarded on `typeof`: Node exposes a `localStorage` global that
+  // THROWS unless the process was started with a store, so a `typeof` check
+  // passes and the call still takes the probes down. A private browser window
+  // does the same thing by a different route.
+  try {
+    const v = localStorage.getItem(GRAPHICS_KEY);
+    return GRAPHICS_LEVELS.includes(v) ? v : 'high';
+  } catch (err) {
+    return 'high';
+  }
 }
 
 export function setGraphicsLevel(level) {
@@ -1951,11 +2151,15 @@ function applyGraphics() {
     ATMOSPHERE.fogDensity = 0.0034;
     CAMERA.far = 1000;
 
-    // A thinner illusion all round: fewer trees of either tier, fewer species.
-    TREES.samples = 900;
-    TREES.nearCap = 88;
-    TREES.farCap = 470;
+    // A thinner wood all round: fewer trees of either tier, fewer species.
+    // `farCap` falls further than `nearCap` does, because a far tree is no
+    // longer four triangles — it is fifty, and there are five of them for every
+    // near one over two more chunks.
+    TREES.samples = 1200;
+    TREES.nearCap = 95;
+    TREES.farCap = 380;
     TREES.picks = 4;
+    TREES.ahead = 3;
     TREES.farFade = [430, 470];
     TREES.loneFadeIn = [300, 460];
 
@@ -1964,7 +2168,7 @@ function applyGraphics() {
     GRASS.far.ahead = 4;
     GRASS.far.fadeOut = [300, 460];
     BUSHES.samples = 600;
-    BUSHES.cap = 260;
+    BUSHES.cap = 110;
     ROCKS.samples = 2200;
   } else if (level === 'low') {
     // The shortest draw distance, and a fog that ends it invisibly.
@@ -1977,12 +2181,13 @@ function applyGraphics() {
     BUSHES.enabled = false;
     ROCKS.enabled = false;
 
-    // Trees as blobby impostor cards only: no grown geometry, no grown
-    // canopy windows, and the cards appear right at the roadside so there is
-    // no "high-res tree" tier left to be missing.
-    TREES.samples = 700;
+    // The far tier, all the way in. `nearCap` at 0 switches the grown-canopy
+    // window off entirely — no near meshes are ever built, so `behind`/`ahead`
+    // stop meaning anything — and the fade windows bring the cheap tier right
+    // up to the roadside so there is no missing tier to notice.
+    TREES.samples = 900;
     TREES.nearCap = 0;
-    TREES.farCap = 500;
+    TREES.farCap = 300;
     TREES.picks = 4;
     TREES.behind = 1;
     TREES.ahead = 0;

@@ -26,6 +26,19 @@ import { CAM_MODES } from './camera.js';
 import { GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel } from './config.js';
 
 /**
+ * One line per level, and they have to stay true to `config.js:applyGraphics`.
+ *
+ * The old Low said "silhouette cards only", which stopped being true when the
+ * canopy became faceted solids: there are no cards left, and Low is now the
+ * same trees drawn at the subdivision the distance already uses.
+ */
+const GFX_NOTES = {
+  high: 'Dense woods, grass, shrubs and stone. Longest draw distance.',
+  medium: 'Half the draw distance, about half the scenery in it.',
+  low: 'Simplified trees only — no grass, shrubs or stone. Shortest draw distance.',
+};
+
+/**
  * The buses worth a slider.
  *
  * `mechanical` is not one of them. It is band-passed pink noise standing in for
@@ -179,6 +192,14 @@ export class Settings {
     });
     this.body.appendChild(seg);
 
+    // What the level actually does, in one line, updated by `refresh`. The
+    // segmented switch says High/Medium/Low and nothing else, and "Low" alone
+    // does not tell a player whether they are giving up draw distance, density
+    // or detail. All three, but in different proportions — see `config.js`.
+    this.gfxNote = document.createElement('div');
+    this.gfxNote.className = 'row-hint';
+    this.body.appendChild(this.gfxNote);
+
     this._section('Driving');
     this.autoBtn = this._button('Gearbox: auto', () => {
       this.game.setAutoShift(!pt.autoShift);
@@ -240,6 +261,7 @@ export class Settings {
       const seg = this.gfxBtns[0].el.parentElement;
       seg.dataset.active = String(GRAPHICS_LEVELS.indexOf(lvl));
       for (const g of this.gfxBtns) g.el.setAttribute('aria-pressed', String(g.lvl === lvl));
+      if (this.gfxNote) this.gfxNote.textContent = GFX_NOTES[lvl] || '';
     }
     if (this.autoBtn) {
       this.autoBtn.textContent = 'Gearbox: ' + (pt.autoShift ? 'auto' : 'manual');
