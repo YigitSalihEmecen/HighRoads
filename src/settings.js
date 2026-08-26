@@ -23,6 +23,7 @@
 
 import { TiltSteering } from './input.js';
 import { CAM_MODES } from './camera.js';
+import { GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel } from './config.js';
 
 /**
  * The buses worth a slider.
@@ -46,6 +47,8 @@ export class Settings {
     this.game = game;
     this.body = document.getElementById('settings-body');
     this._rows = [];
+    /** Where new controls go. Set to the audio fold's body while it builds. */
+    this._host = this.body;
 
     // The panel is a keyboard trap by design — nothing typed into it should
     // reach the driving controls.
@@ -59,7 +62,40 @@ export class Settings {
     const h = document.createElement('div');
     h.className = 'set-section';
     h.textContent = title;
-    this.body.appendChild(h);
+    this._host.appendChild(h);
+  }
+
+  /**
+   * A collapsible group — the audio block. Returns the body to build into;
+   * the whole tree of audio controls hangs off it and starts folded, so the
+   * panel opens to two short blocks and one line instead of a wall of sliders.
+   */
+  collapse(title, { open = false } = {}) {
+    const root = document.createElement('div');
+    root.className = 'set-collapse' + (open ? ' open' : '');
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'set-collapse-head';
+    head.setAttribute('aria-expanded', String(open));
+    const label = document.createElement('span');
+    label.textContent = title;
+    const caret = document.createElement('span');
+    caret.className = 'caret';
+    caret.setAttribute('aria-hidden', 'true');
+    head.append(label, caret);
+    const fold = document.createElement('div');
+    fold.className = 'set-collapse-fold';
+    const body = document.createElement('div');
+    body.className = 'set-collapse-body';
+    fold.appendChild(body);
+    root.append(head, fold);
+    this.body.appendChild(root);
+    head.addEventListener('click', () => {
+      const on = !root.classList.contains('open');
+      root.classList.toggle('open', on);
+      head.setAttribute('aria-expanded', String(on));
+    });
+    return body;
   }
 
   _slider(label, hint, min, max, value, onInput) {
@@ -93,7 +129,7 @@ export class Settings {
     input.addEventListener('pointerup', () => input.blur());
 
     row.append(name, input, readout);
-    this.body.appendChild(row);
+    this._host.appendChild(row);
     this._rows.push({ input, show });
     return { input, show };
   }
@@ -104,12 +140,44 @@ export class Settings {
     b.type = 'button';
     b.textContent = label;
     b.addEventListener('click', () => { onClick(); b.blur(); });
-    this.body.appendChild(b);
+    this._host.appendChild(b);
     return b;
   }
 
   _build() {
     const pt = this.game.powertrain;
+
+    this._section('Graphics');
+    /**
+     * Three levels of fidelity, laid out exactly like the mode selector below
+     * Drive — a three-state segmented switch with a sliding fill. Each level
+     * is its own segment: you pick the one you want in one tap, and only an
+     * actual change needs the world rebuilt (see config.js) — picking the
+     * level you are already on does nothing.
+     */
+    this.gfxBtns = [];
+    const seg = document.createElement('div');
+    seg.className = 'seg-control seg3';
+    seg.setAttribute('role', 'group');
+    seg.setAttribute('aria-label', 'Graphics');
+    const fill = document.createElement('span');
+    fill.className = 'seg-fill';
+    fill.setAttribute('aria-hidden', 'true');
+    seg.appendChild(fill);
+    GRAPHICS_LEVELS.forEach((lvl) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg-btn';
+      b.textContent = lvl[0].toUpperCase() + lvl.slice(1);
+      b.addEventListener('click', () => {
+        if (graphicsLevel() === lvl) return;
+        setGraphicsLevel(lvl);
+        location.reload();
+      });
+      seg.appendChild(b);
+      this.gfxBtns.push({ lvl, el: b });
+    });
+    this.body.appendChild(seg);
 
     this._section('Driving');
     this.autoBtn = this._button('Gearbox: auto', () => {
@@ -138,7 +206,9 @@ export class Settings {
       });
     }
 
-    this._section('Audio');
+    // Everything auditory shares one fold, folded by default, so the panel does
+    // not open onto a wall of sliders. See `collapse()`.
+    this._host = this.collapse('Audio');
     this.master = this._slider('Master', 'overall level', 0, 1, pt.volume, (v) => pt.setVolume(v));
     // Not one of the engine's buses — see wind.js. It shares the context and
     // nothing else, so it gets its own control rather than sitting under a
@@ -157,6 +227,7 @@ export class Settings {
       (v) => pt.setTone({ rumble: v }));
     this.bright = this._slider('Brightness', 'rasp and air at the top', 0, 2, pt.tone.brightness,
       (v) => pt.setTone({ brightness: v }));
+    this._host = this.body;
 
     this.refresh();
   }
@@ -164,6 +235,12 @@ export class Settings {
   /** Pulls state back out of the game — used when a keybind changes something. */
   refresh() {
     const pt = this.game.powertrain;
+    if (this.gfxBtns && this.gfxBtns.length) {
+      const lvl = graphicsLevel();
+      const seg = this.gfxBtns[0].el.parentElement;
+      seg.dataset.active = String(GRAPHICS_LEVELS.indexOf(lvl));
+      for (const g of this.gfxBtns) g.el.setAttribute('aria-pressed', String(g.lvl === lvl));
+    }
     if (this.autoBtn) {
       this.autoBtn.textContent = 'Gearbox: ' + (pt.autoShift ? 'auto' : 'manual');
       this.autoBtn.classList.toggle('on', !pt.autoShift);

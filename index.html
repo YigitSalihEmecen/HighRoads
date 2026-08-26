@@ -881,6 +881,63 @@
   #start:disabled { opacity: 0.35; cursor: default; }
   #start:disabled::after { display: none; }
 
+  /**
+   * The bistable game-mode switch beneath Drive. One unit that looks like a
+   * single button, split down the middle; the active half takes the accent
+   * fill so which mode you have set is a glance. The inactive half is tappable
+   * on its own, so switching is one tap, not a cycle.
+   */
+  /* Two-state mode selector and the three-state graphics selector share one
+     segmented-control look: a sliding fill under the active segment, a number
+     of segments set by `--segs`, and an active index in `data-active`. */
+  #mode-toggle { --segs: 2; }
+  .seg-control {
+    position: relative;
+    width: 100%;
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    background: rgba(244, 234, 217, 0.03);
+  }
+  /**
+   * The sliding fill beneath the active segment. It is a single pill clipped
+   * by the shell's own radius, so there is never a square corner to catch on
+   * the rounded edge — the artefact the old per-segment inset shadow made.
+   * `translateX(100%)` is relative to the fill's own width, i.e. one segment.
+   */
+  .seg-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: calc(100% / var(--segs));
+    background: var(--accent-wash);
+    box-shadow: inset 0 0 0 1px var(--accent-dim);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .seg-control[data-active="1"] .seg-fill { transform: translateX(100%); }
+  .seg-control[data-active="2"] .seg-fill { transform: translateX(200%); }
+  .seg-btn {
+    position: relative;
+    z-index: 1;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: var(--tap);
+    border: 0;
+    background: transparent;
+    color: var(--dim);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color 0.2s;
+  }
+  .seg-btn:hover { color: var(--ink); }
+  .seg-btn[aria-pressed="true"], .seg-btn:hover[aria-pressed="true"] { color: var(--accent); }
+  /* Three segments, used by the graphics selector in the settings panel. */
+  .seg3 { --segs: 3; }
+
   #boot {
     font-size: var(--fs-xs);
     letter-spacing: 0.16em;
@@ -899,20 +956,98 @@
     line-height: 1.7;
     overflow-wrap: anywhere;
   }
+  #boot[hidden] { display: none; }
 
-  #keys {
+  /**
+   * The docs footer — How to play and Credits sit at the bottom of the dock,
+   * replacing the old key-legend and the boot status line.
+   */
+  #docs {
+    flex: 0 0 auto;
     display: flex;
-    flex-wrap: wrap;
+    gap: var(--s2);
     justify-content: center;
-    gap: var(--s1) var(--s3);
-    font-size: var(--fs-xs);
-    letter-spacing: 0.06em;
-    color: var(--faint);
+    padding-top: var(--s2);
   }
-  #keys span { white-space: nowrap; }
-  #keys b { color: var(--dim); font-weight: 500; }
-  /* A keyboard legend on a device with no keyboard is just clutter. */
-  body.touch #keys { display: none; }
+  #docs .eng-chip { min-height: calc(var(--tap) * 0.62); }
+
+  /* ---------------------------------------------------------------- modals -- */
+
+  /**
+   * The How-to-play and Credits windows. A backdrop over the whole dock and a
+   * card; clicking the backdrop or the close glyph dismisses it. Centred and
+   * scrollable, because the controls list is taller than a phone is.
+   */
+  .modal {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--s4);
+    background: rgba(10, 9, 13, 0.6);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .modal[hidden] { display: none; }
+  .modal-card {
+    position: relative;
+    width: min(460px, 100%);
+    max-height: min(72vh, 560px);
+    overflow-y: auto;
+    padding: var(--s4);
+    background: var(--panel-solid);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow), 0 0 0 1px rgba(0, 0, 0, 0.35);
+    animation: fr-rise 0.3s cubic-bezier(0.2, 0.8, 0.25, 1);
+  }
+  .modal-card h2 {
+    margin: 0 0 var(--s2);
+    font-size: var(--fs-lg);
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+  }
+  .modal-card h3 {
+    margin: var(--s3) 0 var(--s1);
+    font-size: var(--fs-sm);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .modal-card ul { margin: 0; padding: 0; list-style: none; }
+  .modal-card li {
+    font-size: var(--fs-sm);
+    line-height: 1.7;
+    color: var(--dim);
+  }
+  .modal-card b { color: var(--ink); font-weight: 500; }
+  .modal-lead {
+    font-size: var(--fs-sm);
+    line-height: 1.6;
+    color: var(--dim);
+  }
+  .modal-close {
+    position: absolute;
+    top: var(--s2);
+    right: var(--s3);
+    width: var(--tap);
+    height: var(--tap);
+    border: 0;
+    background: none;
+    color: var(--faint);
+    font-size: var(--fs-xl);
+    line-height: 1;
+    cursor: pointer;
+    border-radius: var(--r-sm);
+  }
+  .modal-close:hover { color: var(--ink); }
+  .modal-credit {
+    font-size: var(--fs-lg);
+    letter-spacing: 0.08em;
+    color: var(--ink);
+  }
 
   @keyframes fr-rise {
     from { opacity: 0; transform: translateY(10px); }
@@ -969,6 +1104,55 @@
   }
   .set-name { text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; }
   .set-val { text-align: right; color: var(--dim); }
+
+  /**
+   * The collapsible audio block. Everything auditory — levels, the six-voice
+   * mix, tone — shares one fold that starts shut, so the panel reads as
+   * Graphics, Driving, then a single "Audio" line instead of a wall of
+   * sliders. Height is animated the same way the drawers animate, on a one-row
+   * grid, so opening is exactly as long as the content is tall.
+   */
+  .set-collapse {
+    border-bottom: 1px solid rgba(244, 234, 217, 0.08);
+  }
+  .set-collapse-head {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    padding: var(--s2) 0;
+    min-height: calc(var(--tap) * 0.72);
+    border: 0;
+    background: none;
+    color: var(--dim);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.26em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-align: left;
+  }
+  .set-collapse-head:hover { color: var(--ink); }
+  .set-collapse-head span:first-child { flex: 1 1 auto; }
+  .set-collapse-head .caret {
+    flex: 0 0 auto;
+    width: 0.4em;
+    height: 0.4em;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    opacity: 0.55;
+    transform: translateY(-0.1em) rotate(45deg);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .set-collapse.open .set-collapse-head .caret { transform: translateY(0.12em) rotate(225deg); }
+  .set-collapse-fold {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .set-collapse.open .set-collapse-fold { grid-template-rows: 1fr; }
+  .set-collapse-body { overflow: hidden; }
+  .set-collapse:not(.open) .set-collapse-body { visibility: hidden; }
+  .set-collapse.open .set-collapse-body { visibility: visible; }
 
   .set-row input[type="range"] {
     -webkit-appearance: none;
@@ -1554,11 +1738,6 @@
         </button>
         <div class="drawer-fold"><div class="drawer-body">
           <div class="garage-row">
-            <span class="garage-label">Mode</span>
-            <span id="mode-list" class="dropdown"></span>
-          </div>
-          <div id="mode-hint" class="row-hint"></div>
-          <div class="garage-row">
             <span class="garage-label">Seed</span>
             <span class="row-wrap">
               <input id="seed-input" type="text" spellcheck="false" autocomplete="off" aria-label="World seed" />
@@ -1583,20 +1762,57 @@
 
     <div id="launch">
       <button id="start" disabled>Loading…</button>
-      <div id="boot">booting physics runtime…</div>
 
-      <div id="keys">
-        <span><b>W S</b> throttle / brake</span>
-        <span><b>A D</b> steer</span>
-        <span><b>SPACE</b> handbrake</span>
-        <span><b>E Q</b> shift</span>
-        <span><b>G</b> auto/manual</span>
-        <span><b>L</b> lights</span>
-        <span><b>C</b> camera</span>
-        <span><b>R</b> respawn</span>
-        <span><b>ESC</b> pause</span>
+      <!--
+        The game-mode selector, moved out of the World drawer to sit under the
+        one button that matters. A bistable switch: a sliding fill slides under
+        whichever mode is active — tap the inactive half to change mode in one
+        go. The fill is `overflow:hidden` inside the rounded shell, so the
+        active half never throws a square corner at the button's radius.
+      -->
+      <div id="mode-toggle" class="seg-control" role="group" aria-label="Game mode">
+        <span class="seg-fill" aria-hidden="true"></span>
+        <button id="mode-traffic" class="seg-btn" type="button" data-mode="traffic">Traffic</button>
+        <button id="mode-zen" class="seg-btn" type="button" data-mode="zen">Zen</button>
+      </div>
+
+      <div id="boot" hidden>loading…</div>
+
+      <div id="docs">
+        <button id="howto-btn" class="eng-chip" type="button">How to play</button>
+        <button id="credits-btn" class="eng-chip" type="button">Credits</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-howto" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="howto-title">
+    <button class="modal-close" type="button" aria-label="Close">×</button>
+    <h2 id="howto-title">How to play</h2>
+    <p class="modal-lead">Drive into the distance. In Traffic, points come from near-misses — one crash ends the run. In Zen there is nothing to hit.</p>
+    <div class="modal-body">
+      <h3>Keyboard</h3>
+      <ul>
+        <li><b>W S</b> throttle / brake · <b>A D</b> steer</li>
+        <li><b>SPACE</b> handbrake · <b>E Q</b> shift · <b>G</b> auto / manual</li>
+        <li><b>L</b> lights · <b>C</b> camera · <b>R</b> respawn · <b>ESC</b> pause</li>
+      </ul>
+      <h3>Gamepad</h3>
+      <ul>
+        <li><b>Left stick</b> steer · <b>Left / right trigger</b> brake / throttle</li>
+        <li><b>RB / LB</b> shift up / down</li>
+      </ul>
+      <p class="modal-lead" style="margin-top: 2.5em">Tilt steering is supported on phones — turn it on in Settings, under Driving.</p>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-credits" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="credits-title">
+    <button class="modal-close" type="button" aria-label="Close">×</button>
+    <h2 id="credits-title">Credits</h2>
+    <p class="modal-credit">Yigit Salih Emecen</p>
   </div>
 </div>
 
@@ -1616,6 +1832,7 @@
   boot().catch((err) => {
     console.error(err);
     const el = document.getElementById('boot');
+    el.hidden = false;
     el.className = 'err';
     el.textContent = 'FAILED TO START — ' + (err && err.message ? err.message : err) +
       '  ·  this project must be served over http:// (ES modules + WASM). Try: npx serve';

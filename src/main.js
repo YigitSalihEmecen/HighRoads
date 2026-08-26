@@ -139,14 +139,14 @@ export async function boot() {
 
   buildGarage(game, roster);
   buildSeedBox(game);
+  buildModeToggle(game);
   buildDrawers(game);
   buildPauseMenu(game);
+  buildModals(game);
 
-  const plants = chunks.trees ? chunks.trees.library.size : 0;
-  const shrubs = chunks.bushes ? chunks.bushes.library.size : 0;
-  bootEl.textContent = `${plants} trees · ${shrubs} shrubs · ${roster.length} vehicles`;
   startBtn.disabled = false;
   startBtn.textContent = 'Drive';
+  bootEl.hidden = true;
 
   game.enterGarage();
 
@@ -211,6 +211,61 @@ function buildSeedBox(game) {
     if (e.key === 'Enter') go(input.value);
   });
   input.addEventListener('keyup', (e) => e.stopPropagation());
+}
+
+/**
+ * The bistable Traffic / Zen selector beneath the Drive button.
+ *
+ * It used to live in the World drawer as one of the dropdown rows. A choice a
+ * player makes on every single session got buried two taps deep, so it moved
+ * out to sit with the one button that matters — and as a two-position switch,
+ * where the active mode is a glance rather than a label on a fold. Each half
+ * is its own segment; tapping the inactive half flips in one tap.
+ */
+function buildModeToggle(game) {
+  const root = document.getElementById('mode-toggle');
+  if (!root) return;
+  const segs = [...root.querySelectorAll('.seg-btn')];
+  const refresh = () => {
+    root.dataset.active = String(GAME_MODES.findIndex((m) => m.id === game.mode));
+    for (const s of segs) {
+      s.setAttribute('aria-pressed', String(s.dataset.mode === game.mode));
+    }
+  };
+  for (const s of segs) {
+    s.addEventListener('click', () => {
+      if (s.dataset.mode === game.mode) return;
+      game.setMode(s.dataset.mode);
+      game.refreshSummaries();
+      refresh();
+    });
+  }
+  refresh();
+}
+
+/**
+ * The How-to-play and Credits windows.
+ *
+ * One tiny shared behaviour: a button opens a modal, and a modal closes on its
+ * ×, on a click of the backdrop, or on Escape. The modals sit above the dock
+ * (`z-index` in the stylesheet), so a drawer left open behind them is fine.
+ */
+function buildModals(game) {
+  const open = {};
+  for (const [btnId, modalId] of [['howto-btn', 'modal-howto'], ['credits-btn', 'modal-credits']]) {
+    const btn = document.getElementById(btnId);
+    const modal = document.getElementById(modalId);
+    if (!btn || !modal) continue;
+    open[modalId] = modal;
+    btn.addEventListener('click', () => { modal.hidden = false; });
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal || e.target.closest('.modal-close')) modal.hidden = true;
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    for (const modal of Object.values(open)) modal.hidden = true;
+  });
 }
 
 /**
@@ -418,13 +473,6 @@ function buildGarage(game, roster) {
       game.setEngine(id);
       game.previewEngine().then(() => game.refreshSummaries());
     },
-  });
-
-  // ---- mode -------------------------------------------------------------
-  makeDropdown(document.getElementById('mode-list'), {
-    values: GAME_MODES.map((m) => ({ id: m.id, name: m.name, title: m.blurb })),
-    current: game.mode,
-    onChange: (id) => { game.setMode(id); game.refreshSummaries(); },
   });
 
   // ---- shared behaviour ---------------------------------------------------
@@ -858,7 +906,6 @@ class Game {
 
     const mode = GAME_MODES.find((m) => m.id === this.mode);
     set('v-world', `${mode ? mode.name : ''} · ${this.seed}`);
-    set('mode-hint', mode ? mode.blurb : '');
 
     const pt = this.powertrain;
     const summary = `${pt.autoShift ? 'Auto' : 'Manual'} · ${Math.round(pt.volume * 100)}%`;
