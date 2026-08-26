@@ -66,7 +66,7 @@ import { CHUNK, TREES } from './config.js';
  * How each species is BUILT. Consumed by `env/trees.js:growTree`; see that
  * file's header for what the parameters mean mechanically.
  *
- * The seven are chosen to be distinguishable AT DISTANCE, which is a stronger
+ * The nine are chosen to be distinguishable AT DISTANCE, which is a stronger
  * requirement than being different up close. Silhouette first: a narrow spire,
  * a broad dome, a weeping curtain, a bare armature. Two species that differ
  * only in leaf shape are one species with extra draw calls.
@@ -116,10 +116,13 @@ export const TREE_FORMS = {
   /**
    * SPRUCE — the same conifer idea carried all the way to the ground.
    *
-   * Branches from low on the stem, drooping (`growth.dir.y` is barely positive
-   * and the limbs are long), giving the dense skirted cone that reads as dark
-   * mass rather than as trunks. Standing next to a pine it is the contrast that
-   * makes both of them legible.
+   * Branches from low on the stem, held up by a gentle upward `growth.dir.y`
+   * (0.18) that converges the crown into a cone while the low, long limbs keep
+   * their skirt — the number is positive but small, so heavy outer branches
+   * still hang. (It drifted to -0.25 at one point and the whole crown slumped
+   * into a bush: the branching angle 1.45 leaves the trunk almost horizontal,
+   * so the tree's verticality comes entirely from this vector.) Standing next
+   * to a pine it is the contrast that makes both of them legible.
    */
   spruce: {
     levels: 2,
@@ -128,12 +131,12 @@ export const TREE_FORMS = {
     segmentDrop: 2,
     trunk: { length: 1.0, radius: 0.042, lean: 0.05 },
     branches: [
-      { count: 13, angle: 1.45, start: 0.12, length: 0.40, radius: 0.30, tipShrink: 0.72, leafy: true },
+      { count: 13, angle: 1.15, start: 0.12, length: 0.40, radius: 0.30, tipShrink: 0.72, leafy: true },
       { count: 2, angle: 0.9, start: 0.4, length: 0.5, radius: 0.5, tipShrink: 0.3, leafy: false },
     ],
     gnarliness: 0.16,
     taper: 0.36,
-    growth: { dir: { x: 0, y: -0.25, z: 0 }, strength: 0.7 },
+    growth: { dir: { x: 0, y: 0.18, z: 0 }, strength: 0.85 },
     minRadius: 0.004,
     maxBranches: 30,
     leafSize: 0.40,
@@ -187,6 +190,46 @@ export const TREE_FORMS = {
       blobs: 40, blobSize: 0.115, blobSquash: 0.9, bias: 0.55,
       // A dome: widest a third of the way up, closing over the top.
       profile: (t) => 0.86 * Math.sin(Math.PI * (0.22 + t * 0.72)) * 0.9,
+    },
+  },
+
+  /**
+   * MAPLE — an autumn broadleaf: a dense round crown on a stout stem.
+   *
+   * The silhouette keeps the heavy central fork of a broadleaf but spends it
+   * on a fuller, rounder head — closer to a ball than an oak's wide-open dome.
+   * At distance what separates it from every other tree in the table is that
+   * it is not green: the warm red-orange is what makes the pale trunks beside
+   * it read as pale.
+   */
+  maple: {
+    levels: 3,
+    sections: 4,
+    segments: 6,
+    segmentDrop: 2,
+    trunk: { length: 0.6, radius: 0.058, lean: 0.14 },
+    branches: [
+      { count: 3, angle: 0.92, start: 0.5, length: 0.82, radius: 0.62, tipShrink: 0.25, leafy: false },
+      { count: 3, angle: 0.78, start: 0.33, length: 0.76, radius: 0.6, tipShrink: 0.3, leafy: true },
+      { count: 2, angle: 0.7, start: 0.28, length: 0.66, radius: 0.55, tipShrink: 0.35, leafy: false },
+    ],
+    gnarliness: 0.55,
+    taper: 0.5,
+    growth: { dir: { x: 0, y: 0.4, z: 0 }, strength: 0.6 },
+    minRadius: 0.005,
+    maxBranches: 26,
+    leafSize: 0.52,
+    leafFalloff: 0.84,
+    leafDrop: 0.08,
+    cards: 3,
+    leafCell: 'broadleaf',
+    bark: [0.36, 0.29, 0.23],
+    leaf: [0.60, 0.28, 0.13],
+    impostor: {
+      crownBase: 0.38, trunkWidth: 0.026,
+      blobs: 44, blobSize: 0.105, blobSquash: 0.92, bias: 0.6,
+      // A full round crown, widest a third up and staying wide to the top.
+      profile: (t) => 0.84 * Math.sin(Math.PI * (0.12 + t * 0.76)),
     },
   },
 
@@ -302,6 +345,44 @@ export const TREE_FORMS = {
   },
 
   /**
+   * ASPEN — a pale golden stand tree, the birch's up-country sibling.
+   *
+   * Same trick as the birch — a light trunk doing the legibility work at
+   * distance — but a taller, slimmer egg of bright yellow foliage, so the two
+   * reads differ before the colour even resolves. Colonises coarser, sunnier
+   * ground than birch tolerates.
+   */
+  aspen: {
+    levels: 2,
+    sections: 4,
+    segments: 5,
+    segmentDrop: 2,
+    trunk: { length: 1.1, radius: 0.03, lean: 0.12 },
+    branches: [
+      { count: 8, angle: 0.55, start: 0.22, length: 0.55, radius: 0.5, tipShrink: 0.4, leafy: true },
+      { count: 2, angle: 0.45, start: 0.3, length: 0.6, radius: 0.55, tipShrink: 0.3, leafy: true },
+    ],
+    gnarliness: 0.32,
+    taper: 0.4,
+    growth: { dir: { x: 0, y: 0.9, z: 0 }, strength: 1.0 },
+    minRadius: 0.0035,
+    maxBranches: 26,
+    leafSize: 0.34,
+    leafFalloff: 0.86,
+    leafDrop: 0.06,
+    cards: 3,
+    leafCell: 'broadleaf',
+    bark: [0.74, 0.71, 0.64],
+    leaf: [0.72, 0.55, 0.16],
+    impostor: {
+      crownBase: 0.30, trunkWidth: 0.014,
+      blobs: 40, blobSize: 0.07, blobSquash: 1.0, bias: 0.55,
+      // A tall slim egg: widest mid-crown, closed at both ends.
+      profile: (t) => 0.54 * Math.sin(Math.PI * t),
+    },
+  },
+
+  /**
    * DEAD — bare wood, and the cheapest thing in the table at roughly a third
    * the triangles of an oak, because it carries almost no leaf mass.
    *
@@ -368,8 +449,15 @@ export const FOLIAGE = {
     height: [11, 19], weight: 0.9, relief: [-40, 140], maxSlope: 0.55,
     lateral: [14, 165], rugged: -0.5, wet: 0.1, social: 0.4,
   },
+  maple: {
+    // Warm-leaved broadleaf of settled mid ground, climbing out of the lowland.
+    height: [12, 20], weight: 0.5, relief: [-30, 200], maxSlope: 0.5,
+    lateral: [13, 165], rugged: -0.35, wet: 0.1, social: 0.45,
+  },
   birch: {
-    height: [10, 18], weight: 0.6, relief: [-20, 240], maxSlope: 0.6,
+    // The pale trunk is the woodland's white mass: the commonest tree mid-slope
+    // and the most abundant pale one anywhere, so a birch wood reads everywhere.
+    height: [10, 18], weight: 1.1, relief: [-40, 300], maxSlope: 0.65,
     lateral: [13, 165], rugged: 0.1, wet: 0.0, social: 0.6,
   },
   willow: {
@@ -380,6 +468,11 @@ export const FOLIAGE = {
   poplar: {
     height: [15, 25], weight: 0.3, relief: [-40, 130], maxSlope: 0.45,
     lateral: [14, 150], rugged: -0.6, wet: 0.35, social: 0.75,
+  },
+  aspen: {
+    // Pale coloniser of higher, drier, steeper ground than birch cares for.
+    height: [14, 24], weight: 0.4, relief: [-20, 300], maxSlope: 0.7,
+    lateral: [13, 165], rugged: 0.2, wet: -0.1, social: 0.6,
   },
   dead: {
     // Survives higher than anything living — the last thing before bare rock.
