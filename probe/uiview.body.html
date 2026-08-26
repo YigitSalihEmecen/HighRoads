@@ -11,6 +11,7 @@
   layout bugs listed in probe/README.md were found.
 
   Query flags: ?hud=1 driving HUD   ?pause=1 pause menu   ?over=1 game over
+               ?tilt=1 tilt steering (arrows hidden)
                ?open=car|engine|world|settings   ?touch=0 desktop
 
   Regenerate after editing index.html:  node probe/uishot.mjs --build
@@ -40,7 +41,7 @@ document.getElementById('mode-hint').textContent = 'Points for near misses. One 
 document.getElementById('seed-input').value = 'highroads-01';
 document.getElementById('start').disabled = false;
 document.getElementById('start').textContent = 'Drive';
-document.getElementById('boot').textContent = '26 plants · 9 vehicles';
+document.getElementById('boot').textContent = '7 trees · 4 shrubs · 9 vehicles';
 // The settings panel, built the same way settings.js builds it.
 const body = document.getElementById('settings-body');
 const sec = (t) => { const d=document.createElement('div'); d.className='set-section'; d.textContent=t; body.append(d); };
@@ -67,6 +68,9 @@ if (q.get('open')) {
   const d = document.querySelector(`.drawer[data-drawer="${q.get('open')}"]`);
   if (d) d.classList.add('open');
 }
+// Tilt steering: the two arrows go and the recentre tap appears. A real UI
+// state with its own layout, so it gets its own viewport.
+if (q.get('tilt') === '1') document.body.classList.add('tilt');
 if (q.get('hud') === '1' || q.get('pause') === '1') {
   document.getElementById('hud').classList.add('live','traffic');
   document.getElementById('overlay').classList.add('gone');

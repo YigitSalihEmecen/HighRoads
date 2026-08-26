@@ -559,7 +559,7 @@ export const TREES = {
    * actually binds: `nearCap` x ~250 triangles is the per-chunk canopy cost.
    */
   samples: 1600,
-  nearCap: 200,
+  nearCap: 130,
   farCap: 760,
 
   /**
@@ -687,7 +687,7 @@ export const BUSHES = {
  * The single biggest lever on whether the world reads as flat, and the numbers
  * below are a triangle budget as much as a look. A tuft is four triangles
  * carrying seven painted blades (see grass.js), so the counts here are large in
- * a way the rest of the project's scatter numbers are not: `CHUNK.propSamples`
+ * a way the rest of the project's scatter numbers are not: `TREES.samples`
  * is 420 attempts for at most 52 trees, and this places tens of thousands.
  *
  * Only the chunks either side of the car carry any, because grass is invisible
@@ -1458,7 +1458,7 @@ export const CAMERA = {
   /**
    * The title screen's orbit lives in TITLE below, not here.
    *
-   * It used to be `CAMERA.garage` — a distance, a height and a hand-picked
+   * It used to be a `garage` block in CAMERA — a distance, a height and a hand-picked
    * negative aim that lifted the car out from behind whatever the dock happened
    * to be that week. That number was re-tuned every time a row was added to the
    * menu, which is the tell: it was standing in for a measurement nobody was

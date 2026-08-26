@@ -1139,7 +1139,7 @@ class Game {
      *
      * `CHUNK.recoverLateral` is a flat 300 m and the terrain sheet is not: the
      * fold guard pulls its outer edge in wherever the road turns, to as little
-     * as `ROUTE.foldMinReach`. Recovering at the constant meant the car reached
+     * as 73 m on a bend. Recovering at the constant meant the car reached
      * the edge, drove off it, and then had to fall ninety metres before
      * anything noticed — bug #64, and it is the reason the ground appeared to
      * have holes in it. Asking the road how wide its own corridor is here costs

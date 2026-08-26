@@ -65,6 +65,7 @@ const VIEWS = [
   ['hud-phone',       393,  852,  'hud=1',             1],
   ['hud-phone-se',    375,  667,  'hud=1',             1],
   ['hud-land',        852,  393,  'hud=1',             1],
+  ['hud-tilt-land',   852,  393,  'hud=1&tilt=1',      1],
   ['hud-tablet',      834, 1112,  'hud=1',             1],
   ['drawer-world',    393,  852,  'open=world',        1],
   ['drawer-car-land', 852,  393,  'open=car',          1],
