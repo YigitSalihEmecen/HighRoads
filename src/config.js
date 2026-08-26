@@ -1906,3 +1906,91 @@ export const TERRAIN_COLORS = {
   peak: 0xa9a29a,
   snow: 0xe8ebee,
 };
+
+/* =============================================================== graphics == */
+
+/**
+ * The three levels of graphical fidelity, chosen from the title screen..
+ *
+ * The override below REWRITES parts of the config objects above before anyone
+ * has built an atlas or a shader, which is the only honest way to change what
+ * the world is made of: materials bake their fade windows and the asset
+ * libraries bake their densities at boot, so a mid-run tweak would be half-
+ * applied. Changing the level therefore saves it and reloads the page; the
+ * fresh boot comes up configured. Important controls stay readable on all
+ * levels, and `probe/props.mjs` runs at High because Node has no storage.
+ *
+ *   HIGH    the current defaults — dense worlds, long draw distance.
+ *   MEDIUM  fewer trees, tufts, shrubs and stones, and half the draw distance.
+ *   LOW     no grass, shrubs or rocks at all; trees as their blobby silhouette
+ *           cards only (no grown geometry), with a short draw distance.
+ */
+export const GRAPHICS_LEVELS = ['high', 'medium', 'low'];
+
+const GRAPHICS_KEY = 'highroads.graphics';
+
+export function graphicsLevel() {
+  if (typeof localStorage === 'undefined') return 'high';
+  const v = localStorage.getItem(GRAPHICS_KEY);
+  return GRAPHICS_LEVELS.includes(v) ? v : 'high';
+}
+
+export function setGraphicsLevel(level) {
+  if (GRAPHICS_LEVELS.includes(level)) {
+    try { localStorage.setItem(GRAPHICS_KEY, level); } catch (err) { /* private window */ }
+  }
+  return level;
+}
+
+/** Applies the saved level by rewriting the config, before assets build. */
+function applyGraphics() {
+  const level = graphicsLevel();
+  if (level === 'medium') {
+    // Half the draw distance, thickened fog to hide the closer seam.
+    CHUNK.ahead = 4;
+    ATMOSPHERE.fogDensity = 0.0034;
+    CAMERA.far = 1000;
+
+    // A thinner illusion all round: fewer trees of either tier, fewer species.
+    TREES.samples = 900;
+    TREES.nearCap = 88;
+    TREES.farCap = 470;
+    TREES.picks = 4;
+    TREES.farFade = [430, 470];
+    TREES.loneFadeIn = [300, 460];
+
+    // Grass, shrubs and stone scale down together.
+    GRASS.density = 2.3;
+    GRASS.far.ahead = 4;
+    GRASS.far.fadeOut = [300, 460];
+    BUSHES.samples = 600;
+    BUSHES.cap = 260;
+    ROCKS.samples = 2200;
+  } else if (level === 'low') {
+    // The shortest draw distance, and a fog that ends it invisibly.
+    CHUNK.ahead = 3;
+    ATMOSPHERE.fogDensity = 0.0044;
+    CAMERA.far = 700;
+
+    // No grass, no shrubs, no stone.
+    GRASS.enabled = false;
+    BUSHES.enabled = false;
+    ROCKS.enabled = false;
+
+    // Trees as blobby impostor cards only: no grown geometry, no grown
+    // canopy windows, and the cards appear right at the roadside so there is
+    // no "high-res tree" tier left to be missing.
+    TREES.samples = 700;
+    TREES.nearCap = 0;
+    TREES.farCap = 500;
+    TREES.picks = 4;
+    TREES.behind = 1;
+    TREES.ahead = 0;
+    TREES.farFadeIn = [6, 16];
+    TREES.loneFadeIn = [6, 16];
+    TREES.farFade = [280, 345];
+  }
+  return level;
+}
+
+applyGraphics();
