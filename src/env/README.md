@@ -45,48 +45,75 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
    1,030,000 triangles for 468 instances — 90% of the geometry on screen for
    10 trees a hectare. Every module here states its per-instance triangle count
    in its header, so the budget is visible where the decision is made.
-5. **Luminance in the texture, hue on the instance.** Ground cover takes its
-   colour from the terrain vertex it stands on, so it can never disagree with
-   the ground. Baking a green into a texture means maintaining that agreement by
-   hand.
+5. **Luminance in the texture, hue on the instance — for things that GROW.**
+   Ground cover takes its colour from the terrain vertex it stands on, so it can
+   never disagree with the ground. Two documented exceptions:
+   * `rocks.js` takes its hue from `ROCKS.palette`. Stone does not
+     photosynthesise, and sampling the verge gave every chip on the shoulder the
+     grass's green, which reads as algae.
+   * `trees.js` and `bushes.js` bake the hue into the geometry, one palette per
+     variant, and take a near-1.0 *modulation* per instance instead. A per-face
+     coloured solid has its colour in the mesh; blending it halfway toward the
+     ground desaturated every palette to the same olive.
 
 ## What is here
 
 | module | builds | tris/instance |
 |---|---|---|
 | `textures.js` | shared procedural canvas helpers — value noise, fBm, mottle | — |
+| `lowpoly.js` | faceted-solid primitives: warped lumps, tapering tubes, conifer skirts | — |
 | `grass.js` | crossed-card grass tufts, in a near and a far tier | 4 |
-| `trees.js` | grown branch skeletons with leaf cards, plus painted impostors | 430–660 / **4** |
-| `bushes.js` | four shrub forms, cards with one multi-stem among them | 4–24 |
+| `trees.js` | faceted low-poly trees, near and far tiers from one builder | 93–334 / **39–72** |
+| `bushes.js` | four shrub forms, clusters of faceted lumps | 29–100 |
 | `rocks.js` | convex boulders, slabs and scree, three size classes | 44–120 |
+| `road.js` | the carriageway's asphalt mask and its material patch | — |
 | `ground.js` | the terrain's detail texture and its material patch | — |
 
-## The canopy, and the note this replaces
+## The canopy
 
-This file used to end with a section called "what is not here yet", saying that
-`trees.js` and `bushes.js` belonged here and that the models available were
-solid meshes at 1,700–2,900 triangles each — 1,030,000 triangles for 468
-instances, 90% of the geometry on screen, for 10.3 trees a hectare. It said the
-answer was a procedural canopy with "a level of detail worth spending the budget
-on". That is what `trees.js` is:
+`trees.js` and `bushes.js` are **faceted solids** — the low-poly look in
+`style_examples/`. A tree is a tapering faceted stem carrying either a cluster
+of warped lumps or a stack of jagged conical skirts, flat-shaded, per-face
+coloured, with no texture, no UVs and no alpha test anywhere in it.
 
-* the near mesh is grown — a queue-based branch recursion swept into tapering
-  tubes, with leaf mass hung on the tips as crossed cards, 430–660 triangles;
-* the far tier is a **four-triangle** impostor carrying a painted silhouette of
-  the species, and it is the thing that makes a forest affordable;
+* both tiers come from **one builder** at different subdivisions: near 93–334
+  triangles, far 39–72, same envelope, same palette, same seed;
+* `trees.js:matchWidth` squeezes the far tier sideways until its crown is the
+  near tier's width to within 2%, so the cross-fade is a change of face count
+  and nothing else;
 * the two cross-fade by scale, in the shader, exactly as the two grass tiers do.
 
-Measured: **232,000 triangles** of canopy and understorey alive at once against
-109,000 for the terrain sheet — roughly twice the sheet, for hundreds of trees
-in view rather than tens.
+Measured: **419,000 triangles** of canopy and understorey alive at once against
+109,000 for the terrain sheet, for 180 near trees and ~200 far ones per chunk.
 
-Two things about it are load-bearing and easy to undo by accident:
+### What this replaced, and why
 
-1. **Bark and leaves share one geometry, one atlas and one material.** The
-   alternative is two draw calls per (chunk, species), and the draw call is what
-   bounds how many species a chunk may show.
-2. **The grown canopy has a SHORTER LIFETIME than its chunk.** A near tree is
-   resolvable to 95 m and its chunk reaches 720 m; building the two together
-   submitted nine chunks of tree geometry to draw one chunk's worth. The recipe
-   is cached on the chunk by `_buildProps` and `_updateCanopy` turns it into
-   meshes as the car arrives — the same split the ground cover uses.
+Alpha-cutout leaf cards with a four-triangle painted billboard past 260 m. That
+is the cheapest way to draw a volume of small leaves and it was right for a
+naturalistic canopy. A faceted canopy has no small leaves, so a card buys
+nothing and costs an atlas, an `alphaTest` + `DoubleSide` material, and — the
+reason it had to go — **two different pictures of the same tree**, which
+disagreed at the handover. The reported symptom was distant trees looking out of
+place and shrinking as near ones grew.
+
+### Load-bearing, and easy to undo by accident
+
+1. **Interior culling.** `lowpoly.js:blob` drops any face whose centroid is
+   inside another lump of the same crown. It is worth a third of the canopy. It
+   reads the occluder's own warp function, so the occluder records must be the
+   `{ c, r, warp }` plans the caller assembled — a shape mismatch here fails
+   *silently*, culls nothing, and only shows up in the triangle count.
+2. **Per-face, non-indexed, baked normals and colours.** `material.flatShading`
+   is deliberately NOT set: it would recompute normals the geometry already has
+   while leaving the colour smooth, and per-face colour is half the look.
+3. **The near canopy has a SHORTER LIFETIME than its chunk.** A near tree is
+   resolvable to 420 m and its chunk reaches 720 m. The recipe is cached on the
+   chunk by `chunks.js:_buildProps` and `_updateCanopy` turns it into meshes as
+   the car arrives — the same split the ground cover uses.
+4. **Hue is BAKED, per variant, not per instance.** Rule 5 above still holds for
+   the ground cover; it does not hold here. A per-instance blend toward the
+   ground colour desaturated every palette to the same olive. `chunks.js` now
+   applies a near-1.0 modulation instead (`TREES.groundTint`, `instanceVary`).
+
+`probe/canopy.mjs` photographs the whole library — every species, every variant,
+both tiers — which is the only check that can see any of this.

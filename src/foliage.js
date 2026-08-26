@@ -63,324 +63,271 @@ import { CHUNK, TREES } from './config.js';
 /* ================================================================= forms == */
 
 /**
- * How each species is BUILT. Consumed by `env/trees.js:growTree`; see that
- * file's header for what the parameters mean mechanically.
+ * How each species is BUILT. Consumed by `env/trees.js:growTree`; see that file
+ * and `env/lowpoly.js` for what the parameters mean mechanically.
  *
- * The eight are chosen to be distinguishable AT DISTANCE, which is a stronger
- * requirement than being different up close. Silhouette first: a narrow spire,
- * a broad dome, a slim pale column, a bare armature. Two species that differ
- * only in leaf shape are one species with extra draw calls.
+ * ── the style, and what it is a table of ────────────────────────────────────
  *
- * `bark` and `leaf` are the vertex hues the grey atlas is multiplied by, and
- * the reason a birch is a birch at fifty metres.
+ * Faceted low-poly: a stylised tree is a TAPERED FACETED STEM carrying either a
+ * cluster of big warped lumps or a stack of jagged conical skirts. There are no
+ * leaves anywhere in it. Everything that used to describe leaf mass — card
+ * counts, leaf drop, atlas cells, gnarliness — described a different look and
+ * is gone; what is left describes silhouettes, because at every distance the
+ * player sees this world from, the silhouette IS the tree.
+ *
+ * Eight species, chosen to be distinguishable AT DISTANCE, which is stronger
+ * than being different up close:
+ *
+ *   spire       pine, spruce      stacked skirts, dark, one narrow triangle
+ *   dome        oak, maple        few heavy lumps on a forked stem
+ *   teardrop    birch, aspen      tall pale stem, small lumps stacked high
+ *   column      poplar            lumps in a vertical line, five times as tall
+ *                                 as it is wide
+ *   armature    dead              bare limbs, the only thing above the treeline
+ *
+ * ── colour ─────────────────────────────────────────────────────────────────
+ *
+ * `palettes` is per VARIANT, not per species: variant 0 of a maple is orange,
+ * variant 1 red, variant 2 gold, and a chunk commits to one variant, so a copse
+ * is one colour and the next copse over is another. That is the cheapest
+ * possible way to get the reference art's seasonal spread — it costs nothing at
+ * runtime because the colour is baked into the geometry.
+ *
+ * Each palette is `[main, alt]`; a lump mixes between them by height, so a
+ * crown is lighter at the top the way the reference art's are. `chunks.js` then
+ * multiplies a near-1.0 per-instance modulation over the top for individual
+ * variation and a light touch of the ground's own colour.
  */
 export const TREE_FORMS = {
   /**
-   * PINE — a bare trunk with the crown pushed to the top of it.
+   * PINE — a bare clear stem with the skirts pushed to the top of it.
    *
-   * The clear stem is the whole silhouette: in a stand, pines self-prune their
-   * lower limbs and what you see from the road is fifty trunks and a ceiling.
-   * `branches[0].start` at 0.62 is that fact, and it is why a pine wood looks
-   * like a pine wood rather than like a Christmas tree farm.
+   * `trunk.height` at 0.55 is the whole silhouette: in a stand, pines
+   * self-prune their lower limbs and what you see from the road is fifty
+   * trunks and a ceiling. It is what stops a pine wood reading as a Christmas
+   * tree farm, and it is the only thing separating this from `spruce`.
    */
   pine: {
-    levels: 2,
-    sections: 4,
-    segments: 5,
-    segmentDrop: 2,
-    trunk: { length: 1.0, radius: 0.048, lean: 0.10 },
-    branches: [
-      { count: 9, angle: 1.22, start: 0.46, length: 0.40, radius: 0.36, tipShrink: 0.6, leafy: true },
-      { count: 3, angle: 0.85, start: 0.35, length: 0.55, radius: 0.5, tipShrink: 0.3, leafy: false },
-    ],
-    gnarliness: 0.22,
-    taper: 0.42,
-    growth: { dir: { x: 0, y: 0.55, z: 0 }, strength: 0.9 },
-    minRadius: 0.004,
-    maxBranches: 26,
-    leafSize: 0.46,
-    leafFalloff: 0.82,
-    leafDrop: 0.10,
-    cards: 3,
-    leafCell: 'needle',
-    bark: [0.34, 0.24, 0.18],
-    leaf: [0.20, 0.34, 0.21],
-    impostor: {
-      crownBase: 0.34, trunkWidth: 0.020,
-      blobs: 40, blobSize: 0.070, blobSquash: 0.8, bias: 0.85,
-      // Narrow cone: wide at the bottom of the crown, a spire at the top.
-      profile: (t) => 0.56 * (1 - t) + 0.04,
+    crown: 'tier',
+    trunk: {
+      height: 0.55, radius: 0.040, taper: 0.55, sides: 6,
+      lean: 0.05, bend: 0.10, flare: 1.9,
     },
+    tiers: {
+      count: 4, sides: 9, from: 0.50, to: 1.0,
+      radius: [0.27, 0.07], height: 1.9, droop: 0.16, jag: 0.24,
+    },
+    bark: [0.36, 0.25, 0.17],
+    palettes: [
+      [[0.20, 0.52, 0.26], [0.34, 0.71, 0.34]],
+      [[0.16, 0.43, 0.24], [0.28, 0.60, 0.31]],
+      [[0.26, 0.58, 0.24], [0.44, 0.78, 0.32]],
+    ],
+    lod: { tiers: 3, sides: 6, trunkSides: 3 },
   },
 
   /**
    * SPRUCE — the same conifer idea carried all the way to the ground.
    *
-   * Branches from low on the stem, held up by a gentle upward `growth.dir.y`
-   * (0.18) that converges the crown into a cone while the low, long limbs keep
-   * their skirt — the number is positive but small, so heavy outer branches
-   * still hang. (It drifted to -0.25 at one point and the whole crown slumped
-   * into a bush: the branching angle 1.45 leaves the trunk almost horizontal,
-   * so the tree's verticality comes entirely from this vector.) Standing next
-   * to a pine it is the contrast that makes both of them legible.
+   * Skirts from a tenth of the height up, more of them, wider at the base and
+   * drooping harder. Standing next to a pine it is the contrast that makes both
+   * legible: one is a column with a hat, the other is a triangle.
    */
   spruce: {
-    levels: 2,
-    sections: 4,
-    segments: 5,
-    segmentDrop: 2,
-    trunk: { length: 1.0, radius: 0.042, lean: 0.05 },
-    branches: [
-      { count: 13, angle: 1.15, start: 0.12, length: 0.40, radius: 0.30, tipShrink: 0.72, leafy: true },
-      { count: 2, angle: 0.9, start: 0.4, length: 0.5, radius: 0.5, tipShrink: 0.3, leafy: false },
-    ],
-    gnarliness: 0.16,
-    taper: 0.36,
-    growth: { dir: { x: 0, y: 0.18, z: 0 }, strength: 0.85 },
-    minRadius: 0.004,
-    maxBranches: 30,
-    leafSize: 0.40,
-    leafFalloff: 0.80,
-    leafDrop: 0.14,
-    cards: 3,
-    leafCell: 'needle',
-    bark: [0.28, 0.21, 0.17],
-    leaf: [0.15, 0.28, 0.19],
-    impostor: {
-      crownBase: 0.08, trunkWidth: 0.016,
-      blobs: 50, blobSize: 0.068, blobSquash: 0.78, bias: 0.9,
-      profile: (t) => 0.62 * (1 - t * 0.94) + 0.03,
+    crown: 'tier',
+    trunk: {
+      height: 0.22, radius: 0.038, taper: 0.5, sides: 6,
+      lean: 0.02, bend: 0.06, flare: 2.1,
     },
+    tiers: {
+      count: 6, sides: 9, from: 0.10, to: 1.0,
+      radius: [0.33, 0.05], height: 1.75, droop: 0.20, jag: 0.22,
+    },
+    bark: [0.29, 0.20, 0.15],
+    palettes: [
+      [[0.14, 0.40, 0.23], [0.25, 0.58, 0.30]],
+      [[0.18, 0.48, 0.26], [0.31, 0.66, 0.33]],
+      [[0.11, 0.33, 0.21], [0.21, 0.49, 0.27]],
+    ],
+    lod: { tiers: 4, sides: 6, trunkSides: 3 },
   },
 
   /**
-   * OAK — short thick stem, hard fork, wide dome.
+   * OAK — short thick stem, hard fork, wide dome of heavy lumps.
    *
-   * `branches[0].angle` at 1.05 rad with only three children is what makes the
-   * fork read: a broadleaf's structure is a few heavy limbs leaving the trunk
-   * at once, not a spiral of small ones. Leaf mass is carried on the limbs as
-   * well as the tips (`leafy`), without which a wide crown is a bare frame with
-   * pom-poms on the ends of it.
+   * Three limbs leaving the stem at once is what makes the fork read: a
+   * broadleaf's structure is a few heavy limbs, not a spiral of small ones, and
+   * at this polygon count the limbs are visible objects rather than an
+   * implication.
    */
   oak: {
-    levels: 3,
-    sections: 4,
-    segments: 6,
-    segmentDrop: 2,
-    trunk: { length: 0.55, radius: 0.062, lean: 0.16 },
-    branches: [
-      { count: 3, angle: 1.05, start: 0.55, length: 0.86, radius: 0.62, tipShrink: 0.2, leafy: false },
-      { count: 3, angle: 0.86, start: 0.35, length: 0.78, radius: 0.62, tipShrink: 0.25, leafy: true },
-      { count: 2, angle: 0.75, start: 0.3, length: 0.7, radius: 0.6, tipShrink: 0.3, leafy: false },
-    ],
-    gnarliness: 0.62,
-    taper: 0.52,
-    growth: { dir: { x: 0, y: 0.35, z: 0 }, strength: 0.55 },
-    minRadius: 0.005,
-    maxBranches: 24,
-    leafSize: 0.52,
-    leafFalloff: 0.84,
-    leafDrop: 0.06,
-    cards: 3,
-    leafCell: 'broadleaf',
-    bark: [0.35, 0.29, 0.22],
-    leaf: [0.28, 0.40, 0.20],
-    impostor: {
-      crownBase: 0.30, trunkWidth: 0.030,
-      blobs: 40, blobSize: 0.115, blobSquash: 0.9, bias: 0.55,
-      // A dome: widest a third of the way up, closing over the top.
-      profile: (t) => 0.86 * Math.sin(Math.PI * (0.22 + t * 0.72)) * 0.9,
+    crown: 'blob',
+    trunk: {
+      height: 0.40, radius: 0.052, taper: 0.62, sides: 6,
+      lean: 0.10, bend: 0.26, flare: 1.8,
     },
+    limbs: {
+      count: 3, from: 0.72, to: 1.0, angle: 0.80, length: 0.34,
+      radius: 0.52, sides: 4, rise: 0.55,
+    },
+    blobs: {
+      count: 6, detail: 1, centre: 0.74, spread: [0.30, 0.13, 0.30],
+      size: [0.21, 0.32], squash: 0.80, warp: 0.22, lift: 0.30,
+    },
+    bark: [0.36, 0.27, 0.19],
+    palettes: [
+      [[0.24, 0.52, 0.20], [0.40, 0.70, 0.27]],
+      [[0.19, 0.44, 0.18], [0.33, 0.62, 0.25]],
+      [[0.30, 0.58, 0.19], [0.49, 0.76, 0.26]],
+    ],
+    lod: { blobs: 2, detail: 0, trunkSides: 3 },
   },
 
   /**
-   * MAPLE — an autumn broadleaf: a dense round crown on a stout stem.
+   * MAPLE — a full round head, and the only tree in the table that is not
+   * green.
    *
-   * The silhouette keeps the heavy central fork of a broadleaf but spends it
-   * on a fuller, rounder head — closer to a ball than an oak's wide-open dome.
-   * At distance what separates it from every other tree in the table is that
-   * it is not green: the warm red-orange is what makes the pale trunks beside
-   * it read as pale.
+   * The warm palettes are the point. At distance what separates a maple from
+   * every other broadleaf is that it makes the greens beside it read as green,
+   * and one orange copse does more for a hillside than three more oaks.
    */
   maple: {
-    levels: 3,
-    sections: 4,
-    segments: 6,
-    segmentDrop: 2,
-    trunk: { length: 0.6, radius: 0.058, lean: 0.14 },
-    branches: [
-      { count: 3, angle: 0.92, start: 0.5, length: 0.82, radius: 0.62, tipShrink: 0.25, leafy: false },
-      { count: 3, angle: 0.78, start: 0.33, length: 0.76, radius: 0.6, tipShrink: 0.3, leafy: true },
-      { count: 2, angle: 0.7, start: 0.28, length: 0.66, radius: 0.55, tipShrink: 0.35, leafy: false },
-    ],
-    gnarliness: 0.55,
-    taper: 0.5,
-    growth: { dir: { x: 0, y: 0.4, z: 0 }, strength: 0.6 },
-    minRadius: 0.005,
-    maxBranches: 26,
-    leafSize: 0.52,
-    leafFalloff: 0.84,
-    leafDrop: 0.08,
-    cards: 3,
-    leafCell: 'broadleaf',
-    bark: [0.36, 0.29, 0.23],
-    leaf: [0.76, 0.25, 0.09],
-    impostor: {
-      crownBase: 0.38, trunkWidth: 0.026,
-      blobs: 44, blobSize: 0.105, blobSquash: 0.92, bias: 0.6,
-      // A full round crown, widest a third up and staying wide to the top.
-      profile: (t) => 0.84 * Math.sin(Math.PI * (0.12 + t * 0.76)),
+    crown: 'blob',
+    trunk: {
+      height: 0.44, radius: 0.046, taper: 0.60, sides: 6,
+      lean: 0.09, bend: 0.22, flare: 1.7,
     },
+    limbs: {
+      count: 3, from: 0.70, to: 1.0, angle: 0.68, length: 0.30,
+      radius: 0.52, sides: 4, rise: 0.70,
+    },
+    blobs: {
+      count: 5, detail: 1, centre: 0.76, spread: [0.24, 0.16, 0.24],
+      size: [0.22, 0.31], squash: 0.90, warp: 0.20, lift: 0.25,
+    },
+    bark: [0.37, 0.28, 0.21],
+    palettes: [
+      [[0.78, 0.35, 0.09], [0.94, 0.58, 0.15]],
+      [[0.66, 0.19, 0.11], [0.86, 0.36, 0.14]],
+      [[0.80, 0.56, 0.10], [0.95, 0.76, 0.22]],
+    ],
+    lod: { blobs: 2, detail: 0, trunkSides: 3 },
   },
 
   /**
-   * BIRCH — slender, pale, and high-crowned.
+   * BIRCH — slender, pale, high-crowned.
    *
-   * The bark colour is doing most of the work here and it is worth being honest
-   * about that: at any distance where the crown is a few pixels, a birch wood
-   * is white verticals against dark ground, and that is the whole read. The
-   * crown is kept a pale yellow-green rather than a hard green so the wood
-   * reads light from a distance — a mass of pale birch reads as a pale mass.
+   * The bark colour does most of the work and it is worth being honest about
+   * that: at any distance where the crown is a few pixels, a birch wood is
+   * white verticals against dark ground, and that is the whole read. The
+   * palettes are kept yellow-green so the mass reads light as well as the
+   * trunks.
    */
   birch: {
-    levels: 2,
-    sections: 4,
-    segments: 5,
-    segmentDrop: 2,
-    trunk: { length: 0.9, radius: 0.028, lean: 0.22 },
-    branches: [
-      { count: 6, angle: 0.76, start: 0.40, length: 0.56, radius: 0.5, tipShrink: 0.35, leafy: true },
-      { count: 3, angle: 0.62, start: 0.3, length: 0.62, radius: 0.55, tipShrink: 0.3, leafy: true },
-    ],
-    gnarliness: 0.5,
-    taper: 0.4,
-    growth: { dir: { x: 0, y: 0.5, z: 0 }, strength: 0.8 },
-    minRadius: 0.0035,
-    maxBranches: 24,
-    leafSize: 0.42,
-    leafFalloff: 0.84,
-    leafDrop: 0.09,
-    cards: 3,
-    leafCell: 'broadleaf',
-    bark: [0.93, 0.92, 0.87],
-    leaf: [0.64, 0.68, 0.44],
-    impostor: {
-      crownBase: 0.42, trunkWidth: 0.014,
-      blobs: 32, blobSize: 0.085, blobSquash: 0.95, bias: 0.6,
-      profile: (t) => 0.66 * Math.sin(Math.PI * (0.28 + t * 0.68)),
+    crown: 'blob',
+    trunk: {
+      height: 0.56, radius: 0.030, taper: 0.55, sides: 5,
+      lean: 0.14, bend: 0.30, flare: 1.5,
     },
+    limbs: {
+      count: 3, from: 0.62, to: 1.0, angle: 0.55, length: 0.30,
+      radius: 0.45, sides: 3, rise: 0.85,
+    },
+    blobs: {
+      count: 5, detail: 1, centre: 0.76, spread: [0.19, 0.20, 0.19],
+      size: [0.15, 0.24], squash: 0.78, warp: 0.24, lift: 0.35,
+    },
+    bark: [0.92, 0.91, 0.86],
+    palettes: [
+      [[0.52, 0.70, 0.24], [0.72, 0.86, 0.35]],
+      [[0.44, 0.62, 0.22], [0.63, 0.79, 0.31]],
+      [[0.62, 0.74, 0.22], [0.83, 0.90, 0.33]],
+    ],
+    lod: { blobs: 2, detail: 0, trunkSides: 3 },
   },
 
   /**
    * POPLAR — a column. The cheapest possible silhouette contrast.
    *
-   * Children leave the trunk at 0.32 rad, which is barely off vertical, so the
-   * whole tree is taller than it is wide by a factor of five. One of these in a
-   * hedgerow is worth more to a horizon than ten more oaks.
+   * The lumps are stacked in a vertical line inside a narrow envelope, so the
+   * tree is five times taller than it is wide. One of these in a hedgerow is
+   * worth more to a horizon than ten more oaks.
    */
   poplar: {
-    levels: 2,
-    sections: 4,
-    segments: 5,
-    segmentDrop: 2,
-    trunk: { length: 1.25, radius: 0.032, lean: 0.06 },
-    branches: [
-      { count: 11, angle: 0.42, start: 0.18, length: 0.46, radius: 0.42, tipShrink: 0.5, leafy: true },
-      { count: 2, angle: 0.3, start: 0.3, length: 0.5, radius: 0.5, tipShrink: 0.3, leafy: true },
-    ],
-    gnarliness: 0.3,
-    taper: 0.38,
-    growth: { dir: { x: 0, y: 1.0, z: 0 }, strength: 1.0 },
-    minRadius: 0.0035,
-    maxBranches: 26,
-    leafSize: 0.36,
-    leafFalloff: 0.86,
-    leafDrop: 0.05,
-    cards: 3,
-    leafCell: 'broadleaf',
-    bark: [0.42, 0.38, 0.30],
-    leaf: [0.33, 0.44, 0.22],
-    impostor: {
-      crownBase: 0.16, trunkWidth: 0.015,
-      blobs: 36, blobSize: 0.068, blobSquash: 1.15, bias: 0.5,
-      profile: (t) => 0.34 * Math.sin(Math.PI * (0.15 + t * 0.8)),
+    crown: 'blob',
+    trunk: {
+      height: 0.30, radius: 0.032, taper: 0.60, sides: 5,
+      lean: 0.03, bend: 0.08, flare: 1.6,
     },
+    blobs: {
+      count: 5, detail: 1, centre: 0.62, spread: [0.055, 0.32, 0.055],
+      size: [0.13, 0.19], squash: 1.25, warp: 0.16, lift: 0.0,
+    },
+    bark: [0.43, 0.38, 0.29],
+    palettes: [
+      [[0.26, 0.50, 0.20], [0.40, 0.66, 0.27]],
+      [[0.31, 0.56, 0.21], [0.47, 0.72, 0.28]],
+      [[0.21, 0.43, 0.19], [0.34, 0.58, 0.24]],
+    ],
+    lod: { blobs: 2, detail: 0, trunkSides: 3 },
   },
 
   /**
-   * ASPEN — a pale golden stand tree, the birch's up-country sibling.
+   * ASPEN — the birch's up-country sibling, and the table's gold.
    *
-   * Same trick as the birch — a light trunk doing the legibility work at
-   * distance — but a taller, slimmer egg of bright yellow foliage, so the two
-   * reads differ before the colour even resolves. Colonises coarser, sunnier
-   * ground than birch tolerates.
+   * Same trick as the birch — a light stem doing the legibility work — but a
+   * taller, slimmer egg of bright foliage, so the two reads differ before the
+   * colour resolves. Colonises coarser, sunnier ground than birch tolerates.
    */
   aspen: {
-    levels: 2,
-    sections: 4,
-    segments: 5,
-    segmentDrop: 2,
-    trunk: { length: 1.1, radius: 0.03, lean: 0.12 },
-    branches: [
-      { count: 8, angle: 0.55, start: 0.22, length: 0.55, radius: 0.5, tipShrink: 0.4, leafy: true },
-      { count: 2, angle: 0.45, start: 0.3, length: 0.6, radius: 0.55, tipShrink: 0.3, leafy: true },
-    ],
-    gnarliness: 0.32,
-    taper: 0.4,
-    growth: { dir: { x: 0, y: 0.9, z: 0 }, strength: 1.0 },
-    minRadius: 0.0035,
-    maxBranches: 26,
-    leafSize: 0.34,
-    leafFalloff: 0.86,
-    leafDrop: 0.06,
-    cards: 3,
-    leafCell: 'broadleaf',
-    bark: [0.80, 0.78, 0.70],
-    leaf: [0.86, 0.64, 0.12],
-    impostor: {
-      crownBase: 0.30, trunkWidth: 0.014,
-      blobs: 40, blobSize: 0.07, blobSquash: 1.0, bias: 0.55,
-      // A tall slim egg: widest mid-crown, closed at both ends.
-      profile: (t) => 0.54 * Math.sin(Math.PI * t),
+    crown: 'blob',
+    trunk: {
+      height: 0.50, radius: 0.031, taper: 0.58, sides: 5,
+      lean: 0.08, bend: 0.20, flare: 1.5,
     },
+    limbs: {
+      count: 3, from: 0.66, to: 1.0, angle: 0.48, length: 0.26,
+      radius: 0.45, sides: 3, rise: 0.9,
+    },
+    blobs: {
+      count: 5, detail: 1, centre: 0.74, spread: [0.15, 0.24, 0.15],
+      size: [0.14, 0.22], squash: 0.95, warp: 0.20, lift: 0.30,
+    },
+    bark: [0.80, 0.78, 0.69],
+    palettes: [
+      [[0.86, 0.66, 0.13], [0.97, 0.85, 0.30]],
+      [[0.74, 0.76, 0.22], [0.92, 0.91, 0.36]],
+      [[0.90, 0.52, 0.11], [0.99, 0.74, 0.24]],
+    ],
+    lod: { blobs: 2, detail: 0, trunkSides: 3 },
   },
 
   /**
-   * DEAD — bare wood, and the cheapest thing in the table at roughly a third
-   * the triangles of an oak, because it carries almost no leaf mass.
+   * DEAD — bare wood, and the cheapest thing in the table.
    *
    * It earns its place by being the only species that survives above the tree
    * line, so the transition out of woodland is a thinning of standing dead
-   * timber rather than a hard edge into bare rock.
+   * timber rather than a hard edge into bare rock. `limbs.fork` gives each limb
+   * a second generation, which is the only reason a bare armature reads as a
+   * tree rather than as a fence post.
    */
   dead: {
-    levels: 3,
-    sections: 4,
-    segments: 5,
-    segmentDrop: 2,
-    trunk: { length: 0.7, radius: 0.05, lean: 0.3 },
-    branches: [
-      { count: 3, angle: 1.15, start: 0.4, length: 0.72, radius: 0.55, tipShrink: 0.3, leafy: false },
-      { count: 3, angle: 1.0, start: 0.25, length: 0.62, radius: 0.5, tipShrink: 0.35, leafy: false },
-      { count: 2, angle: 0.9, start: 0.2, length: 0.55, radius: 0.45, tipShrink: 0.4, leafy: false },
-    ],
-    gnarliness: 0.85,
-    taper: 0.4,
-    growth: { dir: { x: 0.2, y: 0.3, z: -0.1 }, strength: 0.5 },
-    minRadius: 0.005,
-    maxBranches: 22,
-    leafSize: 0.22,
-    leafFalloff: 0.8,
-    leafDrop: 0.0,
-    cards: 2,
-    leafCell: 'twig',
-    bark: [0.46, 0.42, 0.36],
-    leaf: [0.44, 0.40, 0.33],
-    impostor: {
-      crownBase: 0.38, trunkWidth: 0.022,
-      blobs: 18, blobSize: 0.048, blobSquash: 0.9, bias: 0.6,
-      profile: (t) => 0.5 * Math.sin(Math.PI * (0.2 + t * 0.7)),
+    crown: 'bare',
+    trunk: {
+      height: 0.78, radius: 0.058, taper: 0.34, sides: 5,
+      lean: 0.16, bend: 0.42, flare: 1.9,
     },
+    limbs: {
+      count: 4, from: 0.42, to: 0.98, angle: 1.00, length: 0.42,
+      radius: 0.66, sides: 4, rise: 0.55, fork: 2,
+    },
+    bark: [0.50, 0.45, 0.38],
+    palettes: [
+      [[0.50, 0.45, 0.38], [0.62, 0.57, 0.49]],
+      [[0.44, 0.39, 0.33], [0.56, 0.51, 0.44]],
+      [[0.55, 0.50, 0.43], [0.67, 0.62, 0.54]],
+    ],
+    lod: { trunkSides: 3 },
   },
 };
 
@@ -401,19 +348,23 @@ export const TREE_FORMS = {
 /** @type {Record<string, FoliageKind>} */
 export const FOLIAGE = {
   pine: {
+    guild: 'conifer',
     height: [14, 26], weight: 1.0, relief: [30, 340], maxSlope: 0.8,
     lateral: [13, 165], rugged: 0.7, wet: -0.2, social: 0.85,
   },
   spruce: {
+    guild: 'conifer',
     height: [12, 22], weight: 0.8, relief: [60, 380], maxSlope: 0.85,
     lateral: [13, 165], rugged: 0.9, wet: 0.15, social: 0.9,
   },
   oak: {
+    guild: 'warm',
     height: [11, 19], weight: 0.9, relief: [-40, 140], maxSlope: 0.55,
     lateral: [14, 165], rugged: -0.5, wet: 0.1, social: 0.4,
   },
   maple: {
     // Warm-leaved broadleaf of settled mid ground, climbing out of the lowland.
+    guild: 'warm',
     height: [12, 20], weight: 0.8, relief: [-50, 240], maxSlope: 0.55,
     lateral: [13, 165], rugged: -0.35, wet: 0.1, social: 0.5,
   },
@@ -421,21 +372,30 @@ export const FOLIAGE = {
     // The pale trunk is the woodland's white mass: the commonest tree mid-slope
     // and the most abundant pale one anywhere, so a birch wood reads everywhere.
     // A high social bias keeps it clustering into real white stands rather than
-    // scattering as a pale sprinkle between everything else.
-    height: [10, 18], weight: 1.7, relief: [-50, 320], maxSlope: 0.7,
+    // scattering as a pale sprinkle between everything else. The weight came
+    // down from 1.7 with the guild field: it was raised that far because pale
+    // stands failed to spawn for long stretches, and the guild field now
+    // guarantees whole regions of them.
+    guild: 'pale',
+    height: [10, 18], weight: 1.25, relief: [-50, 320], maxSlope: 0.7,
     lateral: [13, 165], rugged: 0.1, wet: 0.0, social: 0.75,
   },
   poplar: {
+    guild: 'pale',
     height: [15, 25], weight: 0.3, relief: [-40, 130], maxSlope: 0.45,
     lateral: [14, 150], rugged: -0.6, wet: 0.35, social: 0.75,
   },
   aspen: {
     // Pale coloniser of higher, drier, steeper ground than birch cares for.
+    guild: 'pale',
     height: [14, 24], weight: 0.65, relief: [-40, 340], maxSlope: 0.75,
     lateral: [13, 165], rugged: 0.2, wet: -0.1, social: 0.65,
   },
   dead: {
     // Survives higher than anything living — the last thing before bare rock.
+    // NO GUILD: standing dead timber belongs in any wood, and excluding it from
+    // the others would make the treeline a hard edge again.
+    guild: null,
     height: [7, 14], weight: 0.2, relief: [140, 460], maxSlope: 0.95,
     lateral: [15, 165], rugged: 0.95, wet: -0.5, social: 0.15,
   },
@@ -451,23 +411,53 @@ export const FOLIAGE = {
  * `edge` weights a species toward the woodland fringe — see `vegetation()`'s
  * EDGE signal. Bramble and hazel live there; gorse and heather are open-ground
  * plants and score highest where the canopy has given up entirely.
+ *
+ * `palettes` works exactly as the trees' does — per variant, baked into the
+ * geometry, `[main, alt]` mixed by height and facing. It replaces a single
+ * `tint` that `chunks.js` blended halfway toward the ground colour, which was
+ * the right rule when a shrub was a grey painted card and is the wrong one now
+ * that it is per-face coloured geometry: the blend desaturated every species to
+ * the same pale olive, and a gorse in flower is not pale olive.
  */
 export const SHRUBS = {
   bramble: {
     form: 'round', height: [0.9, 1.8], weight: 1.0, relief: [-50, 180],
-    maxSlope: 0.9, lateral: [9, 150], wet: 0.3, edge: 1.0, tint: [0.30, 0.38, 0.20],
+    maxSlope: 0.9, lateral: [9, 150], wet: 0.3, edge: 1.0,
+    palettes: [
+      [[0.24, 0.46, 0.20], [0.38, 0.62, 0.27]],
+      [[0.19, 0.38, 0.18], [0.31, 0.54, 0.24]],
+      [[0.30, 0.52, 0.19], [0.46, 0.68, 0.26]],
+    ],
   },
   hazel: {
     form: 'upright', height: [1.9, 3.6], weight: 0.7, relief: [-40, 170],
-    maxSlope: 0.7, lateral: [11, 150], wet: 0.25, edge: 0.85, tint: [0.32, 0.42, 0.22],
+    maxSlope: 0.7, lateral: [11, 150], wet: 0.25, edge: 0.85,
+    palettes: [
+      [[0.29, 0.54, 0.22], [0.45, 0.71, 0.30]],
+      [[0.35, 0.60, 0.23], [0.53, 0.78, 0.31]],
+      [[0.24, 0.47, 0.21], [0.39, 0.64, 0.28]],
+    ],
   },
   gorse: {
     form: 'spiky', height: [0.8, 1.7], weight: 0.75, relief: [0, 300],
-    maxSlope: 1.1, lateral: [9, 150], wet: -0.55, edge: -0.5, tint: [0.38, 0.40, 0.17],
+    maxSlope: 1.1, lateral: [9, 150], wet: -0.55, edge: -0.5,
+    palettes: [
+      [[0.36, 0.46, 0.15], [0.66, 0.68, 0.18]],
+      [[0.42, 0.50, 0.14], [0.78, 0.74, 0.19]],
+      [[0.31, 0.41, 0.16], [0.57, 0.60, 0.20]],
+    ],
   },
   heather: {
     form: 'low', height: [0.35, 0.8], weight: 0.9, relief: [60, 420],
-    maxSlope: 1.2, lateral: [9, 150], wet: -0.25, edge: -0.85, tint: [0.36, 0.31, 0.30],
+    maxSlope: 1.2, lateral: [9, 150], wet: -0.25, edge: -0.85,
+    // Dusty, not magenta. The first pass at these was a saturated purple and
+    // photographed as three flat sweet wrappers on the hillside; real heather
+    // is a grey-mauve that only reads as purple in mass and at distance.
+    palettes: [
+      [[0.36, 0.28, 0.32], [0.52, 0.42, 0.46]],
+      [[0.34, 0.31, 0.23], [0.50, 0.47, 0.34]],
+      [[0.40, 0.29, 0.27], [0.56, 0.44, 0.40]],
+    ],
   },
 };
 
@@ -577,6 +567,53 @@ export function vegetation(terrain, x, z, relief, slope, lateral, out = {}) {
     (0.62 + 0.38 * moisture) * shade * patchy * (1 - clamp01((slope - 0.9) / 0.8))
   );
 
+  /**
+   * THE GUILD FIELD — what KIND of wood this is.
+   *
+   * A stand mask says how much canopy; it says nothing about what the canopy is
+   * made of, so species were drawn independently at every point and the result
+   * was a dark pine standing in the middle of a bright birch wood. Real
+   * woodland is not mixed at that scale: it is a birch valley, a conifer ridge,
+   * an oak-and-maple lowland, with the transitions taking hundreds of metres.
+   *
+   * So: one slow field, and the three guilds are three overlapping bands on it.
+   * The noise supplies the patchwork; the terrain SHIFTS where a place sits on
+   * the axis, so conifers still climb and warm broadleaves still keep to the
+   * damp lowlands without either being a separate rule.
+   *
+   * Continuous by construction, which is what matters — a guild chosen per
+   * chunk or per cluster would put a hard seam wherever two of them met.
+   */
+  /**
+   * STRETCHED AGAINST THE FIELD'S MEASURED RANGE, not against 0..1. `mask` is
+   * two octaves of fBm and two octaves do not reach the ends: measured over
+   * 40,000 samples at this frequency it spans 0.25 to 0.72 with half of
+   * everything between 0.445 and 0.555. Used raw, the whole world sat inside
+   * the middle band and every wood came out the same guild — the neighbouring
+   * trees agreed 83% of the time against 79% by chance, i.e. the field was
+   * doing nothing. p05..p95 is 0.367..0.631; that is what is mapped to 0..1.
+   */
+  const kind = clamp01((terrain.mask(x, z, 0.0011, 8123, -4410) - 0.367) / 0.264);
+  const high = clamp01((relief - 40) / 240);
+  const axis = clamp01(kind + (high * 0.30 + rugged * 0.22) - moisture * 0.18 - 0.10);
+  // Bands with GAPS between them, not touching. The gap is where two guilds
+  // both score partially and a wood is genuinely mixed, which is what a real
+  // transition looks like; touching bands make every boundary a mixed wood and
+  // there is then nowhere that is purely one thing.
+  out.gWarm = band(axis, 0.00, 0.26, 0.12);
+  out.gPale = band(axis, 0.38, 0.62, 0.12);
+  out.gConifer = band(axis, 0.74, 1.00, 0.12);
+
+  /**
+   * WOODLAND FLOOR: the long, shade-tolerant grass under a canopy.
+   *
+   * The opposite of `ground`, which is thinned BY shade. A closed wood does not
+   * carry a meadow sward, but it does carry tall soft stuff in the gaps — and
+   * an open field does not. Damp ground carries more of it.
+   */
+  out.floor = clamp01(canopy * 1.25) * (0.40 + 0.60 * moisture) *
+    clamp01((lateral - CHUNK.plantClear) / 8);
+
   out.canopy = canopy;
   out.understorey = understorey;
   out.ground = ground;
@@ -585,6 +622,14 @@ export function vegetation(terrain, x, z, relief, slope, lateral, out = {}) {
   out.rugged = rugged;
   out.stand = stand;
   return out;
+}
+
+/** A species' affinity for the guild field at a point, 0..1. */
+export function guildAffinity(kind, field) {
+  if (!kind.guild) return 1;
+  if (kind.guild === 'conifer') return field.gConifer;
+  if (kind.guild === 'pale') return field.gPale;
+  return field.gWarm;
 }
 
 /**
@@ -619,6 +664,12 @@ export function suitability(kind, field, relief, slope, lateral) {
   if (kind.social) {
     f *= 1 - kind.social * (1 - clamp01(field.stand * 1.35));
   }
+
+  // THE GUILD. Multiplied in hard — 4% off-guild, not zero — so a wood is a
+  // wood of one kind and the odd outlier still exists. A soft weight was tried
+  // first and does not work: at 30% off-guild there is a dark conifer in every
+  // second birch stand, which is precisely the thing that reads as wrong.
+  f *= 0.04 + 0.96 * guildAffinity(kind, field);
 
   // Thin out as the ground steepens, well before the hard cutoff.
   f *= 1 - Math.min(1, slope / kind.maxSlope) * 0.5;

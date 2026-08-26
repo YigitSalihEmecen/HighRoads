@@ -16,7 +16,8 @@ npm run probe
 | `surface.mjs` | Is anything standing in the carriageway, or missing from under it? Casts down the drivable width along the whole route, against the window of chunks the GAME keeps alive. Exits non-zero on any step over 30 cm or any hole. Was `tunnel.mjs`. |
 | `traffic.mjs` | Do cars appear in view, stop dead, or overlap? Drives a synthetic player for several minutes and reports spawn distance, stalls, overlaps, lane error, population and impact Δv. |
 | `terrain.mjs` | How faceted is the ground? Angle between adjacent face normals, by distance band. |
-| `props.mjs` | The canopy and the understorey: per-species triangle counts, whether the library is deterministic, per-chunk caps and draw batches, scatter cost, clearance from the carriageway, float off the real collider — and whether the scatter is LUMPY rather than uniform, which is the thing the clustering exists to do. |
+| `props.mjs` | The canopy and the understorey: per-species triangle counts for both tiers, whether the library is deterministic, whether the far tier is the same tree as the near one, per-chunk caps and draw batches, scatter cost, clearance from the carriageway, float off the real collider — and whether the scatter is LUMPY rather than uniform, which is the thing the clustering exists to do. |
+| `canopy.mjs` | **What the canopy looks like.** Contact sheet of the whole library — every species, every variant, both tiers, one light, one ground — with the distance fade switched off so the two tiers can be compared at true size. The only check that can see whether a tree looks like the reference art. Not in `npm run probe`: needs a local Chrome. |
 | `offroad.mjs` | Is there ground everywhere the player is allowed to drive? Rays a grid over the whole area the recovery bound permits, reports the corridor width the fold guard is delivering, and counts folded cells. Bug #64's regression test. |
 | `cliff.mjs` | Longitudinal steps in the terrain sheet — a seam the car can catch on and the eye reads as a tear. |
 | `handling.mjs` | Usable steering angle by speed, whether a slide can be caught, whether a drift can be held, and rollover safety for the tall vehicles. |
@@ -84,7 +85,14 @@ drawn relative to the camera.
 of the ground cover passed — right count, right density, none on the road, all
 of it on the drawn surface — while the grass rendered as a dark stripe along the
 verge, because two ambient-occlusion terms multiplied to 11%. Numbers cannot see
-that. `render.mjs` can.
+that. `render.mjs` can, and `canopy.mjs` is the same argument for the canopy:
+the crown radii of the two tiers agreed to 2% while every shrub in the world
+photographed as a grey snowball.
+
+**A screenshot probe must serve `cache-control: no-store`.** Chrome keeps its
+HTTP cache in the `--user-data-dir`, which persists between runs, so a sheet
+photographed after an edit is the module from before it. Three renders came back
+byte-identical and were read as "the change had no effect".
 
 **A headless screenshot is not the viewport you asked for.** Chrome's
 `--window-size` is clamped to a 500 px minimum, so `--screenshot` on a 375 px

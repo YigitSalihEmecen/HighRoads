@@ -1,0 +1,157 @@
+<!doctype html>
+<!--
+  The contact sheet `probe/canopy.mjs` screenshots.
+
+  Every species, every variant, both tiers, side by side under one light on one
+  neutral ground. Nothing else in the project can answer "does this look like
+  the reference art", and nothing else can catch the failure the low-poly
+  rewrite exists to fix — a far tier that is not the same tree as its near tier.
+
+  THE DISTANCE FADE IS SWITCHED OFF HERE, and it has to be. Both tiers shrink to
+  nothing outside their own window and the windows are complementary by design,
+  so there is no camera distance at which both are visible at true size. The
+  sheet is about silhouette, not about the handover; `render.mjs` photographs
+  the handover in situ.
+-->
+<meta charset="utf-8">
+<title>canopy contact sheet</title>
+<style>html,body{margin:0;height:100%;background:#cfd8dc;overflow:hidden}</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { createTreeAssets } from '../src/env/trees.js';
+import { createBushAssets } from '../src/env/bushes.js';
+import { createGrassAssets } from '../src/env/grass.js';
+import { GRASS } from '../src/config.js';
+
+const W = window.innerWidth, H = window.innerHeight;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W, H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd3dde2);
+scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x5a6650, 1.3));
+const sun = new THREE.DirectionalLight(0xfff3e0, 1.9);
+sun.position.set(-40, 60, 40);
+sun.castShadow = true;
+sun.shadow.camera.left = -70; sun.shadow.camera.right = 70;
+sun.shadow.camera.top = 70; sun.shadow.camera.bottom = -70;
+sun.shadow.mapSize.set(2048, 2048);
+scene.add(sun);
+
+const trees = createTreeAssets();
+const bushes = createBushAssets();
+const grass = createGrassAssets();
+
+// Fade off: window way past anything, fade-in already complete.
+for (const u of [trees.uniforms.near, trees.uniforms.far, bushes.uniforms]) {
+  u.uFade.value.set(1e6, 1e6 + 1);
+  u.uFadeIn.value.set(-2, -1);
+  u.uFadeLone.value.set(-2, -1);
+}
+
+const put = (proto, material, x, z, h, tint = [1, 1, 1]) => {
+  const m = new THREE.InstancedMesh(proto.geometry, material, 1);
+  const mat = new THREE.Matrix4();
+  mat.compose(new THREE.Vector3(x, 0, z),
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.7),
+    new THREE.Vector3(h, h, h));
+  m.setMatrixAt(0, mat);
+  m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(tint), 3);
+  m.instanceColor.needsUpdate = true;
+  m.frustumCulled = false;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  scene.add(m);
+};
+
+// One column per species: three near variants across the front row, the three
+// matching far variants directly behind them, all at 9 m. Any difference in
+// size or shape between a column's two rows is a real one.
+const SPECIES_GAP = 12, VARIANT_GAP = 3.4, ROW = 15, TALL = 9;
+let i = 0;
+for (const [name, variants] of trees.library) {
+  const far = trees.far.get(name);
+  const x0 = (i - 3.5) * SPECIES_GAP;
+  variants.forEach((p, v) => put(p, trees.material, x0 + (v - 1) * VARIANT_GAP, 0, TALL));
+  // Offset by half a species gap so the far row shows THROUGH the near one
+  // rather than standing behind it. Comparing them means seeing both.
+  far.forEach((p, v) => put(p, trees.farMaterial,
+    x0 + SPECIES_GAP * 0.5 + (v - 1) * VARIANT_GAP, -ROW, TALL));
+  i++;
+}
+
+// Shrubs across the very front, at their own scale. Their hue is baked in, as
+// the trees' is, so no tint is needed here.
+let b = 0;
+for (const [, variants] of bushes.library) {
+  for (const p of variants) put(p, bushes.material, 4 + (b++ - 5.5) * 4.0, 14, 2.6);
+}
+
+/**
+ * Ground cover, front row: the roadside card and the woodland-floor card side
+ * by side at their own heights. They are two different plants — see
+ * `env/grass.js:bladeTexture` — and the only way to tell whether they read as
+ * two different plants is to stand them next to each other.
+ */
+{
+  const tuft = (material, x, z, h, w, tint) => {
+    const n = 26;
+    const m = new THREE.InstancedMesh(grass.geometry, material, n);
+    const mat = new THREE.Matrix4();
+    const cols = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const hh = h * (0.7 + ((i * 37) % 11) / 18);
+      mat.compose(
+        new THREE.Vector3(x + (((i * 53) % 17) / 17 - 0.5) * 7, 0,
+          z + (((i * 29) % 13) / 13 - 0.5) * 4),
+        new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), i * 1.7),
+        new THREE.Vector3(hh * w, hh, hh * w));
+      m.setMatrixAt(i, mat);
+      cols.set(tint, i * 3);
+    }
+    m.instanceColor = new THREE.InstancedBufferAttribute(cols, 3);
+    m.instanceColor.needsUpdate = true;
+    m.frustumCulled = false;
+    m.receiveShadow = true;
+    scene.add(m);
+  };
+  // The grass shader fades by camera distance and has no uniforms exposed, so
+  // both tiers are placed inside their own windows rather than switched off.
+  // The tints are what `chunks.js` actually hands an instance: the ground's own
+  // colour times the tier's `lift`. Picking a darker one here to "show that it
+  // is shade grass" photographs the asset as something it is not.
+  tuft(grass.material, -34, 26, GRASS.height[1], GRASS.widthRatio, [0.61, 0.74, 0.41]);
+  if (grass.woodMaterial) {
+    tuft(grass.woodMaterial, -16, 26, GRASS.wood.height[1], GRASS.wood.widthRatio,
+      [0.52, 0.64, 0.35]);
+  }
+}
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(600, 600).rotateX(-Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: 0x93a86c, roughness: 1 }));
+ground.position.y = -0.02;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const camera = new THREE.PerspectiveCamera(30, W / H, 0.5, 800);
+camera.position.set(0, 13, 108);
+camera.lookAt(0, 6.5, -4);
+
+grass.setTime(0);
+renderer.render(scene, camera);
+window.CANOPY_READY = true;
+</script>

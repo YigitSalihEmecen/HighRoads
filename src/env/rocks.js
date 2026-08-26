@@ -34,13 +34,20 @@
  * 2,900 for one of the Quaternius canopies. A hundred rocks in view is 4,400
  * triangles, which is four percent of the terrain sheet.
  *
- * ── colour ──────────────────────────────────────────────────────────────────
+ * ── colour, and the one exception in `src/env/` ─────────────────────────────
  *
- * Vertex colours, and — like the grass — they are LUMINANCE, multiplied by the
- * per-instance colour that `chunks.js` samples from the terrain. Stone beside a
- * green hillside and stone in a canyon are the same geometry with the ground's
- * own hue on it, so rock can never be the one thing in the frame that did not
- * get the memo about which biome this is.
+ * Vertex colours here are LUMINANCE, as everywhere: the hue is per instance.
+ * But it is the ONE asset in this directory whose hue does not come from the
+ * terrain under it — it comes from `ROCKS.palette`, a fixed set of mineral
+ * greys and browns.
+ *
+ * That is a deliberate carve-out from rule 5 of `src/env/README.md`, and the
+ * reason is that the rule is about things that GROW out of the ground. Grass
+ * and foliage take the ground's colour because a green tuft on a grey scree
+ * slope is wrong. A rock does not photosynthesise: sampling the verge gave
+ * every chip along the shoulder the grass's green, which reads as algae rather
+ * than as stone. The palette is in `config.js` and not in this file for the
+ * same reason every other tunable is.
  */
 
 import * as THREE from 'three';
