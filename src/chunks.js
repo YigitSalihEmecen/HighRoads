@@ -28,6 +28,7 @@ import { FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability } fro
 import { makeFrame } from './path.js';
 import { createGrassAssets } from './env/grass.js';
 import { createGroundAssets } from './env/ground.js';
+import { createRoadAssets } from './env/road.js';
 import { createRockAssets } from './env/rocks.js';
 import { createTreeAssets } from './env/trees.js';
 import { createBushAssets } from './env/bushes.js';
@@ -190,19 +191,96 @@ function buildRoadColumns() {
  * identical correction at a shared boundary and seams stay exact.
  */
 const FOLD_P = 6;
-function foldSafeOffset(v, foldL, foldR) {
-  // A left turn (positive curvature) puts the centre of rotation at negative v,
-  // so it is `foldL` that bounds the left side.
-  const k = v < 0 ? foldL : foldR;
+/** Scratch for `lateralAt`, which runs once per sheet vertex. */
+const _latDir = new THREE.Vector3();
+/** Scratch for the apron's road clamp. */
+const _apronRoad = { dist: Infinity, y: 0 };
+
+function foldSafeOffset(v, k) {
   if (k < 1e-7) return v;
 
-  const L = 0.7 / k;
+  const L = ROUTE.foldMargin / k;
   const u = Math.abs(v) / L;
   // Below ~0.4*L the correction is under a part in a thousand; skipping it
   // there keeps a pow() out of the hot path for the overwhelming majority of
   // samples, since most of the world is not inside a hairpin.
   if (u < 0.4) return v;
   return v / Math.pow(1 + Math.pow(u, FOLD_P), 1 / FOLD_P);
+}
+
+/**
+ * Where the sheet's column `v` actually goes, and along what direction.
+ *
+ * Writes a unit XZ direction into `outDir` and returns the offset to travel
+ * along it — which is `v` itself unless the backstop below had to bite.
+ *
+ * ── why the direction is not simply `right` ─────────────────────────────────
+ *
+ * Rows are spaced `ds * (1 + v * kappa)` apart, so the guard has to hold
+ * `v * kappa <= foldMargin` or the mesh turns inside out. Bounding that by
+ * squeezing `v` is what the sheet used to do, and it means the world ENDS at
+ * `foldMargin / kappa` — 94 m on the default seed's tightest bend, with 12.4%
+ * of the ground within 300 m of the road simply absent. Bug #70.
+ *
+ * `kappa` is the rate the lateral direction turns with `s`, though, and that
+ * direction is ours to choose. Near the carriageway it must be `right`: the
+ * cut and fill have to be square to the road. Four hundred metres out nothing
+ * requires it. So the direction is rotated from `right` toward the relaxed
+ * heading `path.js:_buildRelaxed` maintains, by a weight that rises with
+ * offset, and the effective curvature falls with it:
+ *
+ *     kEff(v) = (1 - b) * kappa + b * kappaRelaxed
+ *
+ * `b` is chosen as the smallest weight that satisfies the invariant at this
+ * offset, so the near field is untouched — `b` is 0 wherever the road's own
+ * heading can carry the column — and the far field straightens exactly as much
+ * as it must. Rotating by `b * relaxDev` makes that `kEff` an identity rather
+ * than an approximation; see `_buildRelaxed`.
+ *
+ * `foldSafeOffset` stays as the backstop for the case the relaxed heading is
+ * itself too tight to carry the full extent, which at `relaxWindow` = 800 m
+ * happens past about 400 m. It bites on `kEff`, so it is now a soft landing at
+ * the edge of a wide sheet rather than the thing that decides its width.
+ */
+function lateralAt(frame, rightFlat, v, outDir) {
+  const av = Math.abs(v);
+  const k = v < 0 ? frame.foldL : frame.foldR;
+  const kr = v < 0 ? frame.relaxL : frame.relaxR;
+
+  // b IS A FUNCTION OF THE OFFSET ALONE, and that is load-bearing.
+  //
+  // The obvious thing is to solve for the smallest b that satisfies the
+  // invariant here — `b = (kappa - foldMargin/|v|) / (kappa - kappaRelaxed)` —
+  // which relaxes the sheet only exactly as much as each station needs. It
+  // produces a beautiful corridor and 10,895 inverted cells, because the
+  // direction's turn rate is then
+  //
+  //     d(theta_d)/ds = (1-b)*kappa + b*kappaRelaxed  +  (db/ds) * relaxDev
+  //
+  // and that last term is not small. `kappa` is a running maximum, so it steps;
+  // `b` steps with it; and `relaxDev` is up to half a radian. A schedule in
+  // `|v|` has `db/ds = 0` identically, which deletes the term and makes the
+  // first two an exact identity rather than a hopeful approximation.
+  //
+  // So the near band stays in honest road space — the earthwork has to be
+  // square to the carriageway — and everything past it straightens on a fixed
+  // ramp, whether this particular station needed it or not. A straight road
+  // pays nothing for it: `kappaRelaxed` and `kappa` are both ~0 there, so the
+  // rotation is by `b * relaxDev` of an angle that is itself ~0.
+  const b = smoothstep(CHUNK.relaxBand[0], CHUNK.relaxBand[1], av);
+
+  if (b <= 0) {
+    outDir.copy(rightFlat);
+    return foldSafeOffset(v, k);
+  }
+
+  const a = b * (frame.relaxDev || 0);
+  const ca = Math.cos(a);
+  const sa = Math.sin(a);
+  // right(theta) is (cos theta, 0, sin theta), so advancing the heading by `a`
+  // is this rotation of the flat lateral vector.
+  outDir.set(rightFlat.x * ca - rightFlat.z * sa, 0, rightFlat.x * sa + rightFlat.z * ca);
+  return foldSafeOffset(v, (1 - b) * k + b * kr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -364,15 +442,11 @@ export class ChunkManager {
     // verge is tens of metres of perfectly smooth interpolation.
     this.ground = createGroundAssets({ anisotropy: this.anisotropy });
     this.matTerrain = this.ground.material;
+    /** The world-space ground under everything; see `_updateApron`. */
+    this.apron = null;
 
-    this.matRoad = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.68,
-      metalness: 0.0,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
+    this.road = createRoadAssets({ anisotropy: this.anisotropy });
+    this.matRoad = this.road.material;
 
     /**
      * The canopy and the understorey. Both are grown from code at boot; see
@@ -419,10 +493,12 @@ export class ChunkManager {
    * function will visibly float or sink.
    */
   sampleGround(frame, rightFlat, v, out) {
-    v = foldSafeOffset(v, frame.foldL, frame.foldR);
+    /** Column index in the lateral table, before the guard — see below. */
+    const nominal = Math.abs(v);
+    v = lateralAt(frame, rightFlat, v, _latDir);
     const av = Math.abs(v);
-    const x = frame.pos.x + rightFlat.x * v;
-    const z = frame.pos.z + rightFlat.z * v;
+    const x = frame.pos.x + _latDir.x * v;
+    const z = frame.pos.z + _latDir.z * v;
 
     // Road plane, banked. The bank flattens out past the verge so the cross
     // slope doesn't tilt the entire hillside with it.
@@ -542,8 +618,16 @@ export class ChunkManager {
 
     // Horizon falloff: the far edge of the corridor slopes away beneath the
     // eyeline so the world ends out of sight instead of at a visible cut.
-    if (av > CHUNK.horizonFalloff) {
-      y -= smoothstep(CHUNK.horizonFalloff, CHUNK.halfExtent, av) * CHUNK.horizonDrop;
+    //
+    // Keyed on the NOMINAL offset — the column's place in the lateral table —
+    // and not on where the guard put it. Those are the same number on a
+    // straight and they were not on a bend, so wherever the sheet was squeezed
+    // the falloff never fired at all and the world ended at full height, as a
+    // clean vertical cut, exactly where it was most visible. The whole point of
+    // this term is to be the last few columns of the sheet whatever the guard
+    // did with them.
+    if (nominal > CHUNK.horizonFalloff) {
+      y -= smoothstep(CHUNK.horizonFalloff, CHUNK.halfExtent, nominal) * CHUNK.horizonDrop;
     }
 
     out.set(x, y, z);
@@ -628,10 +712,172 @@ export class ChunkManager {
     return out;
   }
 
+  // ------------------------------------------------------------------ apron --
+
+  /**
+   * The world-space ground under everything else.
+   *
+   * ── why a second surface exists at all ─────────────────────────────────────
+   *
+   * The terrain sheet is parameterised by (s, v), and that parameterisation has
+   * a hard limit nothing can argue with: the family of curves parallel to a
+   * curve of radius R degenerates at distance R, on the inside. Ground further
+   * out than the road's own turning circle is not addressable in road space,
+   * because two rows that should be 2.5 m apart have already crossed.
+   *
+   * `lateralAt` buys a great deal of room by turning the lateral direction
+   * toward a heading that barely curves — the corridor goes from 94 m to
+   * 250-700 m depending on the seed — and it cannot buy all of it. Measured on
+   * seed "echo": with the direction relaxed far enough to claim a 404 m
+   * corridor, the direction is by then 52 degrees off perpendicular, so each
+   * sheet covers a sliver rather than a band and 5.7% of the ground within
+   * 300 m was still missing. Trading the angle back to fix the coverage costs
+   * the reach. There is no setting that wins both.
+   *
+   * So the far field stops being road space. The apron is a plain world-space
+   * grid of `terrain.height`, centred on the car — no road, no arc length, no
+   * parameterisation to degenerate — and it is drawn and collided UNDER the
+   * sheets. Wherever a sheet exists it wins; wherever one has run out, the
+   * apron is what the car lands on. It is the reason there is now no such thing
+   * as a hole rather than a reason there are fewer of them.
+   *
+   * It carries no earthwork, and does not need to: the cut and fill ramps die
+   * within ~60 m of the centreline and the sheet is never narrower than 94 m,
+   * so the two surfaces agree analytically everywhere the apron is ever seen.
+   * `CHUNK.apronSink` is the only thing between them, and it exists to cover
+   * the chord error between a 22 m grid and a 2.4 m one, not to hide a
+   * disagreement.
+   */
+  _updateApron(carS) {
+    const step = CHUNK.apronStep;
+    const half = Math.round(CHUNK.apronHalf / step) * step;
+
+    const f = this.path.frameAt(carS, this._frame);
+    // Snap the centre to the grid the samples land on, so the apron does not
+    // shimmer as it follows the car: every rebuild reuses the same world
+    // lattice and the vertices come back at identical heights.
+    const cx = Math.round(f.pos.x / step) * step;
+    const cz = Math.round(f.pos.z / step) * step;
+
+    const a = this.apron;
+    if (a && a.cx === cx && a.cz === cz) return;
+    // Hysteresis: rebuild only once the car has left the middle of the apron,
+    // not every time it crosses a grid line.
+    if (a && Math.abs(cx - a.cx) < CHUNK.apronMove && Math.abs(cz - a.cz) < CHUNK.apronMove) return;
+
+    const n = (half * 2) / step + 1;
+    const count = n * n;
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const indices = new Uint32Array((n - 1) * (n - 1) * 6);
+    const c = this._color;
+
+    for (let j = 0; j < n; j++) {
+      const z = cz - half + j * step;
+      for (let i = 0; i < n; i++) {
+        const x = cx - half + i * step;
+        // The LOD argument is the apron's own resolution, not a lateral
+        // offset: `terrain.height` uses it to drop octaves it cannot resolve,
+        // and asking for 2 cm detail on a 22 m grid is aliasing paid for at
+        // full price.
+        let y = this.terrain.height(x, z, CHUNK.apronDetail) - CHUNK.apronSink;
+
+        // Duck under the carriageway. The apron carries no earthwork, so in a
+        // cutting the natural surface it samples is metres ABOVE the road it is
+        // supposed to be beneath — measured, 24,396 steps over 30 cm on the
+        // carriageway and a worst case of 2.60 m standing in the road. This is
+        // bug #55 exactly, turned on the road's own pass instead of a foreign
+        // one, and it takes the same cure: cut down to the road's plane on a
+        // shallow ramp, and then further, so the two never argue about which
+        // owns a given depth. The sheets draw over all of it.
+        this.path.roadNear(x, z, carS, CHUNK.apronHalf, _apronRoad);
+        if (_apronRoad.dist < Infinity) {
+          const cap = _apronRoad.y - CHUNK.apronRoadSink
+            + _apronRoad.dist * CHUNK.foreignSlope;
+          if (cap < y) y = cap;
+        }
+
+        const k = (j * n + i) * 3;
+        positions[k] = x - cx;
+        positions[k + 1] = y;
+        positions[k + 2] = z - cz;
+      }
+    }
+
+    // Normals from the finished grid, then colour — the palette keys off
+    // flatness, so it has to come after the heights are all in.
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const k = (j * n + i) * 3;
+        const xi = Math.min(n - 1, i + 1), xd = Math.max(0, i - 1);
+        const zi = Math.min(n - 1, j + 1), zd = Math.max(0, j - 1);
+        const dx = (positions[(j * n + xi) * 3 + 1] - positions[(j * n + xd) * 3 + 1])
+          / Math.max(1e-3, (xi - xd) * step);
+        const dz = (positions[(zi * n + i) * 3 + 1] - positions[(zd * n + i) * 3 + 1])
+          / Math.max(1e-3, (zi - zd) * step);
+        const ny = 1 / Math.sqrt(1 + dx * dx + dz * dz);
+        this._groundColor(cx + positions[k], cz + positions[k + 2],
+          positions[k + 1] + CHUNK.apronSink, ny, CHUNK.halfExtent, c);
+        colors[k] = c.r; colors[k + 1] = c.g; colors[k + 2] = c.b;
+      }
+    }
+
+    let t = 0;
+    for (let j = 0; j < n - 1; j++) {
+      for (let i = 0; i < n - 1; i++) {
+        const p = j * n + i;
+        // Same winding as `_buildTerrain`: +column then +row is an upward face.
+        indices[t++] = p; indices[t++] = p + 1; indices[t++] = p + n;
+        indices[t++] = p + 1; indices[t++] = p + n + 1; indices[t++] = p + n;
+      }
+    }
+
+    if (a) this._disposeApron();
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingSphere();
+
+    const mesh = new THREE.Mesh(geometry, this.matTerrain);
+    mesh.position.set(cx, 0, cz);
+    mesh.receiveShadow = true;
+    // No shadow CASTING: the apron is a coarse copy of ground the sheets
+    // already draw, and letting it into the shadow map puts its 22 m facets
+    // over their 2.4 m ones.
+    mesh.castShadow = false;
+    mesh.renderOrder = -1;
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
+    this.scene.add(mesh);
+
+    let collider = null;
+    if (this.world) {
+      collider = this.world.createCollider(
+        this.RAPIER.ColliderDesc.trimesh(positions, indices)
+          .setTranslation(cx, 0, cz)
+          .setFriction(1.0)
+          .setRestitution(0.0));
+    }
+    this.apron = { cx, cz, mesh, collider };
+  }
+
+  _disposeApron() {
+    const a = this.apron;
+    if (!a) return;
+    this.scene.remove(a.mesh);
+    a.mesh.geometry.dispose();
+    if (a.collider && this.world) this.world.removeCollider(a.collider, false);
+    this.apron = null;
+  }
+
   // -------------------------------------------------------------- lifecycle --
 
   /** Streams chunks in and out around the vehicle's arc length. */
   update(carS, budget = CHUNK.buildPerFrame) {
+    this._updateApron(carS);
     const center = Math.floor(carS / CHUNK.length);
     // The spline is undefined before s = 0 (frameAt clamps), so a negative
     // chunk would collapse every row onto s = 0 and generate a degenerate mesh
@@ -745,7 +991,7 @@ export class ChunkManager {
     this.propQueue.length = 0;
     this.canopyQueue.length = 0;
 
-    this.matRoad.dispose();
+    this.road.dispose();
     if (this.trees) this.trees.dispose();
     if (this.bushes) this.bushes.dispose();
     if (this.ground) this.ground.dispose();
@@ -1122,7 +1368,12 @@ export class ChunkManager {
     const colors = new Float32Array(nu * nv * 3);
     const indices = new Uint32Array((nu - 1) * (nv - 1) * 6);
 
-    const asphalt = new THREE.Color(0x37373c);
+    // Warmer and a little lighter than the 0x37373c this replaces, which was
+    // blue enough to read as slate. Real asphalt is a neutral-to-warm grey; the
+    // blue in the old value was doing the job of the sky's own tint twice.
+    // Lighter also matters because everything `env/road.js` does is a MULTIPLY,
+    // and a multiply on a very dark base has almost no range to work in.
+    const asphalt = new THREE.Color(0x46443f);
     const paint = new THREE.Color(0xe9e3d2);
     const frame = makeFrame();
     const rightFlat = new THREE.Vector3();
@@ -1334,14 +1585,15 @@ export class ChunkManager {
     const batches = new Map();
     /** species -> the near tier's recipe, handed to the chunk record. */
     const canopy = new Map();
-    const push = (key, geometry, material, matrix, colour, shadow) => {
+    const push = (key, geometry, material, matrix, colour, shadow, lone) => {
       let b = batches.get(key);
       if (!b) {
-        b = { geometry, material, matrices: [], colours: [], shadow };
+        b = { geometry, material, matrices: [], colours: [], shadow, lone: [] };
         batches.set(key, b);
       }
       b.matrices.push(matrix.clone());
       b.colours.push(colour.r, colour.g, colour.b);
+      b.lone.push(lone ? 1 : 0);
     };
 
     // ---- the canopy ------------------------------------------------------
@@ -1456,7 +1708,8 @@ export class ChunkManager {
         this._color.g = Math.min(1, this._color.g * 0.55 * lift + 0.36 * lift);
         this._color.b = Math.min(1, this._color.b * 0.55 * lift + 0.22 * lift);
 
-        if (placed < TREES.nearCap) {
+        const paired = placed < TREES.nearCap;
+        if (paired) {
           this._setLocalMatrix(p, height * wobble, height, height * wobble, yaw);
           // STASHED, not built. The grown mesh has a shorter life than its own
           // chunk — see `_updateCanopy` — so what a chunk carries is the recipe
@@ -1477,8 +1730,11 @@ export class ChunkManager {
           // its card. See `env/trees.js:impostorWidth`.
           const w = height * imp.width * variant.radius;
           this._setLocalMatrix(p, w, height, w, yaw);
+          // `paired` decides which fade window the shader uses: an impostor
+          // with no grown mesh behind it must not appear until it is far enough
+          // away that nobody sees it arrive. See `TREES.loneFadeIn`.
           push(`i:${name}`, imp.geometry, this.trees.impostorMaterial,
-            this._mat, this._color, false);
+            this._mat, this._color, false, !paired);
           far++;
         }
       }

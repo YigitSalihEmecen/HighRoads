@@ -41,6 +41,24 @@ const S_MIN = 200;
 /** Matches `main.js:RECOVER_MARGIN` — the slack inside the sheet's own edge. */
 const RECOVER_MARGIN = 12;
 
+/**
+ * How far out to demand ground, metres.
+ *
+ * DELIBERATELY PAST `CHUNK.recoverLateral`, and this line is the whole reason
+ * the probe is worth running. It used to sweep to the recovery bound and then
+ * SKIP every sample outside it, on the reasoning that the car is turned back
+ * before it arrives — so "hole" meant "missing ground in the region the
+ * recovery logic has already declared out of bounds", and the test could not
+ * fail. It duly reported 0 holes in 42,942 probes while 12.4% of the ground
+ * within 300 m of the road did not exist, and skipped 13,698 samples to do it.
+ * The player reached that ground, fell through it, and got teleported back.
+ *
+ * A bound is a claim about the car. It is not a claim about the world, and this
+ * probe is about the world. `CHUNK.apronHalf` is what now guarantees the
+ * answer, so the sweep goes well past anything road space is responsible for.
+ */
+const PROBE_OUT = 600;
+
 await RAPIER.init();
 const world = new RAPIER.World({ x: 0, y: WORLD.gravity, z: 0 });
 world.timestep = WORLD.fixedStep;
@@ -158,13 +176,11 @@ for (let s = S_MIN + 0.137; s <= S_MAX; s += 5) {
   right.crossVectors(f.tan, UP).normalize();
   path.corridorAt(s, reach);
 
-  for (let v = -CHUNK.recoverLateral; v <= CHUNK.recoverLateral; v += 5) {
+  for (let v = -PROBE_OUT; v <= PROBE_OUT; v += 5) {
     const av = Math.abs(v);
     if (av <= ROAD.halfWidth) continue;                  // surface.mjs owns this
     const edge = v < 0 ? reach.left : reach.right;
-    // Only the area the recovery bound actually lets the car occupy. Beyond it
-    // the car is turned back before it arrives, so there is nothing to hold up.
-    if (av > Math.min(CHUNK.recoverLateral, edge - RECOVER_MARGIN)) { outside++; continue; }
+    if (av > Math.min(CHUNK.recoverLateral, edge - RECOVER_MARGIN)) outside++;
 
     // Offset off the mesh lattice: a ray straight down a shared triangle edge
     // can miss both faces on floating-point grounds alone.
@@ -182,7 +198,7 @@ const rate = probes ? (holes / probes) * 100 : 0;
 check('no holes inside the drivable area', holes === 0,
   `${holes} / ${probes} probes (${rate.toFixed(2)}%)` +
   (firstHole ? `  first {s:${firstHole.s}, v:${firstHole.v}, edge:${firstHole.edge}}` : ''));
-console.log(`         ${outside} probes skipped as beyond the recovery bound`);
+console.log(`         ${outside} of them beyond the recovery bound — probed anyway, see PROBE_OUT`);
 
 console.log(`\n  [${bad ? 'FAIL' : ' ok '}] off-road ground\n`);
 process.exit(bad ? 1 : 0);

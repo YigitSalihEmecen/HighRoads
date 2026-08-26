@@ -62,6 +62,15 @@ const FOLD_WINDOW = 10;
  */
 const FOLD_SMOOTH = ROUTE.foldSmooth;
 
+/**
+ * Half-width, in road samples, of the average that builds the RELAXED heading.
+ *
+ * The relaxed heading is what lets the terrain sheet reach past the turning
+ * circle of its own road. See `ROUTE.relaxWindow`, and `chunks.js:lateralAt`
+ * for what is done with it.
+ */
+const RELAX_SMOOTH = Math.max(1, Math.round(ROUTE.relaxWindow / (2 * ROAD.sampleStep)));
+
 export class RoadPath {
   constructor(terrain, seed) {
     this.terrain = terrain;
@@ -180,6 +189,43 @@ export class RoadPath {
    * get carved for — invisible. The failure mode of excluding too little is
    * cutting a trench across the road you are driving on.
    */
+  /**
+   * Distance from (x, z) to the nearest carriageway, and the road's height
+   * there. Writes `{dist, y}` into `out`; `dist` is Infinity if nothing is in
+   * range.
+   *
+   * ANY pass of the road, unlike `foreignSegments` — the apron has no idea
+   * which pass it is under and must duck beneath all of them. Distance is to
+   * the POLYLINE and not to the control points, for the reason spelled out
+   * below: at 46 m spacing a point standing on the carriageway can be 23 m from
+   * the nearest control point, which is several metres of height error on a
+   * gradient.
+   */
+  roadNear(x, z, sHint, range, out = { dist: Infinity, y: 0 }) {
+    const spacing = ROAD.ctrlSpacing;
+    const span = Math.ceil((range + ROUTE.selfFar) / spacing);
+    const iHint = sHint / spacing;
+    const lo = Math.max(0, Math.floor(iHint - span));
+    const hi = Math.min(this.ctrl.length - 2, Math.ceil(iHint + span));
+    let best = Infinity;
+    let bestY = 0;
+    for (let i = lo; i <= hi; i++) {
+      const a = this.ctrl[i];
+      const b = this.ctrl[i + 1];
+      const ex = b.x - a.x, ez = b.z - a.z;
+      const len2 = ex * ex + ez * ez;
+      let t = len2 > 1e-9 ? ((x - a.x) * ex + (z - a.z) * ez) / len2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const dx = x - (a.x + ex * t);
+      const dz = z - (a.z + ez * t);
+      const d2 = dx * dx + dz * dz;
+      if (d2 < best) { best = d2; bestY = a.y + (b.y - a.y) * t; }
+    }
+    out.dist = best === Infinity ? Infinity : Math.sqrt(best);
+    out.y = bestY;
+    return out;
+  }
+
   foreignSegments(s, x, z, range, out) {
     const spacing = ROAD.ctrlSpacing;
     const iSelf = s / spacing;
@@ -438,7 +484,12 @@ export class RoadPath {
       const here = this.pts[i];
       const cover = this.terrain.base(here.p.x, here.p.z) - here.p.y;
 
-      this.frames[i] = { tan, right, up, bank, curv, foldL: 0, foldR: 0, cover };
+      this.frames[i] = {
+        tan, right, up, bank, curv,
+        foldL: 0, foldR: 0,
+        relaxDev: 0, relaxL: 0, relaxR: 0,
+        cover,
+      };
       this.framedUpTo = i;
     }
 
@@ -455,6 +506,9 @@ export class RoadPath {
           curv: f.curv,
           foldL: f.foldL,
           foldR: f.foldR,
+          relaxDev: f.relaxDev || 0,
+          relaxL: f.relaxL || 0,
+          relaxR: f.relaxR || 0,
           cover: f.cover,
         };
       }
@@ -580,7 +634,106 @@ export class RoadPath {
       const f = frames[i];
       if (f) { f.foldL = l; f.foldR = r; }
     }
+
+    this._buildRelaxed(from, last);
     this.foldFrom = last;
+  }
+
+  /**
+   * The RELAXED heading field, and the curvature limits that go with it.
+   *
+   * ── the problem this exists to solve ───────────────────────────────────────
+   *
+   * The fold guard bounds `v * kappa`, and the only handle it had was `v`. So
+   * where the road turns hard the sheet was simply cut short — measured on the
+   * default seed, the world ended 94 m from the centreline at s = 898, and
+   * 12.4% of the ground within 300 m of the road did not exist at all. Widening
+   * the guard is not available: `v * kappa <= foldMargin` is what keeps rows
+   * from crossing, and violating it inverts the mesh (bugs #58, #59).
+   *
+   * But `kappa` is not a constant of the problem either. It is the rate the
+   * LATERAL DIRECTION turns with `s`, and that direction is a choice. Road
+   * space uses `right(s)` because near the carriageway the earthwork has to be
+   * cut square to the road — 700 m out, nothing does. So the direction is
+   * rotated toward a heading that turns slowly, and the effective curvature
+   * falls with it. Same invariant, one more degree of freedom.
+   *
+   * ── the field ──────────────────────────────────────────────────────────────
+   *
+   * `relaxDev` is `theta~ - theta`: an ANGLE, not a vector, because the guard's
+   * guarantee depends on it. Interpolating two directions as vectors makes the
+   * blend rotate at a rate that is not the blend of the two rates, and the
+   * whole point of this is that the effective curvature is exactly
+   * `(1-b)*kappa + b*kappa~`. Rotating by `b * relaxDev` gives that identity;
+   * a `lerpVectors` only approximates it.
+   *
+   * `theta~` is the road heading averaged over `ROUTE.relaxWindow` metres. An
+   * average of a heading is exact for the thing that matters here — total turn
+   * across a window is the sum of its steps, for any shape — and `turnSum2`, a
+   * prefix sum of the prefix sum, makes each one two subtractions rather than a
+   * loop. It is a function of `s` ALONE, shared by every chunk, so neighbouring
+   * sheets agree at their shared boundary exactly as they do today.
+   *
+   * `relaxL` / `relaxR` are its turn rate under the same signed running maximum
+   * the fold limits use, and they are what bounds how far the relaxed direction
+   * can carry the sheet: `foldMargin / relaxK`. At 800 m of window that is
+   * around 400 m, against the 94 m the road's own heading was delivering.
+   */
+  _buildRelaxed(from, last) {
+    const frames = this.frames;
+    const turnSum = this._turnSum;
+
+    // Prefix sum OF the prefix sum, so a windowed mean of `turnSum` — which is
+    // the heading, up to the constant this all cancels — is O(1) per sample.
+    if (!this._turnSum2) this._turnSum2 = [0];
+    const sum2 = this._turnSum2;
+    for (let i = sum2.length - 1; i <= last; i++) sum2[i + 1] = sum2[i] + turnSum[i];
+    sum2.length = last + 2;
+
+    /** Heading at `i` minus the windowed mean heading — the relax angle. */
+    const devAt = (i) => {
+      const lo = Math.max(0, i - RELAX_SMOOTH);
+      const hi = Math.min(last, i + RELAX_SMOOTH);
+      const n = hi - lo + 1;
+      return (sum2[hi + 1] - sum2[lo]) / n - turnSum[i];
+    };
+
+    const lo0 = Math.max(0, from - RELAX_SMOOTH);
+    if (!this._relaxDev) this._relaxDev = [];
+    const dev = this._relaxDev;
+    for (let i = lo0; i <= last; i++) dev[i] = devAt(i);
+    dev.length = last + 1;
+
+    // NEGATED on the way out, and this is not a fudge.
+    //
+    // `turn[i]` is `asin(cross(tan_i, tan_{i+1}).y)`, which with forward = -Z
+    // works out to `theta_i - theta_{i+1}` — so `turnSum` accumulates MINUS the
+    // heading. That is the convention the fold limits want (positive turns
+    // left, and a left turn compresses negative v), and `dev` inherits it, so
+    // the rate below is computed in it too. What `chunks.js:lateralAt` needs is
+    // an angle to advance a heading BY, which is the other sign. Leaving it
+    // rotated the sheet the wrong way — doubling the deviation from the relaxed
+    // heading instead of removing it — and folded the mesh in 13,872 cells.
+    for (let i = lo0; i <= last; i++) {
+      if (frames[i]) frames[i].relaxDev = -dev[i];
+    }
+
+    // Turn rate of the relaxed heading, under the same signed running maximum.
+    for (let i = lo0; i <= last; i++) {
+      let l = 0;
+      let r = 0;
+      const a = Math.max(0, i - FOLD_WINDOW);
+      const b = Math.min(last - 1, i + FOLD_WINDOW);
+      for (let j = a; j <= b; j++) {
+        const ds = Math.max(1e-3, this.pts[j + 1].s - this.pts[j].s);
+        // d(theta~)/ds = d(theta)/ds + d(dev)/ds, and the first term is `turn`.
+        const k = (turnSum[j + 1] - turnSum[j] + (dev[j + 1] - dev[j])) / ds;
+        if (k > l) l = k;
+        else if (-k > r) r = -k;
+      }
+      const f = frames[i];
+      if (f) { f.relaxL = l; f.relaxR = r; }
+    }
   }
 
   /**
@@ -596,8 +749,15 @@ export class RoadPath {
    */
   corridorAt(s, out = { left: 0, right: 0 }) {
     const f = this.frameAt(s, _reachFrame);
-    out.left = f.foldL > 1e-7 ? ROUTE.foldMargin / f.foldL : Infinity;
-    out.right = f.foldR > 1e-7 ? ROUTE.foldMargin / f.foldR : Infinity;
+    // The RELAXED limits, not the road's own. `chunks.js:lateralAt` turns the
+    // sheet's lateral direction toward the relaxed heading as the offset grows,
+    // so what bounds the sheet out here is how hard THAT turns — which is the
+    // whole reason the corridor is now hundreds of metres wide where it used to
+    // be ninety. Reading `foldL` here would report the old, much smaller number
+    // and `_checkRecovery` would turn the car back in the middle of ground that
+    // exists.
+    out.left = f.relaxL > 1e-7 ? ROUTE.foldMargin / f.relaxL : Infinity;
+    out.right = f.relaxR > 1e-7 ? ROUTE.foldMargin / f.relaxR : Infinity;
     return out;
   }
 
@@ -655,6 +815,9 @@ export class RoadPath {
     out.curv = lerp(fa.curv, fb.curv, t);
     out.foldL = lerp(fa.foldL, fb.foldL, t);
     out.foldR = lerp(fa.foldR, fb.foldR, t);
+    out.relaxDev = lerp(fa.relaxDev || 0, fb.relaxDev || 0, t);
+    out.relaxL = lerp(fa.relaxL || 0, fb.relaxL || 0, t);
+    out.relaxR = lerp(fa.relaxR || 0, fb.relaxR || 0, t);
     out.cover = lerp(fa.cover || 0, fb.cover || 0, t);
     out.s = s;
     return out;
@@ -739,6 +902,10 @@ export function makeFrame() {
     curv: 0,
     foldL: 0,
     foldR: 0,
+    /** Relaxed heading offset (radians) and its curvature limits; see _buildRelaxed. */
+    relaxDev: 0,
+    relaxL: 0,
+    relaxR: 0,
     cover: 0,
     s: 0,
   };

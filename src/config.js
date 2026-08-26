@@ -366,6 +366,46 @@ export const ROUTE = {
    * wide it is rather than assuming — see `path.corridorAt`.
    */
   foldSmooth: 6,
+
+  /**
+   * Length of road, metres, that the RELAXED heading is averaged over.
+   *
+   * This is the handle that stopped the world having holes in it, and it is
+   * worth being precise about what it does, because `foldSmooth` above looks
+   * like the same idea and is not.
+   *
+   * `foldSmooth` cleans up the ESTIMATE of the road's curvature. It made the
+   * guard honest — the corridor went from 57 m to 94 m — and then stopped,
+   * because past that point the curvature it was reporting was real. A road
+   * with a 134 m radius has a turning circle 134 m across, and no amount of
+   * smoothing puts terrain outside it while the terrain is laid out square to
+   * the road. Measured after that fix: 12.4% of the ground within 300 m of the
+   * centreline still did not exist, in a ring beginning around 100 m out.
+   *
+   * This is a different lever. `chunks.js:lateralAt` rotates the direction the
+   * sheet is laid along, from the road's own `right` near the carriageway
+   * toward a heading averaged over this distance far from it — so the effective
+   * curvature falls with lateral offset, and the sheet reaches
+   * `foldMargin / relaxK` instead of `foldMargin / kappa`. Nothing about the
+   * fold invariant changes; it is given one more degree of freedom to satisfy
+   * it with.
+   *
+   * Measured on the default seed, worst relaxed radius against the reach it
+   * buys, and the void left inside 300 m:
+   *
+   *     window      R_min     reach      void
+   *      (none)      134 m      94 m     12.4%
+   *      400 m       309 m     216 m      4.1%
+   *      800 m       573 m     401 m      0.6%
+   *     1200 m       762 m     533 m      0.2%
+   *
+   * 800 puts the reach past anything a car gets to before the recovery bound,
+   * and past the 300 m the probe sweeps. Wider still costs accuracy where it
+   * matters: the far sheet is laid along a heading that ignores the road, so
+   * the terrain's own features stop lining up with the corridor, and at 1200 m
+   * the relaxed heading is already 38 degrees off the road's at its worst.
+   */
+  relaxWindow: 800,
 };
 
 export const CHUNK = {
@@ -405,6 +445,22 @@ export const CHUNK = {
    */
   nearStep: 2.4,
   nearBand: 78,
+
+  /**
+   * Offsets over which the sheet's lateral direction is rotated from the road's
+   * own `right` toward the relaxed heading. See `chunks.js:lateralAt`.
+   *
+   * Starts at `nearBand`, because inside it the cut and fill have to be square
+   * to the carriageway and the whole point of road space is that they are.
+   * Past 260 m the direction is fully relaxed and the sheet reaches
+   * `foldMargin / relaxK` — around 400 m — rather than stopping at the road's
+   * own turning circle.
+   *
+   * The ramp must be a function of the OFFSET only. Solving per station for the
+   * least relaxation that station needs is the tempting version and it folds
+   * the mesh in 10,895 cells; `lateralAt` explains why.
+   */
+  relaxBand: [78, 260],
 
   /**
    * Lateral extent of generated terrain. This has to be matched against
@@ -486,6 +542,45 @@ export const CHUNK = {
    */
   foreignSlope: 0.10,
 
+  /**
+   * The apron — the world-space ground beneath the road-space sheets. See
+   * `chunks.js:_updateApron` for why a second surface exists.
+   *
+   * `apronHalf` is half the side of the square it covers, and it is matched to
+   * the fog rather than to anything the car does: at ATMOSPHERE.fogDensity
+   * there is almost no colour left at 900 m, so the apron's own edge is never
+   * the thing a player sees. `apronStep` sets the cost — (2*900/22 + 1)^2 is
+   * about 6,800 vertices and 13,300 triangles, against the 109,000 the nine
+   * live sheets carry, so it is under an eighth of the terrain budget.
+   *
+   * `apronDetail` is the LOD argument handed to `terrain.height`, in the same
+   * units as a lateral offset. It has to be coarse: the apron samples every
+   * 22 m and octaves finer than that alias into it as a shimmer that moves when
+   * the grid does.
+   *
+   * `apronSink` covers the chord error between a 22 m grid and the sheets' 2.4 m
+   * one, so a sheet always wins where both exist. It is NOT hiding a
+   * disagreement — both surfaces are the same `terrain.height` — and it is kept
+   * small because it is also the height of the ledge at a sheet's outer edge.
+   *
+   * `apronMove` is the hysteresis: how far the car must travel before the grid
+   * re-centres. Rebuilding is the one expensive thing here, and the centre is
+   * snapped to the sample lattice so a rebuild returns identical heights.
+   */
+  apronHalf: 900,
+  apronStep: 22,
+  apronDetail: 40,
+  apronSink: 1.2,
+  /**
+   * How far below the carriageway the apron is cut where it passes under it.
+   * Deeper than `foreignSink` because the ramp is shallower relative to the
+   * apron's 22 m grid, and because nothing is ever meant to see this: the
+   * sheets are 150 m wide at their narrowest and the clamp dies out well
+   * inside that.
+   */
+  apronRoadSink: 7.0,
+  apronMove: 180,
+
   /** Lateral distance at which the player counts as having left the world. */
   recoverLateral: 300,
 };
@@ -548,6 +643,27 @@ export const TREES = {
    * chunk window reaches 720 m ahead, so the tier never outruns its own ground.
    */
   farFade: [430, 620],
+
+  /**
+   * Fade-in for an impostor that has NO grown mesh behind it, metres.
+   *
+   * `nearCap` and `farCap` are not the same number and cannot be: a grown tree
+   * is 563 triangles and an impostor is 4, so a chunk affords 130 of the first
+   * and 760 of the second. That is a five-to-one density difference between
+   * what the distance shows and what arrives, and with one fade window for
+   * both, six hundred and thirty trees per chunk shrank into the ground as the
+   * player drove at them — the wood visibly thinning from the inside out. It is
+   * the most obvious thing wrong with the canopy and it reads as the LOD being
+   * broken, which it was.
+   *
+   * The surplus can only be honest about being a distance effect: it appears
+   * where a 20 m tree is a few per cent of the screen and no one can see it
+   * arrive, and the paired impostors — the ones with somewhere to hand over
+   * to — keep the short `farFadeIn` window they always had. Density falling off
+   * with distance is standard and invisible; density falling off at forty-five
+   * metres is neither.
+   */
+  loneFadeIn: [230, 380],
 
   /**
    * Scatter attempts per chunk, and the caps on what survives.
@@ -824,6 +940,58 @@ export const GRASS = {
      *  distance a card on a 60-degree face reads as scrub, not as a mistake. */
     maxSlope: 2.2,
   },
+};
+
+/**
+ * The carriageway surface — see `env/road.js`.
+ *
+ * The road used to be a flat colour at `roughness: 0.68`, which reads as wet
+ * plastic under a low sun. These are the numbers that make it asphalt.
+ */
+export const ROAD_SURFACE = {
+  /** One mask, three channels: aggregate, wear, cracks. */
+  textureSize: 512,
+
+  /**
+   * Metres per tile, near and far.
+   *
+   * The near tile is the AGGREGATE and its scale is a physical fact rather than
+   * a taste decision: road stone is 6-14 mm, and at 512 px across 2.4 m that is
+   * about three pixels a chip, which is the smallest that survives mipping.
+   * The far tile is patches and repairs, which are a road-length phenomenon.
+   *
+   * The ratio is deliberately not a round number — 2.4 and 17 share no small
+   * factor — so the two beat against each other instead of lining up into a
+   * grid the eye can find.
+   */
+  tileNear: 2.4,
+  tileFar: 17,
+
+  /** How much of each mask reaches the albedo. */
+  contrastNear: 1.10,
+  contrastFar: 0.62,
+
+  /**
+   * Where the aggregate stops, metres. Past this there is less than a pixel per
+   * chip and the grain becomes a shimmer that moves with the camera — the
+   * classic detail-texture failure, and the reason the far tile exists.
+   */
+  nearFade: [26, 90],
+
+  /** Dry asphalt. Real values are 0.92-0.98; wet would be under 0.4. */
+  roughness: 0.95,
+  /**
+   * How far the wear channel may polish the surface back down.
+   *
+   * The wheel paths of a real road are burnished by traffic and genuinely are
+   * shinier than the rest of it. Having somewhere legitimately glossy is what
+   * makes everything around it read as properly matte.
+   */
+  polish: 0.22,
+
+  /** Ridged noise above this becomes a crack, and this much darker. */
+  crackThreshold: 0.72,
+  crackDepth: 0.42,
 };
 
 /**
@@ -1148,15 +1316,19 @@ export const VEHICLE = {
    * falloff that the limit is still something you can feel arriving, enough
    * grip past it that the car does not simply leave.
    *
-   * Now 1.22, which keeps 94%. At 1.32 the tyre still shed 11% of its grip the
-   * moment it went past the peak, and because the rear axle reaches the peak
-   * first under power that loss arrives as the back of the car leaving — the
-   * "lost it out of nowhere" the car was being criticised for. Losing 6%
-   * instead leaves the limit something you can feel arriving and then drive
-   * through, which is the whole point of using a Magic Formula rather than a
-   * friction cone.
+   * Now 1.15, which keeps 97%, from 1.22 (94%) and 1.32 (89%) before it.
+   *
+   * This is the number that decides whether a slide is a thing you STEER or a
+   * thing that happens to you, and the brief was continuous, controllable
+   * drifting. Vehicle Physics Pro's forgiving default keeps 0.8 of peak past
+   * the break and its competition tune keeps 0.55; the difference between them
+   * is exactly the difference between a car you can hold sideways and one that
+   * demands precision to stay pointed straight. Measured here, going from 1.22
+   * to 1.15 also caught a provoked spin FASTER — 0.92 s against 0.96 — because
+   * the front axle is past its peak in a slide too, and a front tyre that has
+   * kept its grip is what the countersteer is acting through.
    */
-  tyreShape: 1.22,
+  tyreShape: 1.15,
   corneringStiffnessFront: 15,  // B — peak near 7.1 deg: crisp turn-in
   /**
    * The rear used to be much softer than the front (11.5 against 14), which
@@ -1167,11 +1339,21 @@ export const VEHICLE = {
    */
   corneringStiffnessRear: 13.0,
   /**
-   * Rear peak grip > front, so the front washes out first (safe understeer).
-   * 1.07 rather than 1.02: understeer you can see coming and lift out of is a
-   * mistake with a way back, and oversteer at 200 km/h is not.
+   * Rear peak grip against front. Above 1 the front washes out first, which is
+   * safe understeer; below 1 the car rotates on its own terms.
+   *
+   * Neutral, from 1.07. The old value's reasoning was that "oversteer at
+   * 200 km/h" is a mistake with no way back — which was TRUE and was a
+   * statement about `_updateSteering`, not about the tyres: there were 4.3
+   * degrees of lock at that speed and no countersteer worth the name. With the
+   * countersteer allowance below, the way back exists, and the deterrent can
+   * come off. Measured across the sweep, dropping the bias is the single
+   * biggest lever on holding a drift: 1.31 s of the probe's three-second window
+   * at 1.07, 1.52 s at 0.97, with mean slip going 0.32 -> 0.41 and eight km/h
+   * more speed carried out of it. 1.00 takes most of that without making the
+   * rear axle the loose end of the car on a motorway straight.
    */
-  rearGripBias: 1.07,
+  rearGripBias: 1.00,
   /** Below this speed band, slip angle is meaningless; blend to velocity-cancelling. */
   slipBlendSpeed: [0.6, 3.5],
   /**
@@ -1239,7 +1421,7 @@ export const VEHICLE = {
    * ask — understeer is the penalty, which is a fair trade for having a car
    * that responds — and `minSteer` guarantees a usable angle at any speed.
    */
-  minSteer: 0.075,
+  minSteer: 0.095,
   steerGripMargin: 1.6,
   /**
    * Slew rates toward full lock and back to centre, rad/s.
@@ -1347,6 +1529,27 @@ export const VEHICLE = {
   slideOpenFrom: 0.14,     // ~8 deg — the car is starting to move around
   slideOpenTo: 0.55,       // ~32 deg — fully opened
   slideLockGain: 4.0,      // how many times the steady-state limit, at most
+
+  /**
+   * Countersteer authority: the chassis slip angles over which steering that
+   * OPPOSES the slide is allowed off the cornering limit, and how much of the
+   * parking lock it may reach. See `vehicle.js:_updateSteering`.
+   *
+   * Deliberately much earlier than `slideOpenFrom` — two degrees rather than
+   * eight. Eight degrees is already a slide in progress; catching one starts
+   * before that, and a driver who has to wait for the car to be properly
+   * sideways before the wheel does anything has been locked out of the part of
+   * the range where the save was still easy.
+   *
+   * 0.62 of `maxSteer` is 20.6 degrees of opposite lock, against the 4.3 that
+   * was available at any speed over 150 km/h. Real opposite lock is 20 to 40,
+   * and there is no reason to cap it lower: the front tyres are not being asked
+   * to generate cornering force here, they are being pointed down the velocity
+   * vector.
+   */
+  counterFrom: 0.035,      // ~2 deg — the car has begun to move around
+  counterTo: 0.16,         // ~9 deg — full countersteer authority
+  counterLock: 0.62,
 };
 
 export const TRAFFIC = {

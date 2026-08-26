@@ -172,7 +172,7 @@ export async function boot() {
   };
   window.addEventListener('resize', () => game.refreshTitleFraming());
   startBtn.addEventListener('click', begin);
-  document.getElementById('go-again').addEventListener('click', () => game.startRun());
+  document.getElementById('go-again').addEventListener('click', () => game.startRun(true));
   document.getElementById('go-garage').addEventListener('click', () => game.enterGarage());
 
   window.__highroads = game;
@@ -225,131 +225,226 @@ function buildSeedBox(game) {
  * name the cars; the car shows what it is.
  */
 function buildGarage(game, roster) {
-  const chips = new Map();
-  const list = document.getElementById('car-list');
-
-  /** Flashes a chip for as long as the throttle blip lasts. */
+  /** Flashes an option for as long as the throttle blip lasts. */
   const flash = (el) => {
     if (!el) return;
     el.classList.add('revving');
     setTimeout(() => el.classList.remove('revving'), 900);
   };
 
-  const select = (id, preview = true) => {
-    game.setCar(id);
-    for (const [cid, chip] of chips) chip.setAttribute('aria-pressed', String(cid === id));
-    chips.get(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    game.refreshSummaries();
-    // The click is a user gesture, which is the only moment Web Audio will
-    // start. Taking it means the player hears the engine before committing to
-    // it rather than discovering it a kilometre down the road.
-    if (preview) {
-      flash(chips.get(id));
-      game.previewEngine().then(() => game.refreshSummaries());
+  const hex = (h) => '#' + h.toString(16).padStart(6, '0');
+
+  /**
+   * A single select-dropdown.
+   *
+   * Every garage row used to be a swipe-through strip — a palette you scroll
+   * sideways, where the current choice could sit half-off-screen and the fold's
+   * overflow clipped the selected swatch's ring. A dropdown fixes both: every
+   * option is readable in one vertical glance, and the chosen value stays
+   * centre-screen on the button. The menu is positioned `fixed` and lives on
+   * <body> so the drawer's overflow clip can never cut it off.
+   */
+  const dropdowns = [];
+
+  function makeDropdown(root, { showSwatch, values, current, onChange }) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'dropdown-btn';
+    btn.setAttribute('aria-haspopup', 'listbox');
+    btn.setAttribute('aria-expanded', 'false');
+    root.appendChild(btn);
+
+    let swatchPreview = null;
+    if (showSwatch) {
+      swatchPreview = document.createElement('span');
+      swatchPreview.className = 'swatch';
+      swatchPreview.setAttribute('aria-hidden', 'true');
+      btn.appendChild(swatchPreview);
     }
-  };
+    const label = document.createElement('span');
+    label.className = 'dropdown-label';
+    const caret = document.createElement('span');
+    caret.className = 'dropdown-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    btn.append(label, caret);
 
-  for (const spec of roster) {
-    const chip = document.createElement('button');
-    chip.className = 'car-chip';
-    chip.type = 'button';
-    chip.textContent = spec.name;
-    chip.setAttribute('aria-pressed', 'false');
-    chip.addEventListener('click', () => select(spec.id));
-    list.appendChild(chip);
-    chips.set(spec.id, chip);
+    const menu = document.createElement('div');
+    menu.className = 'dropdown-menu';
+    menu.setAttribute('role', 'listbox');
+    menu.dataset.owner = root.id;
+    document.body.appendChild(menu);
+
+    const options = values.map((v) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'dropdown-item';
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', 'false');
+      if (v.title) item.title = v.title;
+      if (v.hex || v.stock) {
+        const sw = document.createElement('span');
+        sw.className = 'swatch';
+        sw.setAttribute('aria-hidden', 'true');
+        if (v.hex) sw.style.background = hex(v.hex);
+        if (v.stock) sw.classList.add('swatch-stock');
+        item.appendChild(sw);
+      }
+      const name = document.createElement('span');
+      name.className = 'item-name';
+      name.textContent = v.name;
+      item.appendChild(name);
+      item.addEventListener('click', () => { pick(v.id, item); close(); });
+      menu.appendChild(item);
+      return { id: v.id, el: item };
+    });
+
+    let currentId = current;
+    let isOpen = false;
+
+    function render() {
+      const v = values.find((o) => o.id === currentId);
+      label.textContent = v ? v.name : '';
+      for (const o of options) o.el.setAttribute('aria-selected', String(o.id === currentId));
+      if (swatchPreview) {
+        const on = v && v.hex;
+        swatchPreview.style.background = on ? hex(v.hex) : '';
+        swatchPreview.classList.toggle('swatch-stock', !on && !!(v && v.stock));
+      }
+    }
+
+    function position() {
+      const r = btn.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const width = Math.min(r.width, vw - 16);
+      const left = Math.max(8, Math.min(r.left, vw - 8 - width));
+      // The menu's own max-height caps how tall it really is; flip up when
+      // there is more room above than below, then clamp so it never goes
+      // off-screen.
+      const maxH = parseFloat(getComputedStyle(menu).maxHeight) || 320;
+      const height = Math.min(menu.scrollHeight, maxH);
+      const below = r.bottom + 6;
+      const spaceBelow = vh - 8 - below;
+      const spaceAbove = r.top - 8;
+      let top = spaceBelow >= height || spaceBelow >= spaceAbove ? below : r.top - 6 - height;
+      if (top < 8) top = 8;
+      if (top + height > vh - 8) top = Math.max(8, vh - 8 - height);
+      menu.style.width = width + 'px';
+      menu.style.left = left + 'px';
+      menu.style.top = top + 'px';
+    }
+
+    function open() {
+      for (const d of dropdowns) if (d !== api) d.close();
+      position();
+      isOpen = true;
+      btn.classList.add('open');
+      btn.setAttribute('aria-expanded', 'true');
+      menu.classList.add('open');
+      const sel = options.find((o) => o.id === currentId);
+      sel?.el.scrollIntoView({ block: 'nearest' });
+    }
+
+    function close() {
+      isOpen = false;
+      btn.classList.remove('open');
+      btn.setAttribute('aria-expanded', 'false');
+      menu.classList.remove('open');
+    }
+
+    function pick(id, item) {
+      currentId = id;
+      for (const o of options) o.el.setAttribute('aria-selected', String(o.id === id));
+      render();
+      onChange(id, item, api);
+    }
+
+    btn.addEventListener('click', () => { if (isOpen) close(); else open(); });
+
+    const api = {
+      open, close, btn,
+      isOpen: () => isOpen,
+      contains: (t) => btn.contains(t) || menu.contains(t),
+      menuOpen: () => menu.classList.contains('open'),
+      scrollTarget: (t) => menu.contains(t),
+    };
+    dropdowns.push(api);
+
+    render();
+    return api;
   }
 
-  // ---- mode -------------------------------------------------------------
-  const modeList = document.getElementById('mode-list');
-  const modeChips = new Map();
-  const pickMode = (id) => {
-    game.setMode(id);
-    for (const [mid, el] of modeChips) el.setAttribute('aria-pressed', String(mid === id));
-    game.refreshSummaries();
-  };
-  for (const m of GAME_MODES) {
-    const el = document.createElement('button');
-    el.className = 'car-chip';
-    el.type = 'button';
-    el.textContent = m.name;
-    el.title = m.blurb;
-    el.setAttribute('aria-pressed', String(m.id === game.mode));
-    el.addEventListener('click', () => pickMode(m.id));
-    modeList.appendChild(el);
-    modeChips.set(m.id, el);
-  }
+  // ---- model ------------------------------------------------------------
+  makeDropdown(document.getElementById('car-list'), {
+    values: roster.map((s) => ({ id: s.id, name: s.name, title: s.blurb })),
+    current: game.carId,
+    onChange: (id, item, d) => {
+      if (d) flash(d.btn);
+      game.setCar(id);
+      game.refreshSummaries();
+      // The click is a user gesture, which is the only moment Web Audio will
+      // start. Taking it means the player hears the engine before committing to
+      // it rather than discovering it a kilometre down the road.
+      game.previewEngine().then(() => game.refreshSummaries());
+    },
+  });
 
   // ---- paint ------------------------------------------------------------
-  const colorList = document.getElementById('color-list');
-  const swatches = new Map();
-  const pickColor = (id) => {
-    game.setColor(id);
-    for (const [cid, el] of swatches) el.setAttribute('aria-pressed', String(cid === id));
-  };
-  for (const c of CAR_COLORS) {
-    const el = document.createElement('button');
-    el.className = 'swatch';
-    el.type = 'button';
-    el.title = c.name;
-    el.style.background = '#' + c.hex.toString(16).padStart(6, '0');
-    el.setAttribute('aria-pressed', 'false');
-    el.addEventListener('click', () => pickColor(c.id));
-    colorList.appendChild(el);
-    swatches.set(c.id, el);
-  }
+  makeDropdown(document.getElementById('color-list'), {
+    showSwatch: true,
+    values: CAR_COLORS.map((c) => ({ id: c.id, name: c.name, hex: c.hex })),
+    current: game.colorId,
+    onChange: (id) => game.setColor(id),
+  });
 
   // ---- second colour -----------------------------------------------------
-  // The swatch every model carries that the paint picker never reached. See
-  // cars.CAR_TRIM_COLORS.
-  const trimList = document.getElementById('trim-list');
-  const trims = new Map();
-  const pickTrim = (id) => {
-    game.setTrim(id);
-    for (const [tid, el] of trims) el.setAttribute('aria-pressed', String(tid === id));
-  };
-  for (const c of CAR_TRIM_COLORS) {
-    const el = document.createElement('button');
-    el.className = 'swatch';
-    el.type = 'button';
-    el.title = c.name;
-    if (c.hex === null) {
-      // "Stock" has no colour of its own to show, so it reads as an outline.
-      el.classList.add('swatch-stock');
-    } else {
-      el.style.background = '#' + c.hex.toString(16).padStart(6, '0');
-    }
-    el.setAttribute('aria-pressed', 'false');
-    el.addEventListener('click', () => pickTrim(c.id));
-    trimList.appendChild(el);
-    trims.set(c.id, el);
-  }
+  // The second paint colour (see cars.CAR_TRIM_COLORS). `stock` has no colour
+  // of its own, so it reads as the outline swatch rather than a fill.
+  makeDropdown(document.getElementById('trim-list'), {
+    showSwatch: true,
+    values: CAR_TRIM_COLORS.map((c) => ({
+      id: c.id, name: c.name, hex: c.hex, stock: c.hex === null,
+    })),
+    current: game.trimId,
+    onChange: (id) => game.setTrim(id),
+  });
 
   // ---- engine -----------------------------------------------------------
-  const engineList = document.getElementById('engine-list');
-  const engineChips = new Map();
-  const pickEngine = (id) => {
-    game.setEngine(id);
-    for (const [eid, el] of engineChips) el.setAttribute('aria-pressed', String(eid === id));
-    engineChips.get(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    flash(engineChips.get(id));
-    game.previewEngine().then(() => game.refreshSummaries());
-  };
-  for (const e of ENGINE_OPTIONS) {
-    const el = document.createElement('button');
-    el.className = 'eng-chip';
-    el.type = 'button';
-    el.textContent = e.name;
-    el.setAttribute('aria-pressed', String(e.id === 'stock'));
-    el.addEventListener('click', () => pickEngine(e.id));
-    engineList.appendChild(el);
-    engineChips.set(e.id, el);
-  }
+  makeDropdown(document.getElementById('engine-list'), {
+    values: ENGINE_OPTIONS.map((e) => ({ id: e.id, name: e.name })),
+    current: game.engineChoice,
+    onChange: (id, item, d) => {
+      if (d) flash(d.btn);
+      game.setEngine(id);
+      game.previewEngine().then(() => game.refreshSummaries());
+    },
+  });
 
-  select(game.carId, false);   // no audio before the player has clicked anything
-  pickColor(game.colorId);
-  pickTrim(game.trimId);
-  pickMode(game.mode);
+  // ---- mode -------------------------------------------------------------
+  makeDropdown(document.getElementById('mode-list'), {
+    values: GAME_MODES.map((m) => ({ id: m.id, name: m.name, title: m.blurb })),
+    current: game.mode,
+    onChange: (id) => { game.setMode(id); game.refreshSummaries(); },
+  });
+
+  // ---- shared behaviour ---------------------------------------------------
+  // One delegated tap closes whatever menu is open unless the tap was on it.
+  document.addEventListener('click', (e) => {
+    for (const d of dropdowns) if (d.isOpen() && !d.contains(e.target)) d.close();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') for (const d of dropdowns) d.close();
+  });
+  window.addEventListener('resize', () => { for (const d of dropdowns) d.close(); });
+  // The drawer scrolls; a menu pegged to the button would stay put while the
+  // button scrolls away, so any outside scroll closes it. Scrolling the menu
+  // itself (to reach more options) must not.
+  window.addEventListener('scroll', (e) => {
+    const t = e.target;
+    for (const d of dropdowns) {
+      if (d.isOpen() && !(t instanceof Element && d.scrollTarget(t))) d.close();
+    }
+  }, true);
 }
 
 /**
@@ -418,7 +513,7 @@ function buildPauseMenu(game) {
   document.getElementById('pause-resume').addEventListener('click', () => game.setPaused(false));
   document.getElementById('pause-restart').addEventListener('click', () => {
     game.setPaused(false);
-    game.startRun();
+    game.startRun(true);
   });
   document.getElementById('pause-garage').addEventListener('click', () => {
     game.setPaused(false);
@@ -620,18 +715,20 @@ class Game {
   /**
    * Drive.
    *
-   * The camera does not cut. It is left exactly where the title orbit had it
-   * and flown into the chase position over `TITLE.introTime` — see
-   * `camera.beginIntro` — while the overlay fades out underneath. The two
-   * overlap deliberately, so the transition reads as one move rather than as a
-   * menu closing and then a camera starting.
+   * The camera does not cut — except when it should. From the title screen the
+   * camera is left exactly where the title orbit had it and flown into the
+   * chase position over `TITLE.introTime` (see `camera.beginIntro`) while the
+   * overlay fades out underneath; the two overlap deliberately, so the
+   * transition reads as one move rather than as a menu closing and then a
+   * camera starting. That fly-in belongs to the title screen only.
    *
-   * Controls go live immediately rather than at the end of the flight. A second
-   * and a bit of a car that will not respond is a second and a bit of a game
-   * that looks broken, and the chase goal is recomputed every frame, so pulling
-   * away during the fly-in simply moves the place the camera is flying to.
+   * Restarting mid-run (`restart = true`, the game-over "Drive again" and the
+   * pause menu's "Restart run") is a respawn of the whole level instead: the
+   * car goes back to the start of the road and the camera cuts there, exactly
+   * like the respawn key, because the road is already on screen and there is
+   * nothing to fly into.
    */
-  startRun() {
+  startRun(restart = false) {
     this.gameOverEl.classList.remove('show');
     this.overlayEl.classList.add('gone');
     this.setPaused(false);
@@ -643,11 +740,12 @@ class Game {
     this.mountSettings('pause-settings-host');
     this.input.bindTouch(document);
     this.vehicle.setParked(false);
+    if (restart) this.carS = START_S;
     // BEFORE the fly-in. `respawn` snaps the camera (see there), and `update`
     // tests `initialised` ahead of the fly-in — so a respawn afterwards would
     // cut to the chase pose for one frame and then start the shot from it.
     this.respawn(this.carS);
-    this.cam.beginIntro();
+    if (!restart) this.cam.beginIntro();
     // A previous run's rubber has nothing to do with this one, and respawn puts
     // the car somewhere the old marks are not.
     this.fx.reset();
