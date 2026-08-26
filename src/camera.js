@@ -34,7 +34,13 @@ export class ChaseCamera {
     this.speedT = 0;
     /** Title-screen mode: orbit the parked car instead of following it. */
     this.title = false;
-    this._orbit = TITLE.startAngle;
+    // Seeded properly by `_seedOrbit` on the first title frame, from the sun.
+    // `TITLE.angles[0]` is only a value to hold until then; the key this used
+    // to read — a `startAngle` key in TITLE — does not exist and evaluated to
+    // undefined,
+    // which made `_orbit += spin * dt` NaN for however many frames ran before
+    // the seeding. The config audit in AGENT_CONTEXT §5 found it.
+    this._orbit = TITLE.angles[0];
     /**
      * The fly-in. `_introT` runs 0 -> 1 across `TITLE.introTime` seconds the
      * first time the chase rig updates after Drive; while it is under 1 the rig
@@ -310,8 +316,8 @@ export class ChaseCamera {
    * already been paid.
    *
    * The orbit is taken about the CAR's heading rather than the world axes, so
-   * `TITLE.startAngle` means the same three-quarter view on every seed instead
-   * of whichever side of the car the road happens to be pointing.
+   * an angle from `TITLE.angles` means the same three-quarter view on every
+   * seed instead of whichever side of the car the road happens to be pointing.
    */
   _updateTitle(dt, vehicle) {
     this._orbit += TITLE.spin * dt;

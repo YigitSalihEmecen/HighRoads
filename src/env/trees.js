@@ -506,14 +506,18 @@ export function growTree(form, seed) {
     level: 0,
   }];
 
+  const taperOf = form.taper;
   let grown = 0;
   while (queue.length && grown < form.maxBranches) {
     const br = queue.shift();
     grown++;
     b.branch(br.origin, br.dir, br.length, br.radius, br.level, out);
 
+    // `minRadius` is a floor on what is worth sweeping as a tube, not a growth
+    // budget — `levels` is the growth budget. Testing the branch's OWN radius
+    // rather than its tip's keeps the two from doing each other's job.
     const last = br.level >= form.levels;
-    if (last || out.radius < form.minRadius) {
+    if (last || br.radius <= form.minRadius * 1.05) {
       b.leaves(out.tip, out.dir, form.leafSize * Math.pow(form.leafFalloff, br.level), br.level);
       continue;
     }
@@ -539,6 +543,17 @@ export function growTree(form, seed) {
       dir.addScaledVector(up, Math.sin(pitch) * Math.sin(roll));
       dir.normalize();
 
+      // The parent's radius WHERE THE CHILD LEAVES IT, not at its tip.
+      //
+      // This is worth spelling out because getting it wrong silently destroys
+      // the tree. Using `out.radius` — the tip — compounds the taper with the
+      // level ratio, so a child is a quarter of its parent instead of six
+      // tenths, and two levels down every branch is under `minRadius` and stops
+      // early. Measured before the fix: a willow that should carry sixteen leaf
+      // clusters carried four, and looked like an aerial. Real branching is
+      // close to da Vinci's rule — a child is about 1/sqrt(n) of its parent for
+      // n children — which is what the 0.5-0.62 ratios in the table are.
+      const atFork = br.radius * (1 - tc * (1 - taperOf));
       queue.push({
         origin,
         dir,
@@ -546,7 +561,7 @@ export function growTree(form, seed) {
         // the parent it starts — which is what gives a conifer its cone and a
         // broadleaf its dome without either being described anywhere.
         length: br.length * lvl.length * (0.75 + rnd() * 0.5) * (1 - tc * lvl.tipShrink),
-        radius: Math.max(form.minRadius * 0.6, out.radius * lvl.radius * (0.8 + rnd() * 0.4)),
+        radius: Math.max(form.minRadius, atFork * lvl.radius * (0.8 + rnd() * 0.4)),
         level: br.level + 1,
       });
     }
@@ -588,48 +603,88 @@ export function growTree(form, seed) {
  * (both are drawn from the same form parameters), and at the distance an
  * impostor is used the difference is a few pixels of outline.
  */
+/**
+ * How much of the card's width the widest part of a crown occupies.
+ *
+ * Not 1: the blobs are drawn CENTRED on a point inside the envelope, so half a
+ * blob radius sticks out past it, and a crown drawn to the very edge is a crown
+ * with its outline clipped square on both sides.
+ */
+const IMPOSTOR_FILL = 0.82;
+
+/** The widest half-width a profile reaches, sampled. Cheap; runs once a species. */
+function profileMax(profile) {
+  let m = 1e-4;
+  for (let i = 0; i <= 32; i++) m = Math.max(m, profile(i / 32));
+  return m;
+}
+
+/**
+ * The card width one unit of tree height needs, so that a painted crown of the
+ * given radius fills it. `chunks.js` scales the impostor by this.
+ */
+export function impostorWidth(form, radius) {
+  return (radius * 2) / IMPOSTOR_FILL;
+}
+
 function drawImpostor(ctx, x0, y0, s, form, rnd) {
   ctx.save();
   ctx.beginPath();
   ctx.rect(x0, y0, s, s);
   ctx.clip();
 
+  const imp = form.impostor;
   const cx = x0 + s * 0.5;
-  const groundY = y0 + s * 0.98;
-  const trunkH = s * form.impostor.trunk;
-  const trunkW = s * form.impostor.trunkWidth;
+  const groundY = y0 + s * 0.99;
+  const topY = y0 + s * 0.02;
+  /** Card height in pixels: the tree stands on the bottom edge and fills it. */
+  const H = groundY - topY;
 
-  // Trunk, tapering, with a slight lean so a stand of them is not a picket
-  // fence. Drawn dark; the vertex colour supplies the hue.
-  ctx.fillStyle = 'rgb(96,96,96)';
+  // `crownBase` is the fraction of the tree's HEIGHT at which foliage starts,
+  // and the trunk is drawn up to it. Getting this wrong is what made the first
+  // version a row of lollipops: it measured the crown down from the top of the
+  // card instead of up from the ground, so every species had a thin stalk and a
+  // blob in the top fifth of its silhouette whatever its parameters said.
+  const crownY = groundY - H * imp.crownBase;
+  const trunkW = s * imp.trunkWidth;
+
+  // Trunk, tapering, drawn dark; the vertex colour supplies the hue. It runs a
+  // little INTO the crown so there is no gap where the two meet.
+  ctx.fillStyle = 'rgb(88,88,88)';
   ctx.beginPath();
   ctx.moveTo(cx - trunkW, groundY);
   ctx.lineTo(cx + trunkW, groundY);
-  ctx.lineTo(cx + trunkW * 0.4, groundY - trunkH);
-  ctx.lineTo(cx - trunkW * 0.4, groundY - trunkH);
+  ctx.lineTo(cx + trunkW * 0.35, crownY - H * 0.06);
+  ctx.lineTo(cx - trunkW * 0.35, crownY - H * 0.06);
   ctx.closePath();
   ctx.fill();
 
-  // Canopy: blobs inside the species' envelope. `profile(t)` is the half-width
-  // at height fraction t, which is the one number that separates a poplar from
-  // an oak at two hundred metres.
-  const top = groundY - s * 0.96;
-  const canopyBase = groundY - trunkH * form.impostor.canopyFrom;
-  const span = canopyBase - top;
-  const blobs = form.impostor.blobs;
-  for (let i = 0; i < blobs; i++) {
-    const t = Math.pow(rnd(), form.impostor.bias);
-    const y = canopyBase - t * span;
-    const halfW = form.impostor.profile(t) * s * 0.5;
+  // Crown: blobs inside the species' envelope, from `crownBase` to the top.
+  // `profile(t)` is the half-width at height fraction t through the crown, and
+  // it is the one number that separates a poplar from an oak at two hundred
+  // metres.
+  //
+  // NORMALISED, so the widest point of the crown fills the card. The profiles
+  // are written as shapes rather than as calibrated numbers — one peaks at 0.34
+  // and another at 0.77 — and the card is separately sized to the tree's own
+  // crown radius by `chunks.js`. Multiplying the two put a poplar's silhouette
+  // in the middle fifth of its own card: the impostors came out a third the
+  // width of the trees they were standing in for, and a wood turned into a row
+  // of lollipops at exactly the distance the level of detail swapped over.
+  const span = crownY - topY;
+  const norm = IMPOSTOR_FILL / profileMax(imp.profile);
+  for (let i = 0; i < imp.blobs; i++) {
+    const t = Math.pow(rnd(), imp.bias);
+    const y = crownY - t * span;
+    const halfW = imp.profile(t) * norm * s * 0.5;
     const x = cx + (rnd() - 0.5) * 2 * halfW;
-    const r = s * form.impostor.blobSize * (0.6 + rnd() * 0.8);
+    const r = s * imp.blobSize * (0.6 + rnd() * 0.8);
     // Lit from the top-left, and brighter toward the top of the crown.
-    const lit = 0.42 + (1 - (y - top) / Math.max(1, span)) * 0.30
-      + (1 - (x - x0) / s) * 0.22 + (rnd() - 0.5) * 0.16;
+    const lit = 0.40 + t * 0.30 + (1 - (x - x0) / s) * 0.22 + (rnd() - 0.5) * 0.16;
     const g = Math.round(255 * Math.max(0.12, Math.min(1, lit)));
     ctx.fillStyle = `rgb(${g},${g},${g})`;
     ctx.beginPath();
-    ctx.ellipse(x, y, r, r * form.impostor.blobSquash, 0, 0, Math.PI * 2);
+    ctx.ellipse(x, y, r, r * imp.blobSquash, 0, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -865,7 +920,8 @@ export function createTreeAssets({ anisotropy = 1 } = {}) {
     impostors.set(name, {
       geometry: impostorGeometry(cellUV),
       height: 1,
-      radius: 0.5,
+      /** Card width per unit of the tree's own crown radius. */
+      width: impostorWidth(form, 1) ,
     });
   });
 

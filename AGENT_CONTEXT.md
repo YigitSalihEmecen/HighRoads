@@ -48,8 +48,8 @@ highroads/
 │   └── env/              procedurally generated scenery — see its own README
 ├── probe/                headless measurement scripts (see §10)
 ├── assets/               user-supplied art (NOT generated, do not regenerate)
-│   ├── car_models/Fbx/   10 FBX; the roster uses 9, the 10th is an aeroplane
-│   └── Forest_Assets/    Quaternius Ultimate Nature Pack, 300 OBJ
+│   └── car_models/Fbx/   11 FBX; the roster uses 9. THE ONLY ART THAT IS LOADED —
+│                         everything else in the world is generated in src/env/
 └── engine_sim/           vendored sibling project — DO NOT EDIT
 ```
 
@@ -58,23 +58,22 @@ highroads/
 | File | Owns |
 |---|---|
 | `chunks.js` | Terrain/road mesh generation, colliders, streaming, every scatter |
-| `config.js` | **All** tunables, in 16 exported blocks |
+| `config.js` | **All** tunables, in 18 exported blocks |
 | `vehicle.js` | Raycast vehicle: suspension, tyres, aero, stability, visuals |
 | `main.js` | Boot, `Game` class, fixed-step loop, garage wiring, recovery |
 | `path.js` | Road centreline spline, Frenet frames, arc-length projection |
-| `assets.js` | OBJ parser, FBX loading, car mesh normalisation, metric extraction |
+| `assets.js` | FBX car loading, mesh normalisation, metric extraction. **Cars only** — the OBJ parser and its palette went with the foliage pack |
 | `traffic.js` | Other cars: spline riders, AI, lane changes, analytic impacts |
 | `powertrain.js` | Bridge between the game and `engine_sim` |
 | `noise.js` | Gradient noise, fBm, erosion, warping, landforms, continental term |
 | `fx.js` | Tyre smoke and rubber — a GPU particle pool and a ring of quads |
 | `cars.js` | 9-car roster, colours, engine options, physics synthesis |
 | `scene.js` | Renderer, lights, sky, fog, post-processing chain |
-| `showroom.js` | The title screen's own scene, and the framing solve |
 | `wind.js` | Air noise over the body, synthesised, speed-driven |
-| `settings.js` | The collapsible left drawer |
-| `input.js` | Keyboard, gamepad, touch; one-shot vs held keys |
+| `settings.js` | The settings panel — a node, re-parented between the title drawer and the pause menu |
+| `input.js` | Keyboard, gamepad, touch, **tilt**; one-shot vs held keys |
 | `hud.js` | Speed, tach, gear, trip |
-| `foliage.js` | Tree species table, ecology rules |
+| `foliage.js` | Species vocabulary — the FORM of every tree and shrub and the habitat it wants — plus `vegetation()`, the one field the canopy, the understorey and the ground cover all read |
 | `util.js` | clamp/lerp/damp, PRNGs, `smin`/`smax`, string hash |
 | `score.js` | Near-miss scoring for Traffic mode — pure logic, no DOM |
 | `camera.js` | Three chase modes, FOV-by-speed |
@@ -91,12 +90,15 @@ sheet and the streaming window.
 |---|---|---|
 | `textures.js` | Canvas helpers: soft-failing canvas, seeded PRNG, TILEABLE value noise, fBm, ridged fBm, a whole-image `paint()` | — |
 | `grass.js` | Crossed-card tufts, in a near tier and a far tier | 4 |
+| `trees.js` | Grown branch skeletons with leaf-card crowns, **and** the painted four-triangle impostors that replace them past 95 m | 432–656, 563 mean / **4** |
+| `bushes.js` | Four shrub forms — three of them pure cards, one a multi-stem | 4–24, 11 mean |
 | `rocks.js` | Fractured convex boulders, slabs and scree in three size classes | 20–80, 59 mean |
 | `ground.js` | The terrain's three-channel detail texture and its material patch | — |
 
-`trees.js` and `bushes.js` are the obvious next two and do not exist yet. The
-tree *scatter* is intact in `foliage.js` and `chunks.js`; what is switched off
-(`CHUNK.trees`) is the Quaternius models, at 1,700–2,900 triangles each.
+`trees.js` and `bushes.js` used to be listed here as "the obvious next two, and
+they do not exist yet", with `CHUNK.trees` switched off because the Quaternius
+models were 1,700–2,900 triangles each. Both now exist, both are grown from
+code, and the switches (`TREES.enabled`, `BUSHES.enabled`) are on. See §4.11.
 
 ### ⚠ `engine_sim/` is a broken submodule — read this before cloning
 
@@ -689,90 +691,172 @@ twice for a single decision.
 The module owns no DOM and no game state beyond the run, which is why
 `probe/score.mjs` can exercise the whole mechanic without physics.
 
-### 4.10 The garage is a SHOWROOM, not the road
+### 4.10 The title screen is the ROAD, and the camera is solved against the DOM
 
-`showroom.js`. The title screen used to leave the middle of the screen
-transparent and orbit the real vehicle on the real carriageway — a nice trick
-with a real argument behind it (what you choose is what you drive, and paint is
-a live material property rather than a preview of one).
+There is no `showroom.js` any more. The title screen orbits **the real vehicle,
+parked on the real road at `START_S`, in the real scene** — so what you choose is
+exactly what you drive, paint and all, because paint is a live material property
+and there is no second copy of the model anywhere to disagree with it.
 
-Rendering it showed the cost. The same seed that looks bright and pleasant from
-the chase camera gives a title screen in near-darkness, because the orbit faces
-the anti-sun side of the sky dome; and the car competes with lane markings,
-verge grass and whatever the terrain is doing that kilometre. None of that is a
-bug. A road is simply the wrong backdrop for a product shot.
+This has now been answered both ways and it is worth recording why it landed
+here. The road WAS the wrong backdrop once: the orbit faced the anti-sun side of
+the sky dome and the whole title screen came out navy, which is what a separate
+studio scene was built to fix. The studio fixed the light and lost the point.
+What actually fixes the light is standing somewhere the light already is:
 
-So the title screen is now its own scene: a cyclorama, a turntable, and three
-fixed lights. Nothing in it is procedural or seed-dependent.
-
-- **The car is re-parented, not cloned.** `setCar` takes the model's own `body`
-  and `wheels` groups; `releaseCar` + `vehicle.reattachModel()` hand them back
-  when a run starts. Two copies of a car are two things that can disagree about
-  paint.
-- **The framing is measured, not tuned.** `frame(vw, vh, rect)` is given the
-  free area — `#stage`, read from `getBoundingClientRect` every frame — and
-  solves for the camera distance that fits the car into it and the aim that
-  centres it there. That is the whole answer to "is the car visible on a phone":
-  add a garage row, rotate the device, open it on a tablet, and the framing
-  follows the thing that changed. A hand-tuned `CAMERA.garage.aim` did not, and
-  bug #53 is what that looked like.
-
-  It corrects on **both axes** now, and that is what changed when the title
-  screen became a half-and-half split. A vertical band could be centred by
-  tilting the camera about a fixed point; a rectangle off to one side needs the
-  same correction horizontally, and it has to be applied along the CAMERA's right
-  and up vectors rather than the world's, because the rig orbits. Aiming one way
-  moves the subject the other, which is why the horizontal term is negated and
-  the vertical one is not — screen Y counts downward while world Y counts up, so
-  that sign has already been paid.
-- **There is no turntable.** There was a dark disc with a lit rim, which is what
-  a motor show puts a car on, and at the distance the framing solves for it took
-  up as much of the picture as the car did. What the plate was actually doing
-  that mattered was CATCHING THE SHADOW — the cyclorama is drawn from the inside
-  with `depthWrite` off, so it cannot receive one, and a car with no shadow under
-  it hovers. It is now a `ShadowMaterial` plane: a surface that draws nothing
-  except what is shadowed onto it.
-- **It borrows the post chain.** `gfx.render(scene, camera)` swaps the
-  `RenderPass`'s targets, so the showroom gets the same bloom, vignette and tone
-  mapping as the game without a second composer.
-- **Leaving is a CUT.** Bug #39 made this a sweep, correctly, while the garage
-  was the same road from another angle. It is now a different place, and
-  sweeping a camera that was never in the world lurches.
+- **`_seedOrbit` picks the lit side.** `TITLE.angles` is the four three-quarter
+  views a car is photographed from; the rig starts on whichever of them faces
+  `ATMOSPHERE.sunDir`. That is a two-line replacement for a whole scene.
+- **The framing is measured, not tuned.** `#stage` is an empty measured
+  rectangle in a CSS grid — a hole in the interface — and `camera.frameTitle`
+  is handed its `getBoundingClientRect` every frame. `_updateTitle` solves the
+  distance that fits the car's own DIAGONAL into it (three-quarter on is where a
+  silhouette is widest; fitting the length alone frames it beautifully side-on
+  and runs it off both edges a second later) and the aim that centres it there.
+  Add a drawer, rotate the device, open it on a tablet: the framing follows the
+  thing that changed. A hand-tuned distance did not, and bug #53 is what that
+  looked like.
+- **It corrects on BOTH axes**, along the CAMERA's right and up vectors rather
+  than the world's, because the rig orbits. Aiming one way moves the subject the
+  other, which is why the horizontal term is negated and the vertical one is not
+  — screen Y counts downward while world Y counts up.
+- **The aim offset is NOT the damper's state.** `this.lookAt` is what the damper
+  reads back; adding a per-frame offset to it multiplies that offset by
+  `1/(1 - e^(-k·dt))` — 3.4x at 20 fps and 9x at 60 — and puts the car off
+  screen entirely. `this._aim` is the offset copy, and `camera.lookAt(_aim)` is
+  the only thing that ever sees it.
+- **Leaving is a FLY-IN, not a cut and not a damp.** `beginIntro` interpolates
+  from the orbit pose into the chase pose over `TITLE.introTime` (1.35 s) while
+  the overlay fades out underneath, so the transition reads as one move rather
+  than as a menu closing and a camera starting. Damping cannot do this: its rate
+  is tuned for a camera already roughly where it belongs, and asked to cross
+  fifteen metres it either takes several seconds or arrives with a snap. A
+  fixed-duration double smoothstep leaves at rest and arrives at rest.
+  **Controls are live from frame one** — a second of a car that will not respond
+  is a second of a game that looks broken, and the chase goal is recomputed every
+  frame, so pulling away during the fly-in just moves where the camera is flying
+  to.
+- The fly-in belongs to the Drive button and to nothing else. See bug #65 and
+  `camera.snap()`.
 
 The simulation keeps running underneath: the car still settles, the engine still
 idles for the throttle blip, chunks still stream. Only the presentation changes.
 
-### 4.11 Foliage (`foliage.js` + `chunks.js`)
+### 4.11 Foliage (`foliage.js` + `env/trees.js` + `env/bushes.js` + `chunks.js`)
 
-**`CHUNK.trees` is OFF.** The scatter, the species table and the suitability
-rules are all intact and unchanged — the switch empties `foliageModelNames()`,
-so no models load and `_buildProps` finds nothing to place.
+**ON.** This section used to open with "`CHUNK.trees` is OFF" and a paragraph
+explaining that 468 Quaternius instances cost **1,030,000 triangles** — 90% of
+the geometry on screen against 109,000 for the terrain sheet — to buy 10.3 trees
+a hectare where real woodland carries 200 to 1,000. It said the way out was
+"impostors for distant trees, rendered once per species at boot, which is what
+makes thousands affordable where hundreds were not". That is what is here now.
 
-Why: 468 instances for **1,030,000 triangles**, 90% of the geometry on screen
-against 109,000 for the whole terrain sheet, buying 10.3 trees per hectare where
-real woodland is 200–1,000. That is a budget in the wrong place, not a frame
-rate measurement — **nobody has profiled this on a GPU**, and it should not be
-described as a performance fix.
+**Measured: 232,000 triangles of canopy and understorey alive at once**, against
+109,000 of terrain sheet — a bit over twice it, and about a fifth of what the
+models cost for a tenth of the trees.
 
-It is also not an improvement to the look. Rendered without them the horizon is
-bare and the middle distance has nothing in it at all; the trees were the only
-vertical thing in the world. The switch holds the budget until the canopy has a
-level of detail worth spending it on — two-triangle impostors for distant trees,
-rendered once per species at boot, which is what makes thousands affordable
-where hundreds were not.
+#### The three files
 
-Bushes, plants, flowers and logs remain switched off pending a proper scatter
-design. Six canopy species are defined, in one group, 3 picks per chunk, cap 52.
-Ground cover and stone are separate, generated rather than loaded, and live —
-see §4.14 and §4.16.
+| file | owns |
+|---|---|
+| `foliage.js` | what a species IS: its form parameters, its habitat, and `vegetation()` |
+| `env/trees.js` | turning form parameters into triangles; the atlases; the material |
+| `env/bushes.js` | the same for four shrub forms; it borrows the tree material |
+| `chunks.js` | where things go — the only part that needs the road and the streaming |
 
-`suitability(kind, {altitude, slope, lateral, region})` scores each species
-against the site. Placement is **clustered, not Poisson** — real forests grow in
-stands.
+#### Two tiers, and two lifetimes
 
-The right home for a canopy is now `src/env/trees.js`, which does not exist yet.
-Nothing about the scatter has to change when it does; `CHUNK.trees` is the
-switch.
+Trees are drawn twice and the shader picks:
+
+- **near** is grown geometry — a queue-based branch recursion swept into
+  tapering tubes, leaf mass hung on the tips as crossed cards. 432–656
+  triangles, 563 mean.
+- **far** is a four-triangle impostor carrying a painted silhouette of the
+  species.
+
+They cross-fade **by scale**, in the vertex shader, over `TREES.lodFade`
+[55, 95] against `TREES.farFadeIn` [45, 80] — the windows overlap so a tree is
+never both gone as geometry and not yet there as a card. Identical mechanism to
+the two ground-cover tiers (§4.14), and the same program cache key.
+
+The two also have different LIFETIMES, which is separate from the fade and just
+as important. A near tree is resolvable to 95 m; its chunk reaches 720 m ahead.
+Building both with the chunk submitted **520,000 triangles to draw 110,000 of
+them**, the rest scaled to nothing and still costing a vertex each. So
+`_buildProps` runs the scatter once, builds the impostors and the shrubs
+immediately, and caches the near tier's matrices on the chunk as
+`chunk.canopySpec`; `_updateCanopy` turns that into InstancedMeshes over
+`TREES.behind`/`ahead` (one either side) as the car arrives. **The recipe is
+computed once on purpose** — two tiers from two runs of a seeded scatter would
+agree until the first time anything about the sampling changed, and then a tree
+would stand in a different place from its own impostor.
+
+#### Seven species, and why seven
+
+Chosen to be distinguishable **at distance**, which is a stronger requirement
+than being different close up: a narrow spire, a skirted cone, a broad dome, a
+weeping curtain, a column, a bare armature.
+
+| species | form | habitat |
+|---|---|---|
+| `pine` | clear stem, crown in the top two thirds | high, dry, gregarious |
+| `spruce` | branches to the ground, dense cone | higher, rugged |
+| `oak` | short thick stem, hard fork, wide dome | lowland, solitary |
+| `birch` | slender, pale bark, high crown | anywhere mid |
+| `willow` | `growth.dir.y` NEGATIVE — the whole difference | damp, low, gentle |
+| `poplar` | children at 0.42 rad; a column | lowland, damp |
+| `dead` | bare, gnarly, twig cards only | above the tree line |
+
+Four shrubs: `bramble`, `hazel` (fringe species), `gorse`, `heather` (open
+ground). `SHRUBS` and not `BUSHES` in `foliage.js`, because `BUSHES` is the
+config block.
+
+#### `vegetation()` — one field, three densities
+
+This is the centre of the file and the answer to "intentional placement". It
+returns `{canopy, understorey, ground, edge, moisture, rugged, stand}` from one
+evaluation, so the three scatters **cannot disagree**: grass thins where the
+canopy closes because it is told to by the same number that put the canopy
+there. Before it, trees were placed on a stand mask and grass was placed over
+every square metre the slope test allowed, and a clearing and a thicket carried
+identical sward.
+
+Signals: `terrain.forestDensity` (stands with clearings), a moisture field
+biased wet in the hollows, RELIEF above the local continental surface (not
+absolute height — 400 m is a summit in one place and a valley floor in another),
+slope, and `terrain.region`.
+
+And one derived signal that earns its own name:
+
+> **EDGE** = `4c(1 - c)` on the canopy density. It peaks where the canopy is
+> half closed — the woodland fringe, which in real ecology is where the scrub
+> is. Hanging the bushes on it means a wood grows its own fringe, and a fringe
+> is most of what stops a tree line reading as a wall.
+
+#### Placement
+
+Clustered, not Poisson — and three things make a stand a stand:
+
+1. `TREES.clusterShare` of everything is drawn near one of `clusterCount` seeds,
+   Gaussian about it rather than in a flat disc.
+2. **A cluster commits to ONE species** (`clusterSpecies` 0.8). Real copses are
+   monocultures at that scale; a clump of six different trees is a clump.
+3. A seed is REJECTED if the canopy density there is weak, rather than moved.
+   The clearings are the point.
+
+`probe/props.mjs` checks the result is lumpy (coefficient of variation > 25%);
+a uniform scatter means the field and the clusters stopped doing anything.
+
+#### The cost lesson, twice
+
+The scatter reads the chunk's own terrain sheet — same cell, same diagonal, same
+winding as `_buildGrass` — rather than calling `meshGroundPoint`. Asked the
+honest way it measured **62 ms per chunk**; reading the buffer it is **3.5 ms**,
+and the result is more correct, because a tree is on the surface the renderer
+draws by construction. The ground cover's field lookup is memoised on a
+10 m × 6 m grid for the same reason: the field's finest feature is 70 m across,
+and sampling it per 2.4 m cell cost 14 ms a chunk for resolution it does not
+have.
 
 ### 4.12 Scene, camera, input, HUD, audio
 
@@ -793,12 +877,37 @@ switch.
   neutral so it revs freely instead of bogging against a stopped driveline. The
   first click is what starts Web Audio — it is the user gesture the API
   requires, and it is where the wind starts too.
-- `input.js` — keyboard, gamepad, and touch (`bindTouch`). Distinguishes held
-  keys from one-shot presses; `flashHeld` drives headlight flash-to-pass.
+- `input.js` — keyboard, gamepad, touch (`bindTouch`) and **tilt**. Distinguishes
+  held keys from one-shot presses; `flashHeld` drives headlight flash-to-pass.
   It reads `.tbtn` and the `data-hold` / `data-tap` attributes and nothing else,
   so the touch layout can be rearranged in `index.html` without touching it.
-- `hud.js` / `settings.js` — HUD readouts and the collapsible left drawer. The
-  drawer is a deliberate **keyboard trap**: a focused `<input type=range>`
+- **Tilt steering** (`TiltSteering`) is the phone's own analogue axis, and it
+  OVERRIDES the ramp rather than blending with it — the same way the gamepad
+  stick does, and for the same reason: an analogue source already carries the
+  player's intent every instant, and mixing a ramp into it can only add lag.
+  Three parts of it are not obvious and all three have to be right:
+  - **which axis** depends on how the phone is held. `gamma` rolls about the
+    screen's long edge and `beta` pitches about its short one, and which of them
+    means "steer" swaps as the device rotates — so the axis AND ITS SIGN come
+    from `screen.orientation.angle`, never from an assumption about landscape.
+  - **the zero is wherever the player is holding it.** Nobody holds a phone
+    flat. Neutral is captured on the first sample after enabling, and `KeyT` (or
+    the ⌾ tap, shown only in tilt mode) recaptures it.
+  - **iOS needs permission, from inside a tap.** Safari has gated this behind
+    `DeviceOrientationEvent.requestPermission()` since iOS 13; it needs transient
+    activation and HTTPS. Same constraint as the audio (trap #12), which is why
+    the Settings toggle is the gesture — a first-time player should not meet an
+    OS permission dialog on the way into the game. The choice is remembered in
+    `localStorage` and re-granted on the next Drive click, which is also a
+    gesture. A refusal, a missing sensor and a plain-HTTP page all come back as
+    the same `false`; none of them is an error.
+  - Dead band 1.5°, full lock at 22° — a wrist, not an arm — with a 1.7 expo so
+    the middle of the travel stays fine for lane corrections. A stale sample
+    (0.5 s) releases the wheel, and a held arrow button still overrides.
+- `hud.js` / `settings.js` — HUD readouts and the settings panel. The panel is
+  a NODE, not a place: it is re-parented between the title screen's Settings
+  drawer and the pause menu (`Game.mountSettings`). It is a deliberate
+  **keyboard trap**: a focused `<input type=range>`
   responds to arrow keys and would steer the car. It carries the engine's six
   voice buses, the two tone controls, the gearbox and camera toggles, and a
   **Wind** slider — which is not one of the engine's buses and gets its own
@@ -835,8 +944,8 @@ Portrait puts the car above the controls; landscape — a phone on its side, and
 also every desktop monitor — puts them side by side. One rule, stated once: half
 the screen is the subject and half is the interface, so the car is never behind
 the panel and the panel never has to be told how tall it may be. `#stage` is the
-free half, and it exists so `showroom.frame` has a rectangle to MEASURE rather
-than a gap inferred from where two other things happened to land.
+free half, and it exists so `camera.frameTitle` has a rectangle to MEASURE
+rather than a gap inferred from where two other things happened to land.
 
 Two cascade details that were each wrong once:
 
@@ -1046,9 +1155,9 @@ the drawer, and follows the global mute.
 
 ## 5. The config contract, and the trap that has cost the most time
 
-`config.js` exports **16** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `GRASS`,
-`GROUND`, `ROCKS`, `WIND`, `FX`, `VEHICLE`, `TRAFFIC`, `CAMERA`, `SHOWROOM`,
-`ATMOSPHERE`, `SCORE`, `TERRAIN_COLORS`.
+`config.js` exports **18** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `TREES`,
+`BUSHES`, `GRASS`, `GROUND`, `ROCKS`, `WIND`, `FX`, `VEHICLE`, `TRAFFIC`,
+`CAMERA`, `TITLE`, `ATMOSPHERE`, `SCORE`, `TERRAIN_COLORS`.
 
 **THE TRAP.** Put a key in the wrong block and it reads as `undefined`. Then:
 
@@ -1075,7 +1184,7 @@ const files=[...fs.readdirSync('src').map(f=>'src/'+f),
              ...fs.readdirSync('src/env').map(f=>'src/env/'+f)];
 for(const f of files){ if(!f.endsWith('.js'))continue;
   const t=fs.readFileSync(f,'utf8');
-  for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|GRASS|VEHICLE|TRAFFIC|CAMERA|SHOWROOM|ATMOSPHERE)\.(\w+)/g)){
+  for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|TREES|BUSHES|GRASS|GROUND|ROCKS|VEHICLE|TRAFFIC|CAMERA|TITLE|ATMOSPHERE|SCORE)\.(\w+)/g)){
     if(blocks[m[1]]&&!blocks[m[1]].has(m[2])){console.log('MISSING '+m[0]+' in '+f);bad++;}}}
 console.log(bad?bad+' missing':'config audit clean');"
 ```
@@ -1174,6 +1283,10 @@ are recorded because most of them are re-introducible.
 | 61 | Chunk seams were a shading AND colour boundary every 120 m | `_seamNormals` re-derived the boundary normal analytically while every interior vertex got `computeVertexNormals`' area-weighted average. The two agree only where the surface is locally flat, and out where a cell is 34 m across it is not — and the normal feeds `_colorTerrain` as well | Ghost rows: sample one row past each end, compute normals over the extended mesh, keep the interior. Both chunks agree because both evaluate the same function |
 | 62 | **The far grass tier was a field of dark spines** | Scaling a grass card uniformly by 3.6 makes it five metres tall, and five metres of grass is a tree | `widthScale` and `heightScale` separately: ×4.2 wide, ×1.55 tall. Coverage is what the middle distance needs, not height |
 | 63 | Tyre smoke never appeared | `FX.smoke.minSlip` was set to 0.35 by imagining what "full slip" ought to mean. The tyre model's `slipAmount` is how much the friction circle had to take away, and a full-throttle standing start in the Sport measures **0.39–0.46** — a car lighting up its rears, nowhere near 1 | 0.22, and the number is now written down next to the measurement. `probe/env.mjs` drives the emission path against a stub carrying exactly that value, because a screenshot of no smoke looks like a screenshot taken at the wrong moment |
+| 64 | **Holes in the terrain off the road — the car drove into one and fell** | Not the streaming, not the colliders: the mesh and its trimesh are built from the same buffer in the same call and cannot disagree. The sheet genuinely ENDED. `foldSafeOffset` asymptotes every lateral offset toward `ROUTE.foldMargin / kappa`, and `kappa` was a one-step difference of a spline through 46 m control points — it reached 1/81 rad/m against a road whose design limit is 1/165, so the corridor stopped **57 m** from the centreline where the alignment guarantees 115. The outer columns piled into a skirt, `CHUNK.horizonDrop` tipped that skirt downward, and on screen it read as a distant hillside rather than as the edge of the world. Meanwhile `CHUNK.recoverLateral` assumed a flat 300 m of ground, so the car had to fall **90 m** before anything caught it. Measured: **16–19% of ray probes within 290 m of the road hit nothing** | Two halves. `ROUTE.foldSmooth` averages the turn rate over ±6 samples before the running maximum — exact for a circular arc, so it costs no peak curvature and removes only the spline's roughness: worst corridor **57 → 73 m**, and *fewer* folded cells than before on every seed. And `path.corridorAt` inverts the guard so `_checkRecovery` can ask the road how wide it actually is here instead of assuming. `probe/offroad.mjs`: **0 holes in 43,000 probes**, five seeds. A hard FLOOR on the guard was tried and rejected — it takes one seed from 580 folded cells to 1,217, because where a Catmull-Rom overshoots the road really does turn tighter than it was designed to |
+| 65 | **The title screen's fly-in played every time the player pressed R** | `Game.respawn` never touched the camera, and it did not have to: the chase rig damps, and `dampTrack` reads the goal's own travel as a velocity to lead. A 12 m teleport inside a 16 ms frame is a goal moving at 750 m/s, so the damper computed **79 m** of lead and then spent the best part of a second crawling back from it — visually the same move as the 1.35 s fly-in | `camera.snap()`, called from `respawn`. A teleport has no travel to follow, so stop following. `startRun` now respawns BEFORE `beginIntro`, because `update` tests `initialised` ahead of the fly-in and a snap requested afterwards would eat the first frame of the shot |
+| 66 | Every procedural tree came out an aerial — four leaf clusters where sixteen were intended | Children inherited the parent's TIP radius, which already has the taper in it, so a child was a quarter of its parent instead of six tenths. Two levels down everything was under `minRadius` and the recursion stopped early | The parent's radius **where the child leaves it**: `br.radius * (1 - t*(1 - taper))`. Close to da Vinci's rule, which is what the 0.5–0.62 ratios in the species table already were. Leaf clusters per tree 4 → 50–80 |
+| 67 | Impostors were a third the width of the trees they replaced — a wood turned into lollipops at exactly the distance the LOD swapped | Two independent scalings multiplied. The painted silhouette's `profile()` is a shape written by eye — one peaks at 0.34, another at 0.77 — and the card was separately sized to the tree's own crown radius | `profileMax()` normalises the profile so the crown fills `IMPOSTOR_FILL` of the card, and `impostorWidth()` gives `chunks.js` the matching card width. A second bug in the same function had the crown measured DOWN from the top of the card instead of up from the ground, which put every species' foliage in its top fifth |
 
 ### Test-harness bugs that masqueraded as game bugs
 
@@ -1308,10 +1421,21 @@ What that still does not cover:
   cycle all nine cars, and watch what the Trim swatches change.
 
 - **What the new scenery looks like on a real GPU.** The far grass tier, the
-  ground detail texture and the stone have been rendered through SwiftShader and
-  they read correctly, but MSAA, anisotropy and mip selection are all different
-  there. `GROUND`'s near tile in particular is fading out at 45–130 m against an
-  aliasing threshold that was reasoned about, not measured.
+  ground detail texture, the stone and now the whole canopy have been rendered
+  through SwiftShader and they read correctly, but MSAA, anisotropy and mip
+  selection are all different there. `GROUND`'s near tile in particular is
+  fading out at 45–130 m against an aliasing threshold that was reasoned about,
+  not measured. The tree/impostor cross-fade is the same kind of judgement: the
+  windows were chosen against apparent size on screen and confirmed by eye at
+  1280x720, not measured.
+- **Tilt steering has never been held.** Every number in `TiltSteering` — the
+  22° range, the 1.5° dead band, the 1.7 expo — was reasoned about against how
+  far a wrist rolls, and the axis/sign table for `screen.orientation.angle` is
+  from the specification rather than from a phone. There is no probe for it and
+  no obvious one: it needs a real device, a real sensor, and HTTPS.
+- **The wind on the trees.** Trunks are pinned and canopies swing by an `aSway`
+  attribute at `TREES.windStrength` 0.55 m of tip travel. Rendered at roughly
+  one frame per second through SwiftShader, that is a still image.
 - **The wind has never been heard.** The graph builds without error in a headless
   context; every number in `WIND` was chosen by ear against expectation, which is
   not the same as against a speaker.
@@ -1328,9 +1452,17 @@ What that still does not cover:
   survive the slope test depends on the landforms, so changing the terrain
   changes the instance count by tens of percent without anything in `GRASS`
   moving. Re-run `probe/grass.mjs` after any terrain change.
-- **Stone is only in the near four chunks** (`ROCKS.behind`/`ahead`). A cut face
-  five hundred metres ahead has no scree on it and gains some as you arrive. It
-  has not been looked at in motion.
+- **Stone is only in the near four chunks** (`ROCKS.behind`/`ahead`), and the
+  grown canopy only in three (`TREES.behind`/`ahead`). A cut face five hundred
+  metres ahead has no scree on it and gains some as you arrive; a tree arrives
+  as an impostor and becomes a mesh. Neither has been looked at in motion at a
+  real frame rate.
+- **The sheet still folds a little at its very edge** — 204 to 459 cells of
+  117,120 per seed, against 239 to 580 before `ROUTE.foldSmooth`. `frameAt`
+  interpolates the fold limits between road samples, so a row can sit between
+  two frames whose running maxima both under-read the rotation across it. It is
+  hundreds of metres out, under heavy fog, and `probe/offroad.mjs` holds the bar
+  at the old worst case so it cannot quietly get worse.
 - **`_separate` runs one relaxation pass** over a list sorted before positions
   were adjusted. It has never failed a soak test, but it is not a proof.
 - **Impacts are box-vs-box in road space**, so a car struck at a sharp angle
@@ -1346,10 +1478,24 @@ What that still does not cover:
   where the route doubles back.
 - Carriageway height equals the exact cut/fill clamp to **0.000000 m**, and the
   foreign clamp is floored at this road's own fill line so it cannot touch it.
-- **The terrain sheet no longer folds.** 0 inverted cells across five seeds,
-  minimum longitudinal row spacing exactly **29% of nominal** — the fold guard's
-  0.7 margin, by construction. It was **1,240–4,353 inverted cells per seed**
-  with a worst spacing of minus 54%.
+- **The terrain sheet essentially no longer folds.** 204–459 inverted cells of
+  117,120 per seed across five seeds — from **1,240–4,353 per seed** with a worst
+  row spacing of minus 54% before the guard was rebuilt, and from 239–580 before
+  `ROUTE.foldSmooth`. What is left is at the extreme edge of the corridor; see
+  "Known rough".
+- **There is ground everywhere the player is allowed to drive.** 0 holes in
+  ~43,000 off-road ray probes per seed across five seeds, over the whole area
+  the recovery bound permits. It was **16–19%** (bug #64). Worst corridor width
+  73–94 m, from 57–80.
+- **The canopy and the understorey.** 7 tree species x 3 variants at 432–656
+  triangles each (563 mean) plus a 4-triangle impostor per species, and 4 shrubs
+  at 4–24. Per chunk: 61,000 near + 1,500 impostor + 3,800 shrub triangles;
+  **232,000 alive at once** against ~109,000 of terrain sheet, over two lifetimes
+  (3 chunks for the grown canopy, 9 for the rest). Scatter **3.5 ms** per chunk,
+  7.8 draw batches of a budget of 8, nothing closer than 15.1 m to the
+  centreline against an 11 m clearance, mean float off the collider 26 mm, and
+  the per-chunk count varies by 38% of its mean — i.e. the stands are stands.
+  The library is bit-identical between two builds.
 - Terrain faceting, adjacent-face angle. The middle column is this project as
   shipped; the right is now, on terrain whose vertical scale is roughly **three
   times** larger. The p99 rising in the far bands is the ground genuinely turning
@@ -1402,14 +1548,14 @@ What that still does not cover:
 - Traffic mode: 43 near misses detected in a 3-minute run (37 oncoming), closest
   1.07 m; scoring curve, oncoming bonus, chain build/decay/refill and cooldown
   all verified.
-- **45 DOM ids and 15 toggled classes** resolve against `index.html`.
+- **44 DOM ids and 16 toggled classes** resolve against `index.html`.
 - Both paint slots and both lamp pairs populated on all 9 cars.
 - Render smoothness, camera space, ten frame-rate patterns from 144 fps to
   20 fps including 30% jitter, 90 ms hitches and cornering: worst springing
   **9 mm**, world advance within 0.2% of `speed × dt` everywhere.
-- The interface at **twelve device viewports**, portrait and landscape, phone to
-  desktop: no overflow anywhere, and "Drive" visible without scrolling at every
-  one of them.
+- The interface at **seventeen device viewports**, portrait and landscape, phone
+  to desktop, including the drawers open, the pause menu and tilt mode: no
+  overflow anywhere, and "Drive" visible without scrolling at every one of them.
 - Every module parses; config audit clean across `src/` and `src/env/`.
 - `engine_sim`'s own suites still pass (166 checks + the driving suite).
 
@@ -1474,11 +1620,11 @@ What that still does not cover:
     chunk at once and reported 33,110 steps on a carriageway that the height
     function and the drawn mesh both agreed was flat — all of them collisions
     between chunks that can never coexist.
-24. **`config.js` exports SIXTEEN blocks.** `GROUND`, `ROCKS`, `WIND` and `FX`
-    joined `GRASS`, `ROUTE`, `SHOWROOM` and `SCORE` — add any new block to the
-    audit regex in §5, and remember it now walks `src/env/` too, or it checks
-    nothing. The audit reads prose as well as code: write `GROUND.contrastNear`
-    in a comment, not the shorthand.
+24. **`config.js` exports EIGHTEEN blocks.** `TREES` and `BUSHES` joined
+    `GROUND`, `ROCKS`, `WIND`, `FX`, `GRASS`, `ROUTE`, `TITLE` and `SCORE` — add
+    any new block to the audit regex in §5, and remember it walks `src/env/` too,
+    or it checks nothing. The audit reads prose as well as code: write
+    `GROUND.contrastNear` in a comment, not the shorthand.
 25. **The fold guard's curvature is NOT `frame.curv`.** It is `foldL`/`foldR`,
     and the difference is bugs #58 and #59. Anything that "simplifies" the guard
     back onto the smoothed curvature re-folds the sheet, silently, in the far
@@ -1503,6 +1649,32 @@ What that still does not cover:
 31. **`src/env/` generators must survive having no canvas.** The probes stub
     `document.createElement` and `getContext` returns null. Return `null`, do not
     throw, and treat a missing map as "untextured" downstream.
+32. **Anything scattering per-sample must read the terrain SHEET, not re-derive
+    the ground.** `meshGroundPoint` is the honest answer and it is four road
+    frames and four fBm evaluations. The ground cover learned this at 591 ms per
+    chunk; the tree scatter learned it again at 62 ms. Read
+    `chunk.sheet.positions`, interpolate the same quad over the same diagonal
+    with the same winding, and take the slope from the corner heights. Sheet
+    points are ORIGIN-RELATIVE — trap #19, and `_setLocalMatrix` is the one that
+    takes them.
+33. **`vegetation()` is one field for three scatters, on purpose.** Canopy,
+    understorey and ground cover come out of a single evaluation so they cannot
+    disagree. Giving any of them its own density rule is how a clearing goes
+    back to carrying the same sward as a thicket.
+34. **The grown canopy has a shorter lifetime than its chunk**, and the recipe
+    for it is computed ONCE by `_buildProps` and cached. Re-running the seeded
+    scatter to rebuild a tier would agree until the first time the sampling
+    changed, and then a tree and its own impostor would stand apart.
+35. **A limit built from a noisy estimate is a limit that lies in both
+    directions.** The fold guard read twice the road's design curvature off
+    spline roughness and ate half the world (#64); smoothing the estimate is
+    safe, putting a FLOOR under the result is not, because sometimes the road
+    really is that tight. Measure inverted cells before and after — that is what
+    `probe/offroad.mjs` is for.
+36. **Tilt steering's axis depends on `screen.orientation.angle`.** `gamma` and
+    `beta` swap roles as the device rotates, and the sign flips again between
+    the two landscape orientations. Never assume landscape. And the permission
+    call needs a tap — trap #12's rule, a second time.
 
 ---
 
@@ -1528,14 +1700,15 @@ npm run probe
 | `probe/cliff.mjs` | Longitudinal terrain steps. |
 | `probe/traffic.mjs` | Spawn distance, stalls, overlaps, lane error, population, impact Δv. |
 | `probe/score.mjs` | The near-miss mechanic, without physics. |
-| `probe/props.mjs` | Do trees sit on the ground? **Skips** while `CHUNK.trees` is off. |
+| `probe/props.mjs` | **The canopy and the understorey.** Per-species triangle counts, determinism of the library, per-chunk caps and draw batches, scatter cost, clearance from the carriageway, float off the collider, and — the new one — that the scatter is LUMPY rather than uniform. |
+| `probe/offroad.mjs` | **Is there ground everywhere the player may drive?** Rays a grid over the whole area `_checkRecovery` allows, reports the corridor width the fold guard is delivering, and counts folded cells. Bug #64's regression test. |
 | `probe/handling.mjs` | Steering by speed, slide recovery, drift, rollover safety. |
 | `probe/smooth.mjs` | Is the car smooth **on screen** under frame-time jitter and hitches? Camera-space metric. |
 | `probe/terrain.mjs` | Faceting, by distance band. |
 | `probe/route.mjs` | Shelf share, earthwork, curvature, grade, corridor relief, self-clearance. Not in `npm run probe`. |
 | `probe/xsec.mjs` | Cross-sections — the fastest way to read what an alignment is doing. |
 | `probe/drive.mjs` | End-to-end: real car, real physics, real `engine_sim`, real traffic. |
-| `probe/uishot.mjs` | **What the interface looks like**, at twelve real device viewports, plus an overflow report. Not in `npm run probe` — needs a local Chrome. |
+| `probe/uishot.mjs` | **What the interface looks like**, at seventeen real device viewports, plus an overflow report. Not in `npm run probe` — needs a local Chrome. |
 | `probe/render.mjs` | **What the GAME looks like.** Boots the real thing through SwiftShader, drives it, screenshots the garage and the road. Not in `npm run probe` — needs a local Chrome and takes a minute. |
 
 `probe/render.mjs` takes `[seed] [seconds] [teleport]`; the third jumps the car

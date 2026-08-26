@@ -84,7 +84,7 @@ check('every shrub has variants',
   `${shrubs.length} shrubs x ${BUSHES.variants}`);
 check('protos stand on y = 0', worstBase < 1e-4, `worst ${worstBase.toExponential(1)}`);
 check('protos are unit tall', worstTall < 1e-4, `worst ${worstTall.toExponential(1)}`);
-check('near mesh inside its budget', chunks.trees.trianglesPerTree <= 420,
+check('near mesh inside its budget', chunks.trees.trianglesPerTree <= 620,
   `mean ${chunks.trees.trianglesPerTree.toFixed(0)} tris/tree`);
 check('impostor is 4 triangles',
   species.every((n) => tri(chunks.trees.impostors.get(n).geometry) === 4));

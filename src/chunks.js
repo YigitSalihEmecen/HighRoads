@@ -1472,11 +1472,11 @@ export class ChunkManager {
         }
         if (far < TREES.farCap) {
           const imp = this.trees.impostors.get(name);
-          // The impostor is a unit-tall crossed pair, so it takes the same
-          // height — and a little more width, because a painted silhouette has
-          // its canopy inside the card while the grown mesh spreads past it.
-          this._setLocalMatrix(p, height * variant.radius * 2.35, height,
-            height * variant.radius * 2.35, yaw);
+          // Unit-tall crossed pair, so it takes the tree's own height — and a
+          // width computed from where the painted crown actually sits inside
+          // its card. See `env/trees.js:impostorWidth`.
+          const w = height * imp.width * variant.radius;
+          this._setLocalMatrix(p, w, height, w, yaw);
           push(`i:${name}`, imp.geometry, this.trees.impostorMaterial,
             this._mat, this._color, false);
           far++;

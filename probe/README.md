@@ -16,7 +16,8 @@ npm run probe
 | `surface.mjs` | Is anything standing in the carriageway, or missing from under it? Casts down the drivable width along the whole route, against the window of chunks the GAME keeps alive. Exits non-zero on any step over 30 cm or any hole. Was `tunnel.mjs`. |
 | `traffic.mjs` | Do cars appear in view, stop dead, or overlap? Drives a synthetic player for several minutes and reports spawn distance, stalls, overlaps, lane error, population and impact Δv. |
 | `terrain.mjs` | How faceted is the ground? Angle between adjacent face normals, by distance band. |
-| `props.mjs` | Do trees sit on the ground, and does the per-chunk budget hold? Rays against the real collider. **Skips** while `CHUNK.trees` is off. |
+| `props.mjs` | The canopy and the understorey: per-species triangle counts, whether the library is deterministic, per-chunk caps and draw batches, scatter cost, clearance from the carriageway, float off the real collider — and whether the scatter is LUMPY rather than uniform, which is the thing the clustering exists to do. |
+| `offroad.mjs` | Is there ground everywhere the player is allowed to drive? Rays a grid over the whole area the recovery bound permits, reports the corridor width the fold guard is delivering, and counts folded cells. Bug #64's regression test. |
 | `cliff.mjs` | Longitudinal steps in the terrain sheet — a seam the car can catch on and the eye reads as a tear. |
 | `handling.mjs` | Usable steering angle by speed, whether a slide can be caught, whether a drift can be held, and rollover safety for the tall vehicles. |
 | `xsec.mjs` | Prints terrain cross-sections across the corridor — the fastest way to read what an alignment is doing: on a shelf, in a cutting, on an embankment, or halfway up a hillside. |
@@ -55,9 +56,16 @@ of its own 120 m of road, so a chunk two kilometres away can lie across the
 carriageway here.
 
 **A probe that goes red because a feature is switched off is a probe nobody
-reads.** `props.mjs` skips when `CHUNK.trees` is off. Red should mean something
-broke, not that somebody made a decision; after a week of the latter the genuine
-failures are invisible too.
+reads.** `props.mjs` used to skip while the trees were off, for exactly that
+reason. Red should mean something broke, not that somebody made a decision;
+after a week of the latter the genuine failures are invisible too. (The trees
+are on now, and it runs.)
+
+**Some bars are the OLD MEASUREMENT, not a design target.** `offroad.mjs` allows
+up to 580 folded cells because that is what the sheet did before the fold guard
+was smoothed — the check is "this did not get worse", and writing 0 there would
+fail on day one and be deleted by the end of the week. When a bar is a measured
+baseline, the number it came from is in the comment beside it.
 
 **A steady frame rate hides every frame-rate bug there is.** The car sprang
 visibly backwards at speed, and 144, 60, 45, 30, 24 and 20 fps *all* measured

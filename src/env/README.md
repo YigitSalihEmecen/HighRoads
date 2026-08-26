@@ -56,15 +56,37 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 |---|---|---|
 | `textures.js` | shared procedural canvas helpers — value noise, fBm, mottle | — |
 | `grass.js` | crossed-card grass tufts, in a near and a far tier | 4 |
+| `trees.js` | grown branch skeletons with leaf cards, plus painted impostors | 430–660 / **4** |
+| `bushes.js` | four shrub forms, cards with one multi-stem among them | 4–24 |
 | `rocks.js` | convex boulders, slabs and scree, three size classes | 44–120 |
 | `ground.js` | the terrain's detail texture and its material patch | — |
 
-## What is not here yet
+## The canopy, and the note this replaces
 
-`trees.js` and `bushes.js`. The tree scatter, its species table and its ecology
-rules are all intact in `foliage.js` and `chunks.js`; what is switched off is
-the *models*, because the ones available are solid meshes at 1,700–2,900
-triangles each. A procedural canopy belongs here, built as a trunk plus a small
-number of billboard-shell layers with a level of detail worth spending the
-budget on. `CHUNK.trees` is the switch, and nothing about the scatter has to
-change when it flips.
+This file used to end with a section called "what is not here yet", saying that
+`trees.js` and `bushes.js` belonged here and that the models available were
+solid meshes at 1,700–2,900 triangles each — 1,030,000 triangles for 468
+instances, 90% of the geometry on screen, for 10.3 trees a hectare. It said the
+answer was a procedural canopy with "a level of detail worth spending the budget
+on". That is what `trees.js` is:
+
+* the near mesh is grown — a queue-based branch recursion swept into tapering
+  tubes, with leaf mass hung on the tips as crossed cards, 430–660 triangles;
+* the far tier is a **four-triangle** impostor carrying a painted silhouette of
+  the species, and it is the thing that makes a forest affordable;
+* the two cross-fade by scale, in the shader, exactly as the two grass tiers do.
+
+Measured: **232,000 triangles** of canopy and understorey alive at once against
+109,000 for the terrain sheet — roughly twice the sheet, for hundreds of trees
+in view rather than tens.
+
+Two things about it are load-bearing and easy to undo by accident:
+
+1. **Bark and leaves share one geometry, one atlas and one material.** The
+   alternative is two draw calls per (chunk, species), and the draw call is what
+   bounds how many species a chunk may show.
+2. **The grown canopy has a SHORTER LIFETIME than its chunk.** A near tree is
+   resolvable to 95 m and its chunk reaches 720 m; building the two together
+   submitted nine chunks of tree geometry to draw one chunk's worth. The recipe
+   is cached on the chunk by `_buildProps` and `_updateCanopy` turns it into
+   meshes as the car arrives — the same split the ground cover uses.
