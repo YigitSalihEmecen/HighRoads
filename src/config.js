@@ -415,12 +415,14 @@ export const CHUNK = {
   segmentsU: 48,
 
   /**
-   * Chunks kept behind / ahead. Matched to the fog depth: at 720 m ahead the
-   * fog already leaves under 2% of the colour, so building further is paying
-   * full geometry cost for something invisible.
+   * Chunks kept behind / ahead. Keyed to the fog wall: at 480 m ahead the
+   * exponential fog leaves only ~13% of the colour, so building further is
+   * paying full geometry cost for something the fog has already erased. The
+   * far sheet still reaches ~700 m sideways for the rows that do exist; what
+   * this number is deciding is how many rows there are at all.
    */
   behind: 2,
-  ahead: 6,
+  ahead: 4,
 
   /** Chunks built per frame once running — keeps frame spikes bounded. */
   buildPerFrame: 1,
@@ -623,26 +625,31 @@ export const TREES = {
   /**
    * Where the grown mesh hands over to the impostor, metres of camera distance.
    *
-   * The windows OVERLAP by design — the near tier shrinks out over 55-95 while
-   * the far tier grows in over 45-80 — so a tree is never both gone as geometry
-   * and not yet there as a card. They cross-fade by SCALE and not opacity, the
-   * same decision the ground cover makes and for the same reason: the material
-   * is an alpha-test cutout, there is no opacity to fade, and a tree shrinking
-   * into the ground reads far better than one dissolving in mid-air.
+   * The near tier shrinks out over EXACTLY the same window the far tier grows
+   * in over, and that is deliberate: `1 - smoothstep(a,b)}` and
+   * `smoothstep(a,b)}` are complementary, so a tree's total scale never
+   * changes as it crosses the band — it is one full tree the whole way
+   * through. When the two windows differed (near 55-95, far 45-80) a tree
+   * swelled by ~40% where both tiers were present, then shrank back as the
+   * near tier finished leaving — a de-grow/regrow right beside the player.
    *
-   * 55 m is chosen against the fact that a 20 m tree at 55 m is about a fifth of
-   * the screen height. The silhouette is still doing all the work at that size;
-   * the branch structure stopped being resolvable well before it.
+   * The band itself sits at 260-420 m: the grown mesh is what reads as "a tree",
+   * so it owns the whole near field, and the card takes over across the same
+   * window the fog starts doing its work, keeping the look honest about the
+   * haze the world now ends in.
    */
-  lodFade: [55, 95],
-  farFadeIn: [45, 80],
+  lodFade: [260, 420],
+  farFadeIn: [260, 420],
   /**
-   * And where the impostors stop. Matched to the FOG, not to the chunk window:
-   * at `ATMOSPHERE.fogDensity` = 0.0016 there is about 20% of the colour left at
-   * 620 m, which is little enough that a card vanishing there is invisible. The
-   * chunk window reaches 720 m ahead, so the tier never outruns its own ground.
+   * And where the impostors stop.
+   *
+   * They live and die with their chunk out to `CHUNK.ahead`, and that edge is
+   * folded into the fog: the cards shrink back out over 420-500 m — a band the
+   * dense fog has already rendered to under a third of its colour by the far
+   * end — so what kills a tree is the haze, never a pop when its chunk leaves
+   * the window.
    */
-  farFade: [430, 620],
+  farFade: [420, 500],
 
   /**
    * Fade-in for an impostor that has NO grown mesh behind it, metres.
@@ -659,11 +666,14 @@ export const TREES = {
    * The surplus can only be honest about being a distance effect: it appears
    * where a 20 m tree is a few per cent of the screen and no one can see it
    * arrive, and the paired impostors — the ones with somewhere to hand over
-   * to — keep the short `farFadeIn` window they always had. Density falling off
-   * with distance is standard and invisible; density falling off at forty-five
+   * to — pick the tree up in the `farFadeIn` window. Density falling off with
+   * distance is standard and invisible; density falling off at forty-five
    * metres is neither.
+   *
+   * Sits just inside the chunk edge so the far density ramp has the last of
+   * the window to work with, after the paired cards are already up.
    */
-  loneFadeIn: [230, 380],
+  loneFadeIn: [340, 460],
 
   /**
    * Scatter attempts per chunk, and the caps on what survives.
@@ -681,17 +691,19 @@ export const TREES = {
   /**
    * Chunks either side of the car that carry the GROWN canopy.
    *
-   * The impostors live as long as their chunk, out to 720 m ahead; the grown
-   * mesh lives only as long as it can be resolved, which `lodFade` puts at 95 m.
-   * Building it with the chunk submitted nine chunks of tree geometry to draw
-   * one chunk's worth — 520,000 triangles alive to render 110,000 of them, the
-   * rest scaled to nothing by the shader and still costing a vertex each.
+   * The impostors live as long as their chunk, out to 480 m ahead; the grown
+   * mesh lives only as long as it can be resolved, which `lodFade` puts at
+   * 360 m. Building the grown mesh with the chunk would submit every chunk's
+   * tree geometry at once — 520,000 triangles alive to render 110,000 of
+   * them, the rest scaled to nothing by the shader and still costing a vertex
+   * each — so the grown window is kept to exactly the handover it needs.
    *
-   * One either side is 240 m of cover for a 95 m fade, which is margin enough
-   * that a chunk arriving a frame or two late is never visible.
+   * `ahead` covers the handover's outer edge (4 chunks = 480 m) and `behind`
+   * a margin behind the car so a tree passed at speed is still a grown tree
+   * while it recedes.
    */
-  behind: 1,
-  ahead: 1,
+  behind: 2,
+  ahead: 4,
 
   /**
    * Vegetation is placed around a handful of cluster seeds rather than
@@ -922,7 +934,7 @@ export const GRASS = {
   far: {
     enabled: true,
     behind: 1,
-    ahead: 5,
+    ahead: 4,
     /** Lateral band, metres. Past this the terrain's detail texture takes over. */
     halfExtent: 185,
     /**
@@ -934,8 +946,8 @@ export const GRASS = {
     coverage: 0.05,
     /** Grows in over this camera-distance window, behind the near tier's fade. */
     fadeIn: [55, 110],
-    /** And shrinks out again here — matched to the fog, not to the band. */
-    fadeOut: [330, 470],
+    /** And shrinks out again here — folded into the fog wall, not the band. */
+    fadeOut: [280, 420],
     /** Steepest ground it will stand on. Looser than the near tier: at this
      *  distance a card on a 60-degree face reads as scrub, not as a mistake. */
     maxSlope: 2.2,
@@ -1559,16 +1571,16 @@ export const TRAFFIC = {
   /**
    * The band of road that is populated, and where inside it a car may appear.
    *
-   * `spawnMin` is the important one. It used to be 40 m, which put cars into
-   * existence in the middle of the carriageway in full view — the single most
-   * obvious thing wrong with the old traffic. At 460 m the exponential fog has
-   * already taken about half the contrast out of a car and the depth-of-field
-   * focus (which reaches 260 m at speed) has softened it, so what arrives is a
-   * shape resolving out of the haze rather than an object switching on.
+   * `spawnMin` is the important one. It used to be 460 m against thin fog; now
+   * that the fog wall sits at ~0.0030, cars appear where the haze still hides
+   * the moment they switch on — at 320 m the exponential fog has already taken
+   * ~60% of the contrast out of a car, so what arrives is a shape resolving out
+   * of the mist rather than an object switching on. Nothing beyond the fog line
+   * is populated at all, which is also fewer simulated cars to pay for.
    */
-  spawnMin: 460,
-  ahead: 620,
-  behind: 260,
+  spawnMin: 320,
+  ahead: 460,
+  behind: 220,
   /** Share of spawns that come the other way. */
   oncomingShare: 0.42,
 
@@ -1614,14 +1626,25 @@ export const TRAFFIC = {
 export const CAMERA = {
   fov: 62,
   near: 0.4,
-  far: 2600,
+  far: 1500,
+  /**
+   * `far` is pulled in from 2600 to match the fog wall: no chunk, tree, grass
+   * card or road row exists past ~700 m, so the far plane is only there to give
+   * the depth buffer room. Tightening it stops rasterising anything a stray
+   * far sheet still reaches and improves depth precision in the band that
+   * actually matters.
+   */
   /**
    * Chase rig: distance / height / look-ahead, in metres. Deliberately tight —
    * the camera sits just off the bootlid at rest, which is what makes low speed
    * feel like driving rather than like watching a model from across the room.
+   *
+   * The resting distances are ~20% shorter than they used to be so the whole
+   * car stays inside the frame without the dark rear trim reaching the bottom
+   * edge — the frame is what it is before the speed pull-back even starts.
    */
-  chase: { dist: 4.4, height: 2.30, ahead: 6.0 },
-  close: { dist: 3.3, height: 1.80, ahead: 4.8 },
+  chase: { dist: 4.8, height: 2.30, ahead: 6.0 },
+  close: { dist: 4.2, height: 1.80, ahead: 4.8 },
   /** Height of the point the camera aims at, above the contact plane. */
   aimHeight: 0.95,
   /**
@@ -1653,8 +1676,8 @@ export const CAMERA = {
   speedRef: 68,
   speedLag: 0.5,
   /** How far the rig backs off and lifts at full speed, metres. Kept small. */
-  distGain: 0.45,
-  heightGain: 0.12,
+  distGain: 0.25,
+  heightGain: 0.08,
   /** Degrees of extra field of view at full speed — most of the speed cue. */
   fovSpeedGain: 12,
 
@@ -1761,8 +1784,14 @@ export const ATMOSPHERE = {
    * Reduced now that depth of field carries the distance cue. Fog this thick
    * was doing the separating on its own, which meant washing the whole
    * landscape to one flat colour before you could see any of it.
+   *
+   * Thickened for the hazy, mile-a-minute look: at `fogDensity` = 0.0030 the
+   * world is plainly readable only to ~250 m, dissolves through the mid
+   * distance, and is under ~13% visible at the chunk window's edge — which is
+   * exactly where the far geometry ends. The fog wall is what saves the render
+   * budget; everything beyond it is paid for and invisible.
    */
-  fogDensity: 0.0016,
+  fogDensity: 0.0030,
 
   skyTop: 0x7ba4ce,
   skyZenith: 0x3f6ea8,

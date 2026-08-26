@@ -22,6 +22,7 @@
  */
 
 import { TiltSteering } from './input.js';
+import { CAM_MODES } from './camera.js';
 
 /**
  * The buses worth a slider.
@@ -114,7 +115,7 @@ export class Settings {
     this.autoBtn = this._button('Gearbox: auto', () => {
       this.game.setAutoShift(!pt.autoShift);
     });
-    this.camBtn = this._button('Camera: chase', () => {
+    this.camBtn = this._button(`Camera: ${CAM_MODES[this.game.cam.mode]}`, () => {
       this.camBtn.textContent = 'Camera: ' + this.game.cam.cycle();
     });
     /**
