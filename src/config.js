@@ -610,13 +610,16 @@ export const TREES = {
    *
    * BOTH ARE DRAW-CALL DECISIONS, not look ones. An InstancedMesh exists per
    * (chunk, geometry), so `picks * 2` (near plus impostor) is the batch count a
-   * chunk costs before a single tree is shaded. Four species from a table of
-   * nine, one variant of each, chosen from the chunk's own index: neighbouring
+   * chunk costs before a single tree is shaded. Six species from a table of
+   * eight, one variant of each, chosen from the chunk's own index: neighbouring
    * chunks draw different things, a chunk unloaded and reloaded comes back
-   * identical, and the world at large still shows everything.
+   * identical, and the world at large still shows everything. The picks are
+   * kept high enough that the coloured species (birch, maple, aspen) are
+   * present in almost every chunk — the whole problem with a smaller number
+   * was that a white birch stand simply failed to spawn for long stretches.
    */
   variants: 3,
-  picks: 4,
+  picks: 6,
 
   /** Atlas sizes. Bark and three leaf masses; then one silhouette per species. */
   textureSize: 512,
@@ -802,8 +805,8 @@ export const BUSHES = {
   fade: [70, 105],
 
   /** Attempts per chunk and the cap on survivors. Mean 12 triangles each. */
-  samples: 900,
-  cap: 340,
+  samples: 1150,
+  cap: 450,
 
   /** Lighter than the canopy: a shrub is stiff and close to the ground. */
   windStrength: 0.18,
@@ -1642,9 +1645,14 @@ export const CAMERA = {
    * The resting distances are ~20% shorter than they used to be so the whole
    * car stays inside the frame without the dark rear trim reaching the bottom
    * edge — the frame is what it is before the speed pull-back even starts.
+   *
+   * `zoom` scales how much the rig OPEN OUT with speed — both the positional
+   * pull-back (distGain/heightGain) and the FOV widening (fovSpeedGain). The
+   * close camera runs at half: the other modes pull back to reveal distance,
+   * the close one is for immersion and stays put.
    */
-  chase: { dist: 4.8, height: 2.30, ahead: 6.0 },
-  close: { dist: 4.2, height: 1.80, ahead: 4.8 },
+  chase: { dist: 4.8, height: 2.30, ahead: 6.0, zoom: 1.0 },
+  close: { dist: 4.2, height: 1.80, ahead: 4.8, zoom: 0.5 },
   /** Height of the point the camera aims at, above the contact plane. */
   aimHeight: 0.95,
   /**

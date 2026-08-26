@@ -224,6 +224,9 @@ export class ChaseCamera {
     }
 
     const cfg = mode === 'close' ? CAMERA.close : CAMERA.chase;
+    // How much the rig is allowed to open out with speed (pull-back + FOV).
+    // See CAMERA.chase/close `zoom` — the close camera is deliberately half.
+    const zoom = cfg.zoom ?? 1;
 
     // Scale the rig to the vehicle so every car is framed the same way.
     const bodyH = (vehicle.V && vehicle.V.bodyHeight) || CAMERA.bodyRef;
@@ -251,8 +254,8 @@ export class ChaseCamera {
 
     this._desired
       .copy(vehicle.renderPos)
-      .addScaledVector(this.heading, -(cfg.dist * dScale + speedT * CAMERA.distGain))
-      .addScaledVector(WORLD_UP, cfg.height * hScale + speedT * CAMERA.heightGain);
+      .addScaledVector(this.heading, -(cfg.dist * dScale + speedT * CAMERA.distGain * zoom))
+      .addScaledVector(WORLD_UP, cfg.height * hScale + speedT * CAMERA.heightGain * zoom);
 
     this._target
       .copy(vehicle.renderPos)
@@ -293,7 +296,7 @@ export class ChaseCamera {
     // A little roll into the corner, driven by lateral slip.
     this.camera.rotateZ(clamp(vehicle.slip * Math.sign(vehicle.wheels[2].slipLat) * 0.05, -0.06, 0.06));
 
-    this._applyFov(dt, speedT, vehicle);
+    this._applyFov(dt, speedT, vehicle, zoom);
   }
 
   /**
@@ -469,11 +472,11 @@ export class ChaseCamera {
     this.camera.lookAt(this._desired.clone().addScaledVector(this._fwd, 20));
 
     this.speedT = damp(this.speedT, smoothstep(0, CAMERA.speedRef, Math.abs(vehicle.forwardSpeed)), CAMERA.speedLag, dt);
-    this._applyFov(dt, this.speedT, vehicle);
+    this._applyFov(dt, this.speedT, vehicle, 1);
   }
 
-  _applyFov(dt, speedT, vehicle) {
-    const target = CAMERA.fov + speedT * CAMERA.fovSpeedGain + vehicle.slip * 2;
+  _applyFov(dt, speedT, vehicle, zoom = 1) {
+    const target = CAMERA.fov + speedT * CAMERA.fovSpeedGain * zoom + vehicle.slip * 2;
     this.fov = damp(this.fov, target, 2.2, dt);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;

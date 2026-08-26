@@ -60,9 +60,10 @@
  *   GNARLINESS   how far the direction wanders per section. Scaled by 1/radius,
  *                so twigs writhe and trunks barely bend, which is the actual
  *                mechanical fact about wood and is why it reads correctly.
- *   GROWTH       phototropism as a vector: branches turn toward it a little
- *                every section. Up for most things, DOWN for a willow, which is
- *                the entire difference between a willow and a birch.
+*   GROWTH       phototropism as a vector: branches turn toward it a little
+   *                every section. Up for most things; a smaller value for a
+   *                drooping skirt, and a negative value is what a weeping
+   *                species used to use before it was removed from the table.
  *   TAPER        radius at the tip as a fraction of the base.
  *   SPREAD       the cone angle children leave the parent at.
  *
@@ -84,7 +85,7 @@
  *
  *   near geometry   160-360 tris   (pine 210, broadleaf 300, dead 120)
  *   impostor          4 tris
- *   library          9 species x TREES.variants, built once at boot
+ *   library          8 species x TREES.variants, built once at boot
  *
  * Against 109,000 triangles of terrain sheet, four hundred near trees and three
  * thousand impostors is roughly 130,000 — a bit over the sheet, and an order of
@@ -332,8 +333,8 @@ class TreeBuilder {
     /**
      * Height below which a drooping limb is bent back toward level.
      *
-     * Scaled off `trunk.length`, which is in FORM units — the archetypes are
-     * normalised to unit height afterwards, so a willow's trunk is 0.5, not
+* Scaled off `trunk.length`, which is in FORM units — the archetypes are
+    * normalised to unit height afterwards, so a spruce's trunk is 1.0, not
      * five metres. Getting that wrong makes the guard a tenth the size it
      * should be and it stops catching anything.
      */
@@ -357,9 +358,9 @@ class TreeBuilder {
         _q.setFromAxisAngle(_axis, gn * (rnd() - 0.5) * 2);
         d.applyQuaternion(_q).normalize();
 
-        // Phototropism, or gravity for a willow. Proportional to the step and
-        // inversely to the radius, so a heavy limb holds its line and the
-        // twigs at the end of it turn.
+        // Phototropism, or gravity for a drooping species. Proportional to the
+        // step and inversely to the radius, so a heavy limb holds its line and
+        // the twigs at the end of it turn.
         const pull = (growth.strength * step) / Math.max(0.02, r * 12);
         d.x += growth.dir.x * pull;
         d.y += growth.dir.y * pull;
@@ -367,12 +368,12 @@ class TreeBuilder {
         d.normalize();
 
         // A limb that has drooped to the height of the root levels off rather
-        // than digging in. `willow` (dir.y -0.85, strength 1.15) and `spruce`
-        // (-0.25 at 0.7) both carry enough downward growth to take a branch
+        // than digging in. `spruce` (-0.25 at 0.7) used to carry enough downward
         // well below y = 0, and the trunk base is the point the whole tree is
         // planted by — so a branch under it used to hold the entire tree up in
-        // the air. Measured before this: willow floated 48-58% of its own
-        // height, spruce 13-20%. Bug #68, and see the normalisation below.
+        // the air. Measured before this: the removed willow floated 48-58% of
+        // its own height, spruce 13-20%. Bug #68, and see the normalisation
+        // below.
         if (d.y < 0 && p.y < floorEase) {
           d.y *= Math.max(0, p.y / floorEase);
           d.normalize();
@@ -574,7 +575,7 @@ export function growTree(form, seed) {
       // the tree. Using `out.radius` — the tip — compounds the taper with the
       // level ratio, so a child is a quarter of its parent instead of six
       // tenths, and two levels down every branch is under `minRadius` and stops
-      // early. Measured before the fix: a willow that should carry sixteen leaf
+      // early. Measured before the fix: a broadleaf that should carry sixteen leaf
       // clusters carried four, and looked like an aerial. Real branching is
       // close to da Vinci's rule — a child is about 1/sqrt(n) of its parent for
       // n children — which is what the 0.5-0.62 ratios in the table are.
@@ -606,15 +607,17 @@ export function growTree(form, seed) {
   // from — NOT the bottom of the bounding box. Those are the same point only
   // for a tree whose lowest vertex belongs to the trunk, and they were not the
   // same for the two species that grow downward: aligning the box floated a
-  // spruce 1.6-4.4 m and a willow 4-8 m off the ground, because their drooping
-  // foliage reached below the root and the whole tree was lifted to bring it
-  // up. The ground guard in `branch` now keeps limbs above y = 0; this reads
-  // the height from the top and leaves the base where it belongs. Bug #68.
+  // spruce 1.6-4.4 m and the removed willow 4-8 m off the ground, because
+  // their drooping foliage reached below the root and the whole tree was lifted
+  // to bring it up. The ground guard in `branch` now keeps limbs above y = 0;
+  // this reads the height from the top and leaves the base where it belongs.
+  // Bug #68.
   // Leaf CARDS are not swept by `branch` and so are not covered by its ground
-  // guard: a willow's are 0.48 form units across on a tree 0.8 tall, and they
-  // hang from tips that are themselves near the ground. Flattening them onto
-  // y = 0 is both the invariant placement needs and what the species actually
-  // does — the foliage of a weeping willow lies along the ground.
+  // guard: a drooping broadleaf's are 0.48 form units across on a tree 0.8
+  // tall, and they hang from tips that are themselves near the ground.
+  // Flattening them onto y = 0 is both the invariant placement needs and what
+  // the species actually does — the foliage of a weeping tree lies along the
+  // ground.
   {
     const pos = geo.getAttribute('position');
     const arr = pos.array;

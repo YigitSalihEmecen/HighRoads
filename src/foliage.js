@@ -37,9 +37,9 @@
  *   STAND       `terrain.forestDensity` — two scales of noise multiplied, so
  *               woodland has stands a few hundred metres across with clearings
  *               broken through them rather than being a uniform wash.
- *   MOISTURE    a slow field, biased wet in the hollows: relief below the local
- *               continental surface is where water goes. It is what separates
- *               a willow from a pine and lush verge from dry scrub.
+*   MOISTURE    a slow field, biased wet in the hollows: relief below the local
+   *               continental surface is where water goes. It is what separates
+   *               a birch from a pine and lush verge from dry scrub.
  *   RELIEF      height above local sea level, not absolute height. 400 m is a
  *               summit in one place and a valley floor two hundred kilometres
  *               away; a treeline keyed to the absolute number puts bare rock in
@@ -66,9 +66,9 @@ import { CHUNK, TREES } from './config.js';
  * How each species is BUILT. Consumed by `env/trees.js:growTree`; see that
  * file's header for what the parameters mean mechanically.
  *
- * The nine are chosen to be distinguishable AT DISTANCE, which is a stronger
+ * The eight are chosen to be distinguishable AT DISTANCE, which is a stronger
  * requirement than being different up close. Silhouette first: a narrow spire,
- * a broad dome, a weeping curtain, a bare armature. Two species that differ
+ * a broad dome, a slim pale column, a bare armature. Two species that differ
  * only in leaf shape are one species with extra draw calls.
  *
  * `bark` and `leaf` are the vertex hues the grey atlas is multiplied by, and
@@ -224,7 +224,7 @@ export const TREE_FORMS = {
     cards: 3,
     leafCell: 'broadleaf',
     bark: [0.36, 0.29, 0.23],
-    leaf: [0.60, 0.28, 0.13],
+    leaf: [0.76, 0.25, 0.09],
     impostor: {
       crownBase: 0.38, trunkWidth: 0.026,
       blobs: 44, blobSize: 0.105, blobSquash: 0.92, bias: 0.6,
@@ -238,7 +238,9 @@ export const TREE_FORMS = {
    *
    * The bark colour is doing most of the work here and it is worth being honest
    * about that: at any distance where the crown is a few pixels, a birch wood
-   * is white verticals against dark ground, and that is the whole read.
+   * is white verticals against dark ground, and that is the whole read. The
+   * crown is kept a pale yellow-green rather than a hard green so the wood
+   * reads light from a distance — a mass of pale birch reads as a pale mass.
    */
   birch: {
     levels: 2,
@@ -260,51 +262,12 @@ export const TREE_FORMS = {
     leafDrop: 0.09,
     cards: 3,
     leafCell: 'broadleaf',
-    bark: [0.82, 0.80, 0.74],
-    leaf: [0.40, 0.50, 0.24],
+    bark: [0.93, 0.92, 0.87],
+    leaf: [0.64, 0.68, 0.44],
     impostor: {
       crownBase: 0.42, trunkWidth: 0.014,
       blobs: 32, blobSize: 0.085, blobSquash: 0.95, bias: 0.6,
       profile: (t) => 0.66 * Math.sin(Math.PI * (0.28 + t * 0.68)),
-    },
-  },
-
-  /**
-   * WILLOW — the one species where the growth vector points DOWN.
-   *
-   * That single sign flip is the entire difference between this and a birch,
-   * which is the argument for having a growth vector at all rather than a
-   * per-species shape function. Everything else here — the low fork, the long
-   * limbs, the big drooping leaf cards — is amplification.
-   */
-  willow: {
-    levels: 3,
-    sections: 4,
-    segments: 5,
-    segmentDrop: 2,
-    trunk: { length: 0.5, radius: 0.055, lean: 0.2 },
-    branches: [
-      { count: 4, angle: 0.9, start: 0.45, length: 0.9, radius: 0.6, tipShrink: 0.2, leafy: false },
-      { count: 3, angle: 0.7, start: 0.25, length: 0.85, radius: 0.55, tipShrink: 0.2, leafy: true },
-      { count: 2, angle: 0.5, start: 0.2, length: 0.8, radius: 0.5, tipShrink: 0.2, leafy: true },
-    ],
-    gnarliness: 0.55,
-    taper: 0.45,
-    growth: { dir: { x: 0, y: -0.85, z: 0 }, strength: 1.15 },
-    minRadius: 0.004,
-    maxBranches: 26,
-    leafSize: 0.48,
-    leafFalloff: 0.82,
-    leafDrop: 0.34,
-    cards: 2,
-    leafCell: 'broadleaf',
-    bark: [0.30, 0.27, 0.20],
-    leaf: [0.36, 0.46, 0.24],
-    impostor: {
-      crownBase: 0.22, trunkWidth: 0.026,
-      blobs: 44, blobSize: 0.105, blobSquash: 1.25, bias: 0.4,
-      // Widest low down and trailing: a curtain rather than a dome.
-      profile: (t) => 0.80 * (1 - t * 0.55) * Math.sin(Math.PI * (0.3 + t * 0.6)),
     },
   },
 
@@ -372,8 +335,8 @@ export const TREE_FORMS = {
     leafDrop: 0.06,
     cards: 3,
     leafCell: 'broadleaf',
-    bark: [0.74, 0.71, 0.64],
-    leaf: [0.72, 0.55, 0.16],
+    bark: [0.80, 0.78, 0.70],
+    leaf: [0.86, 0.64, 0.12],
     impostor: {
       crownBase: 0.30, trunkWidth: 0.014,
       blobs: 40, blobSize: 0.07, blobSquash: 1.0, bias: 0.55,
@@ -401,7 +364,7 @@ export const TREE_FORMS = {
       { count: 3, angle: 1.0, start: 0.25, length: 0.62, radius: 0.5, tipShrink: 0.35, leafy: false },
       { count: 2, angle: 0.9, start: 0.2, length: 0.55, radius: 0.45, tipShrink: 0.4, leafy: false },
     ],
-    gnarliness: 1.15,
+    gnarliness: 0.85,
     taper: 0.4,
     growth: { dir: { x: 0.2, y: 0.3, z: -0.1 }, strength: 0.5 },
     minRadius: 0.005,
@@ -451,19 +414,16 @@ export const FOLIAGE = {
   },
   maple: {
     // Warm-leaved broadleaf of settled mid ground, climbing out of the lowland.
-    height: [12, 20], weight: 0.5, relief: [-30, 200], maxSlope: 0.5,
-    lateral: [13, 165], rugged: -0.35, wet: 0.1, social: 0.45,
+    height: [12, 20], weight: 0.8, relief: [-50, 240], maxSlope: 0.55,
+    lateral: [13, 165], rugged: -0.35, wet: 0.1, social: 0.5,
   },
   birch: {
     // The pale trunk is the woodland's white mass: the commonest tree mid-slope
     // and the most abundant pale one anywhere, so a birch wood reads everywhere.
-    height: [10, 18], weight: 1.1, relief: [-40, 300], maxSlope: 0.65,
-    lateral: [13, 165], rugged: 0.1, wet: 0.0, social: 0.6,
-  },
-  willow: {
-    // Damp low ground only, and it stops well below everything else.
-    height: [8, 14], weight: 0.32, relief: [-60, 60], maxSlope: 0.3,
-    lateral: [14, 150], rugged: -0.85, wet: 0.9, social: 0.5,
+    // A high social bias keeps it clustering into real white stands rather than
+    // scattering as a pale sprinkle between everything else.
+    height: [10, 18], weight: 1.7, relief: [-50, 320], maxSlope: 0.7,
+    lateral: [13, 165], rugged: 0.1, wet: 0.0, social: 0.75,
   },
   poplar: {
     height: [15, 25], weight: 0.3, relief: [-40, 130], maxSlope: 0.45,
@@ -471,8 +431,8 @@ export const FOLIAGE = {
   },
   aspen: {
     // Pale coloniser of higher, drier, steeper ground than birch cares for.
-    height: [14, 24], weight: 0.4, relief: [-20, 300], maxSlope: 0.7,
-    lateral: [13, 165], rugged: 0.2, wet: -0.1, social: 0.6,
+    height: [14, 24], weight: 0.65, relief: [-40, 340], maxSlope: 0.75,
+    lateral: [13, 165], rugged: 0.2, wet: -0.1, social: 0.65,
   },
   dead: {
     // Survives higher than anything living — the last thing before bare rock.
@@ -494,19 +454,19 @@ export const FOLIAGE = {
  */
 export const SHRUBS = {
   bramble: {
-    form: 'round', height: [0.7, 1.5], weight: 1.0, relief: [-50, 180],
+    form: 'round', height: [0.9, 1.8], weight: 1.0, relief: [-50, 180],
     maxSlope: 0.9, lateral: [9, 150], wet: 0.3, edge: 1.0, tint: [0.30, 0.38, 0.20],
   },
   hazel: {
-    form: 'upright', height: [1.6, 3.2], weight: 0.7, relief: [-40, 170],
+    form: 'upright', height: [1.9, 3.6], weight: 0.7, relief: [-40, 170],
     maxSlope: 0.7, lateral: [11, 150], wet: 0.25, edge: 0.85, tint: [0.32, 0.42, 0.22],
   },
   gorse: {
-    form: 'spiky', height: [0.6, 1.4], weight: 0.75, relief: [0, 300],
+    form: 'spiky', height: [0.8, 1.7], weight: 0.75, relief: [0, 300],
     maxSlope: 1.1, lateral: [9, 150], wet: -0.55, edge: -0.5, tint: [0.38, 0.40, 0.17],
   },
   heather: {
-    form: 'low', height: [0.25, 0.6], weight: 0.9, relief: [60, 420],
+    form: 'low', height: [0.35, 0.8], weight: 0.9, relief: [60, 420],
     maxSlope: 1.2, lateral: [9, 150], wet: -0.25, edge: -0.85, tint: [0.36, 0.31, 0.30],
   },
 };

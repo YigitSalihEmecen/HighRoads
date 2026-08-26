@@ -44,17 +44,18 @@ const KEY_FALL = 6.5;   // per second, back to neutral
  * Degrees of tilt either side of neutral for full lock, and the dead band in
  * the middle.
  *
- * TWENTY-TWO is a wrist, not an arm. Measured against a phone held in two
- * hands in landscape, a comfortable roll without moving the elbows is about
- * twenty-five degrees each way; asking for more means the player has to choose
- * between steering and being able to see the screen.
+ * TEN, not fifteen, and the history of the number is worth one line: the
+ * original was twenty-two, cut to fifteen, and a player on a modern iPhone
+ * still found themselves winding the phone hard over to get the lock they
+ * wanted. Full lock at ten degrees of roll is a firm wrist, not an arm, and
+ * the expo below is what is left after that — a small gesture does most of the
+ * work and the extreme stays easy to reach.
  *
- * The dead band is small — one and a half degrees — because a car that will not
- * hold a straight line is the failure mode everyone remembers about tilt
- * steering, and it is nearly always a missing dead band rather than a noisy
- * sensor.
+ * The dead band is small — 1.2° — because a car that will not hold a straight
+ * line is the failure mode everyone remembers about tilt steering, and it is
+ * nearly always a missing dead band rather than a noisy sensor.
  */
-const TILT_RANGE = 15;
+const TILT_RANGE = 10;
 const TILT_DEAD = 1.2;
 /**
  * Curve applied inside the range. `x * |x|^(k-1)`, which keeps the middle of
@@ -62,13 +63,13 @@ const TILT_DEAD = 1.2;
  * Linear tilt feels twitchy on centre and short at the extremes, because a
  * wrist does not move linearly.
  *
- * 1.25, down from 1.7, and the range down from 22 degrees with it. The two
- * compound and together they were most of why tilt felt dead: at eight degrees
- * of roll — a real, deliberate lean — the old pair returned 15% of lock. The
- * same gesture is now 40%. The expo is doing what it is for at 1.25 and was
- * mostly just eating travel at 1.7.
+ * 1.1, down from 1.25, chasing the same "too much phone for too little
+ * steering" report that cut the range. At six degrees of roll — a normal
+ * steering lean — t = (6 − 1.2) / (10 − 1.2) = 0.55, and 0.55^1.1 ≈ 0.52, so
+ * half lock is a comfortable gesture and the last few degrees of the range
+ * still sharpen to the corners instead of flattening out.
  */
-const TILT_EXPO = 1.25;
+const TILT_EXPO = 1.1;
 /** A sample older than this is stale: the sensor stopped, so let go of the car. */
 const TILT_TIMEOUT = 0.5;
 const STORE_KEY = 'highroads.tilt';
@@ -198,22 +199,26 @@ export class TiltSteering {
     const beta = e.beta || 0;
     const gamma = e.gamma || 0;
     let axis;
-    // LANDSCAPE SIGNS FLIPPED, on the only evidence that can settle it.
+    // LANDSCAPE SIGNS, AND WHICH SIDE OF THE MIRROR THEY LIVE ON.
     //
-    // The table below is derived from `screen.orientation.angle === 90` meaning
-    // the device was turned anticlockwise, which is what the specification
-    // says and what the previous version assumed. Held that way it is
-    // self-consistent — every branch produces "tip the device right, the car
-    // goes right". On a real iPhone in landscape it steered the wrong way.
+    // The table below is keyed to `screen.orientation.angle` (how far the page
+    // has been rotated to stay upright). The device-frame attitude attributes
+    // do not rotate with the screen, so each orientation is a different mapping
+    // of the same gesture, and implementations have historically disagreed on
+    // which physical rotation `gamma`/`beta` describe — iOS and Android have
+    // shipped swapped semantics at different times. The result is a table that
+    // has to be tuned against a real phone and barely anything else.
     //
-    // There is no probe for this and there cannot be a headless one: it needs a
-    // device, a sensor and HTTPS. So it is set from the report, and
-    // `TiltSteering.inverted` exists so that a player whose phone disagrees can
-    // fix it without a code change. See trap #36 — gamma and beta swap roles as
-    // the device rotates AND the sign flips again between the two landscape
-    // orientations, so this is exactly the pair one would expect to get wrong.
-    if (angle === 90) axis = -beta;
-    else if (angle === 270 || angle === -90) axis = beta;
+    // The previous set of landscape signs was the mirror image of this one,
+    // shipped from an older device report. A modern iPhone (iOS 17+) steered
+    // the wrong way under it: tipping the phone left sent the car right. These
+    // landscape branches are the corrected signs — both sides of the landscape
+    // mirror flip together so the gesture maps the same no matter which way up
+    // the notch is. `TiltSteering.inverted` is the escape hatch for whatever
+    // device disagrees next; the table here just has to be right for the one
+    // it shipped against.
+    if (angle === 90) axis = beta;
+    else if (angle === 270 || angle === -90) axis = -beta;
     else if (angle === 180) axis = -gamma;
     else axis = gamma;
 
