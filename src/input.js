@@ -44,32 +44,36 @@ const KEY_FALL = 6.5;   // per second, back to neutral
  * Degrees of tilt either side of neutral for full lock, and the dead band in
  * the middle.
  *
- * TEN, not fifteen, and the history of the number is worth one line: the
- * original was twenty-two, cut to fifteen, and a player on a modern iPhone
- * still found themselves winding the phone hard over to get the lock they
- * wanted. Full lock at ten degrees of roll is a firm wrist, not an arm, and
- * the expo below is what is left after that — a small gesture does most of the
- * work and the extreme stays easy to reach.
+ * TEN degrees to full lock stays, because the ability to reach the lock
+ * quickly for a corner or a drift is the thing the player likes about tilt.
+ * What needed reining in was the CENTRE: with a 1.2° dead band and a near-
+ * linear curve, a couple of degrees of wrist wobble already steered, and
+ * holding a straight line meant chasing the wheel with a stream of
+ * corrections. The dead band is wider and the expo steeper, so the first
+ * couple of degrees do nothing and the response ramps up from there — the
+ * straight-road micro-adjustments get easier, the far end of the travel is
+ * untouched.
  *
- * The dead band is small — 1.2° — because a car that will not hold a straight
- * line is the failure mode everyone remembers about tilt steering, and it is
- * nearly always a missing dead band rather than a noisy sensor.
+ * The dead band at two degrees still holds the line: a car that will not hold
+ * a straight line is the failure mode everyone remembers about tilt steering,
+ * and it is nearly always a missing dead band rather than a noisy sensor.
  */
 const TILT_RANGE = 10;
-const TILT_DEAD = 1.2;
+const TILT_DEAD = 2.0;
 /**
  * Curve applied inside the range. `x * |x|^(k-1)`, which keeps the middle of
  * the travel fine for lane corrections and still reaches full lock at the ends.
  * Linear tilt feels twitchy on centre and short at the extremes, because a
  * wrist does not move linearly.
  *
- * 1.1, down from 1.25, chasing the same "too much phone for too little
- * steering" report that cut the range. At six degrees of roll — a normal
- * steering lean — t = (6 − 1.2) / (10 − 1.2) = 0.55, and 0.55^1.1 ≈ 0.52, so
- * half lock is a comfortable gesture and the last few degrees of the range
- * still sharpen to the corners instead of flattening out.
+ * 1.6, up from 1.1. The higher exponent is what flattens the centre: at four
+ * degrees of roll — a deliberate correction, not a wobble — t = (4 − 2) /
+ * (10 − 2) = 0.25 and 0.25^1.6 ≈ 0.11, so the eye gets a gentle eleven
+ * percent for a real input where it used to get about a fifth for any old
+ * twitch. Full lock is still reached at the range's end, so corners and
+ * drifts lose nothing.
  */
-const TILT_EXPO = 1.1;
+const TILT_EXPO = 1.6;
 /** A sample older than this is stale: the sensor stopped, so let go of the car. */
 const TILT_TIMEOUT = 0.5;
 const STORE_KEY = 'highroads.tilt';
