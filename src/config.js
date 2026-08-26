@@ -415,14 +415,14 @@ export const CHUNK = {
   segmentsU: 48,
 
   /**
-   * Chunks kept behind / ahead. Keyed to the fog wall: at 480 m ahead the
-   * exponential fog leaves only ~13% of the colour, so building further is
-   * paying full geometry cost for something the fog has already erased. The
-   * far sheet still reaches ~700 m sideways for the rows that do exist; what
-   * this number is deciding is how many rows there are at all.
+   * Chunks kept behind / ahead. Keyed to the far grass tier, which is the
+   * shallowest thing in the world: the ground has to reach the grass's 630 m
+   * fade-out before a blade of it can exist that far. That buys two chunk
+   * rows' worth of geometry back over the fog-wall experiment, which is the
+   * price of grass (and of the world) being readable ~50% further out.
    */
   behind: 2,
-  ahead: 4,
+  ahead: 6,
 
   /** Chunks built per frame once running — keeps frame spikes bounded. */
   buildPerFrame: 1,
@@ -610,13 +610,13 @@ export const TREES = {
    *
    * BOTH ARE DRAW-CALL DECISIONS, not look ones. An InstancedMesh exists per
    * (chunk, geometry), so `picks * 2` (near plus impostor) is the batch count a
-   * chunk costs before a single tree is shaded. Three species from a table of
-   * seven, one variant of each, chosen from the chunk's own index: neighbouring
+   * chunk costs before a single tree is shaded. Four species from a table of
+   * nine, one variant of each, chosen from the chunk's own index: neighbouring
    * chunks draw different things, a chunk unloaded and reloaded comes back
    * identical, and the world at large still shows everything.
    */
   variants: 3,
-  picks: 3,
+  picks: 4,
 
   /** Atlas sizes. Bark and three leaf masses; then one silhouette per species. */
   textureSize: 512,
@@ -644,12 +644,12 @@ export const TREES = {
    * And where the impostors stop.
    *
    * They live and die with their chunk out to `CHUNK.ahead`, and that edge is
-   * folded into the fog: the cards shrink back out over 420-500 m — a band the
-   * dense fog has already rendered to under a third of its colour by the far
-   * end — so what kills a tree is the haze, never a pop when its chunk leaves
-   * the window.
+   * folded into the fog: the cards shrink back out over 620-720 m — a band the
+   * fog has already rendered to under a tenth of its colour by the far end —
+   * so what kills a tree is the haze, never a pop when its chunk leaves the
+   * window.
    */
-  farFade: [420, 500],
+  farFade: [620, 720],
 
   /**
    * Fade-in for an impostor that has NO grown mesh behind it, metres.
@@ -673,7 +673,7 @@ export const TREES = {
    * Sits just inside the chunk edge so the far density ramp has the last of
    * the window to work with, after the paired cards are already up.
    */
-  loneFadeIn: [340, 460],
+  loneFadeIn: [480, 660],
 
   /**
    * Scatter attempts per chunk, and the caps on what survives.
@@ -934,7 +934,7 @@ export const GRASS = {
   far: {
     enabled: true,
     behind: 1,
-    ahead: 4,
+    ahead: 6,
     /** Lateral band, metres. Past this the terrain's detail texture takes over. */
     halfExtent: 185,
     /**
@@ -946,8 +946,8 @@ export const GRASS = {
     coverage: 0.05,
     /** Grows in over this camera-distance window, behind the near tier's fade. */
     fadeIn: [55, 110],
-    /** And shrinks out again here — folded into the fog wall, not the band. */
-    fadeOut: [280, 420],
+    /** And shrinks out again here — the grass's own far edge, up against the fog. */
+    fadeOut: [420, 630],
     /** Steepest ground it will stand on. Looser than the near tier: at this
      *  distance a card on a 60-degree face reads as scrub, not as a mistake. */
     maxSlope: 2.2,
@@ -1571,16 +1571,16 @@ export const TRAFFIC = {
   /**
    * The band of road that is populated, and where inside it a car may appear.
    *
-   * `spawnMin` is the important one. It used to be 460 m against thin fog; now
-   * that the fog wall sits at ~0.0030, cars appear where the haze still hides
-   * the moment they switch on — at 320 m the exponential fog has already taken
-   * ~60% of the contrast out of a car, so what arrives is a shape resolving out
-   * of the mist rather than an object switching on. Nothing beyond the fog line
-   * is populated at all, which is also fewer simulated cars to pay for.
+   * `spawnMin` is the important one: cars appear where the haze still hides the
+   * moment they switch on. At 0.0022 fog that sits around 430 m — the
+   * exponential fog has taken about two thirds of the contrast out of a car by
+   * then, so what arrives is a shape resolving out of the mist rather than an
+   * object switching on. Nothing beyond the readable world is populated at
+   * all, which is also fewer simulated cars to pay for.
    */
-  spawnMin: 320,
-  ahead: 460,
-  behind: 220,
+  spawnMin: 430,
+  ahead: 620,
+  behind: 240,
   /** Share of spawns that come the other way. */
   oncomingShare: 0.42,
 
@@ -1785,13 +1785,14 @@ export const ATMOSPHERE = {
    * was doing the separating on its own, which meant washing the whole
    * landscape to one flat colour before you could see any of it.
    *
-   * Thickened for the hazy, mile-a-minute look: at `fogDensity` = 0.0030 the
-   * world is plainly readable only to ~250 m, dissolves through the mid
-   * distance, and is under ~13% visible at the chunk window's edge — which is
-   * exactly where the far geometry ends. The fog wall is what saves the render
-   * budget; everything beyond it is paid for and invisible.
+   * Thicker than the original hazy overcast but not as dense as the fog-wall
+   * experiment (0.0030 erased everything past ~500 m — which made the grass
+   * read as ending very close). At 0.0022 the world is clearly readable to
+   * ~150 m, half-lost by ~380 m, and the chunk window's edge sits at ~15%
+   * visibility — the haze still owns the horizon, and the grass can actually
+   * be seen out to the far tier's 630 m.
    */
-  fogDensity: 0.0030,
+  fogDensity: 0.0022,
 
   skyTop: 0x7ba4ce,
   skyZenith: 0x3f6ea8,

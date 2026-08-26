@@ -791,20 +791,22 @@ computed once on purpose** — two tiers from two runs of a seeded scatter would
 agree until the first time anything about the sampling changed, and then a tree
 would stand in a different place from its own impostor.
 
-#### Seven species, and why seven
+#### Nine species, and why nine
 
 Chosen to be distinguishable **at distance**, which is a stronger requirement
 than being different close up: a narrow spire, a skirted cone, a broad dome, a
-weeping curtain, a column, a bare armature.
+warm round head, a weeping curtain, a column, a tall pale egg, a bare armature.
 
 | species | form | habitat |
 |---|---|---|
 | `pine` | clear stem, crown in the top two thirds | high, dry, gregarious |
 | `spruce` | branches to the ground, dense cone | higher, rugged |
 | `oak` | short thick stem, hard fork, wide dome | lowland, solitary |
-| `birch` | slender, pale bark, high crown | anywhere mid |
+| `maple` | dense round crown, warm red-orange leaf | settled mid ground |
+| `birch` | slender, pale bark, high crown | anywhere mid — the pale mass |
 | `willow` | `growth.dir.y` NEGATIVE — the whole difference | damp, low, gentle |
 | `poplar` | children at 0.42 rad; a column | lowland, damp |
+| `aspen` | tall pale egg of gold, high and dry | higher, drier mid slope |
 | `dead` | bare, gnarly, twig cards only | above the tree line |
 
 Four shrubs: `bramble`, `hazel` (fringe species), `gorse`, `heather` (open

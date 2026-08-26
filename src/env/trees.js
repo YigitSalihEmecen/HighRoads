@@ -84,7 +84,7 @@
  *
  *   near geometry   160-360 tris   (pine 210, broadleaf 300, dead 120)
  *   impostor          4 tris
- *   library          7 species x TREES.variants, built once at boot
+ *   library          9 species x TREES.variants, built once at boot
  *
  * Against 109,000 triangles of terrain sheet, four hundred near trees and three
  * thousand impostors is roughly 130,000 — a bit over the sheet, and an order of
