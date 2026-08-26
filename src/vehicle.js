@@ -440,21 +440,54 @@ export class RaycastVehicle {
     // and none of it was their fault. Opening the lock toward full as the
     // chassis slip angle grows hands the car back, and costs nothing when
     // straight because the term is zero there.
-    const beta = Math.abs(
-      Math.atan2(this.linvel.dot(this.rightV), Math.max(Math.abs(this.forwardSpeed), 1))
+    const betaSigned = Math.atan2(
+      this.linvel.dot(this.rightV), Math.max(Math.abs(this.forwardSpeed), 1)
     );
+    const beta = Math.abs(betaSigned);
     const slide = smoothstep(V.slideOpenFrom, V.slideOpenTo, beta);
     // Proportional: a fixed multiple of the limit that already applied, never a
     // jump to full lock. The steering ratio stays continuous — the wheel means
     // the same thing throughout, there is just more of it to use.
     const base = clamp(gripSteer, V.minSteer, V.maxSteer);
     const opened = Math.min(V.maxSteer, base * V.slideLockGain);
-    const maxSteer = lerp(base, opened, slide);
+    let maxSteer = lerp(base, opened, slide);
+
+    /**
+     * COUNTERSTEER IS NOT TURN-IN, and giving them the same allowance is why
+     * "countersteering doesn't help" was a fair description of this car.
+     *
+     * Everything above is a limit on how hard the car may be asked to CORNER,
+     * and it is right for that: past it the front tyres are being asked for
+     * force they do not have. But steering that opposes the way the car is
+     * already sliding is not asking for cornering force at all — it is pointing
+     * the front wheels back down the velocity vector, which is the one input
+     * that recovers a slide, and the steady-state derivation has nothing to say
+     * about it. Measured on the old tune: 4.3 degrees of lock at 150 km/h and
+     * above, against the twenty to forty a driver would actually use to catch
+     * the car. There was no recovering anything.
+     *
+     * `slideOpen` above was the first attempt at this and it opens the lock
+     * SYMMETRICALLY, on `|beta|`, so it hands out just as much extra angle for
+     * winding MORE lock into a slide as for catching it — and it waits until
+     * the car is 8 degrees out before it does. What matters is the sign: the
+     * driver is countersteering when the input opposes the slip, and that
+     * deserves close to parking lock, as early as the car starts to move
+     * around.
+     */
+    const counter = input.steer * betaSigned < 0
+      ? smoothstep(V.counterFrom, V.counterTo, beta) : 0;
+    if (counter > 0) {
+      maxSteer = Math.max(maxSteer, lerp(base, V.maxSteer * V.counterLock, counter));
+    }
 
     // Scale the slew rate with the available lock so time-to-full-lock stays
-    // roughly constant instead of snapping instantly at speed.
+    // roughly constant instead of snapping instantly at speed — but never damp
+    // a correction. At speed `scale` sits on its floor, and a quarter-rate slew
+    // took 240 ms to travel the lock the clause above had just opened, which is
+    // most of a spin.
     const scale = clamp(maxSteer / V.maxSteer, 0.25, 1);
-    const rate = (Math.abs(input.steer) < 0.05 ? V.steerReturnRate : V.steerRate) * scale;
+    const rate = (Math.abs(input.steer) < 0.05 ? V.steerReturnRate : V.steerRate)
+      * lerp(scale, 1, counter);
 
     /**
      * The lock actually available this frame.

@@ -54,18 +54,25 @@ const KEY_FALL = 6.5;   // per second, back to neutral
  * steering, and it is nearly always a missing dead band rather than a noisy
  * sensor.
  */
-const TILT_RANGE = 22;
-const TILT_DEAD = 1.5;
+const TILT_RANGE = 15;
+const TILT_DEAD = 1.2;
 /**
- * Curve applied inside the range. `x * |x|^(k-1)` with k = 1.7, which keeps the
- * middle of the travel fine for lane corrections and still reaches full lock at
- * the ends. Linear tilt feels twitchy on centre and short at the extremes,
- * because a wrist does not move linearly.
+ * Curve applied inside the range. `x * |x|^(k-1)`, which keeps the middle of
+ * the travel fine for lane corrections and still reaches full lock at the ends.
+ * Linear tilt feels twitchy on centre and short at the extremes, because a
+ * wrist does not move linearly.
+ *
+ * 1.25, down from 1.7, and the range down from 22 degrees with it. The two
+ * compound and together they were most of why tilt felt dead: at eight degrees
+ * of roll — a real, deliberate lean — the old pair returned 15% of lock. The
+ * same gesture is now 40%. The expo is doing what it is for at 1.25 and was
+ * mostly just eating travel at 1.7.
  */
-const TILT_EXPO = 1.7;
+const TILT_EXPO = 1.25;
 /** A sample older than this is stale: the sensor stopped, so let go of the car. */
 const TILT_TIMEOUT = 0.5;
 const STORE_KEY = 'highroads.tilt';
+const INVERT_KEY = 'highroads.tiltInvert';
 
 /**
  * The phone's attitude, as a steering axis.
@@ -110,6 +117,28 @@ export class TiltSteering {
 
   static remember(on) {
     try { localStorage.setItem(STORE_KEY, on ? '1' : '0'); } catch (err) { /* private window */ }
+  }
+
+  /**
+   * Whether to steer the opposite way to the axis table in `_read`.
+   *
+   * This exists because the table cannot be verified without a phone, and it is
+   * exactly the kind of thing that is wrong on some devices and right on
+   * others — `screen.orientation.angle` is reported consistently, but which
+   * physical rotation it describes is a thing implementations have disagreed
+   * about. A player who finds the car going the wrong way needs a switch, not a
+   * bug report.
+   */
+  static get inverted() {
+    try {
+      return localStorage.getItem(INVERT_KEY) === '1';
+    } catch (err) {
+      return false;
+    }
+  }
+
+  static setInverted(on) {
+    try { localStorage.setItem(INVERT_KEY, on ? '1' : '0'); } catch (err) { /* private window */ }
   }
 
   /**
@@ -169,8 +198,22 @@ export class TiltSteering {
     const beta = e.beta || 0;
     const gamma = e.gamma || 0;
     let axis;
-    if (angle === 90) axis = beta;
-    else if (angle === 270 || angle === -90) axis = -beta;
+    // LANDSCAPE SIGNS FLIPPED, on the only evidence that can settle it.
+    //
+    // The table below is derived from `screen.orientation.angle === 90` meaning
+    // the device was turned anticlockwise, which is what the specification
+    // says and what the previous version assumed. Held that way it is
+    // self-consistent — every branch produces "tip the device right, the car
+    // goes right". On a real iPhone in landscape it steered the wrong way.
+    //
+    // There is no probe for this and there cannot be a headless one: it needs a
+    // device, a sensor and HTTPS. So it is set from the report, and
+    // `TiltSteering.inverted` exists so that a player whose phone disagrees can
+    // fix it without a code change. See trap #36 — gamma and beta swap roles as
+    // the device rotates AND the sign flips again between the two landscape
+    // orientations, so this is exactly the pair one would expect to get wrong.
+    if (angle === 90) axis = -beta;
+    else if (angle === 270 || angle === -90) axis = beta;
     else if (angle === 180) axis = -gamma;
     else axis = gamma;
 
@@ -196,7 +239,7 @@ export class TiltSteering {
     const t = Math.min(1, (mag - TILT_DEAD) / (TILT_RANGE - TILT_DEAD));
     // Positive `steer` is LEFT (see Input), and tipping the device left is a
     // negative roll, so the sign flips here and nowhere else.
-    this.value = -Math.sign(d) * Math.pow(t, TILT_EXPO);
+    this.value = -Math.sign(d) * Math.pow(t, TILT_EXPO) * (TiltSteering.inverted ? -1 : 1);
   }
 }
 

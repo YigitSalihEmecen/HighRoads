@@ -129,6 +129,12 @@ export class Settings {
      */
     if (TiltSteering.supported) {
       this.tiltBtn = this._button('Steering: buttons', () => this.game.toggleTilt());
+      // Which way a given phone reads as "tipped right" is not something the
+      // code can know — see `input.js:_read`. This is the escape hatch.
+      this.tiltInvBtn = this._button('Tilt: normal', () => {
+        TiltSteering.setInverted(!TiltSteering.inverted);
+        this.refresh();
+      });
     }
 
     this._section('Audio');
@@ -165,6 +171,12 @@ export class Settings {
       const on = !!(this.game.input && this.game.input.tilt.on);
       this.tiltBtn.textContent = 'Steering: ' + (on ? 'tilt' : 'buttons');
       this.tiltBtn.classList.toggle('on', on);
+    }
+    if (this.tiltInvBtn) {
+      const inv = TiltSteering.inverted;
+      this.tiltInvBtn.textContent = 'Tilt: ' + (inv ? 'inverted' : 'normal');
+      this.tiltInvBtn.classList.toggle('on', inv);
+      this.tiltInvBtn.style.display = this.game.input.tilt.on ? '' : 'none';
     }
     if (this.master) {
       this.master.input.value = String(pt.volume);

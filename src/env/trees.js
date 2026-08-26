@@ -329,6 +329,15 @@ class TreeBuilder {
     const d = dir.clone().normalize();
     const growth = f.growth;
     const taper = f.taper;
+    /**
+     * Height below which a drooping limb is bent back toward level.
+     *
+     * Scaled off `trunk.length`, which is in FORM units — the archetypes are
+     * normalised to unit height afterwards, so a willow's trunk is 0.5, not
+     * five metres. Getting that wrong makes the guard a tenth the size it
+     * should be and it stops catching anything.
+     */
+    const floorEase = Math.max(0.05, f.trunk.length * 0.6);
 
     let prevRing = null;
     const side = new THREE.Vector3();
@@ -357,7 +366,23 @@ class TreeBuilder {
         d.z += growth.dir.z * pull;
         d.normalize();
 
+        // A limb that has drooped to the height of the root levels off rather
+        // than digging in. `willow` (dir.y -0.85, strength 1.15) and `spruce`
+        // (-0.25 at 0.7) both carry enough downward growth to take a branch
+        // well below y = 0, and the trunk base is the point the whole tree is
+        // planted by — so a branch under it used to hold the entire tree up in
+        // the air. Measured before this: willow floated 48-58% of its own
+        // height, spruce 13-20%. Bug #68, and see the normalisation below.
+        if (d.y < 0 && p.y < floorEase) {
+          d.y *= Math.max(0, p.y / floorEase);
+          d.normalize();
+        }
+
         p.addScaledVector(d, step);
+        // A section is a finite step, so a limb still steeply down at the top
+        // of the guard band can clear the whole of it in one. It runs along the
+        // ground from there instead.
+        if (p.y < 0) p.y = 0;
       }
 
       perpendicular(d, side);
@@ -573,19 +598,46 @@ export function growTree(form, seed) {
   }
 
   const geo = b.build();
+
   // Normalise to unit height, standing on y = 0. Placement then works purely in
   // metres and no caller has to know how tall the archetype happened to grow.
+  //
+  // The anchor is the TRUNK BASE, which is the origin the recursion started
+  // from — NOT the bottom of the bounding box. Those are the same point only
+  // for a tree whose lowest vertex belongs to the trunk, and they were not the
+  // same for the two species that grow downward: aligning the box floated a
+  // spruce 1.6-4.4 m and a willow 4-8 m off the ground, because their drooping
+  // foliage reached below the root and the whole tree was lifted to bring it
+  // up. The ground guard in `branch` now keeps limbs above y = 0; this reads
+  // the height from the top and leaves the base where it belongs. Bug #68.
+  // Leaf CARDS are not swept by `branch` and so are not covered by its ground
+  // guard: a willow's are 0.48 form units across on a tree 0.8 tall, and they
+  // hang from tips that are themselves near the ground. Flattening them onto
+  // y = 0 is both the invariant placement needs and what the species actually
+  // does — the foliage of a weeping willow lies along the ground.
+  {
+    const pos = geo.getAttribute('position');
+    const arr = pos.array;
+    for (let i = 1; i < arr.length; i += 3) if (arr[i] < 0) arr[i] = 0;
+    pos.needsUpdate = true;
+  }
+
   geo.computeBoundingBox();
-  const bb = geo.boundingBox;
-  const h = Math.max(0.001, bb.max.y - bb.min.y);
-  geo.translate(0, -bb.min.y, 0);
+  const h = Math.max(0.001, geo.boundingBox.max.y);
+  const spanX = geo.boundingBox.max.x - geo.boundingBox.min.x;
+  const spanZ = geo.boundingBox.max.z - geo.boundingBox.min.z;
   geo.scale(1 / h, 1 / h, 1 / h);
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
 
-  const radius = Math.max(
-    bb.max.x - bb.min.x, bb.max.z - bb.min.z
-  ) / (2 * h);
+  // Crown half-width as a fraction of the tree's own height, which is what
+  // `impostorWidth` expects. Measured from the PRE-scale spans held above:
+  // `computeBoundingBox` writes into the existing `Box3` in place, so a
+  // reference taken before the call above is silently the post-scale box —
+  // which is already divided by `h`, and dividing again put every conifer's
+  // impostor card 30-45% too narrow. That is bug #67 coming back by another
+  // route, and it is why these are copied out as numbers. Bug #69.
+  const radius = Math.max(spanX, spanZ) / (2 * h);
 
   return { geometry: geo, height: 1, radius };
 }
@@ -673,15 +725,60 @@ function drawImpostor(ctx, x0, y0, s, form, rnd) {
   // of lollipops at exactly the distance the level of detail swapped over.
   const span = crownY - topY;
   const norm = IMPOSTOR_FILL / profileMax(imp.profile);
-  for (let i = 0; i < imp.blobs; i++) {
+
+  /**
+   * TWO passes, and the count matters more than anything else here.
+   *
+   * One pass of `blobs` ellipses at `blobSize` puts about two and a half of
+   * them across a crown, and at that ratio a viewer does not see foliage, they
+   * see the ellipses — measured off a screenshot, four countable ovals per
+   * tree, which is why the far tier read as soap bubbles sitting where the
+   * trees should be. Foliage is only foliage when the thing breaking the
+   * outline is much smaller than the outline.
+   *
+   * So: an UNDER-MASS of big dark ellipses, kept inside the profile, which
+   * makes the crown solid and gives it a shaded core; then a SPECKLE of small
+   * bright ones over it at four times the count and half the size, which is
+   * what the eye actually reads as leaves and what makes the silhouette ragged
+   * at a scale finer than the tree.
+   */
+  // The under-mass is the PROFILE ITSELF, drawn as a filled outline, with a
+  // little jitter on each side so it is not a machined curve. Ellipses cannot
+  // do this job: one big enough to fill the crown overshoots the profile by its
+  // own radius, and what that draws is a rounded rectangle with the tree's
+  // shape faintly visible inside it. A polygon is exactly the silhouette, at
+  // any size, for any species.
+  const STEPS = 26;
+  ctx.fillStyle = 'rgb(66,66,66)';
+  ctx.beginPath();
+  for (let i = 0; i <= STEPS; i++) {
+    const t = i / STEPS;
+    const hw = imp.profile(t) * norm * s * 0.5 * (0.86 + rnd() * 0.28);
+    ctx.lineTo(cx - hw, crownY - t * span);
+  }
+  for (let i = STEPS; i >= 0; i--) {
+    const t = i / STEPS;
+    const hw = imp.profile(t) * norm * s * 0.5 * (0.86 + rnd() * 0.28);
+    ctx.lineTo(cx + hw, crownY - t * span);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // Then the speckle, which is what the eye reads as leaves. Four times the
+  // count at half the size of the single pass this replaces: at the old ratio
+  // there were about two and a half ellipses across a crown and a viewer could
+  // count them, which is why the far tier looked like soap bubbles standing
+  // where the trees should be. It is allowed to overshoot the profile — that
+  // overshoot is what makes the outline ragged at a scale finer than the tree.
+  for (let i = 0; i < imp.blobs * 4; i++) {
     const t = Math.pow(rnd(), imp.bias);
     const y = crownY - t * span;
     const halfW = imp.profile(t) * norm * s * 0.5;
     const x = cx + (rnd() - 0.5) * 2 * halfW;
-    const r = s * imp.blobSize * (0.6 + rnd() * 0.8);
+    const r = s * imp.blobSize * 0.5 * (0.6 + rnd() * 0.8);
     // Lit from the top-left, and brighter toward the top of the crown.
-    const lit = 0.40 + t * 0.30 + (1 - (x - x0) / s) * 0.22 + (rnd() - 0.5) * 0.16;
-    const g = Math.round(255 * Math.max(0.12, Math.min(1, lit)));
+    const lit = 0.40 + t * 0.30 + (1 - (x - x0) / s) * 0.24 + (rnd() - 0.5) * 0.20;
+    const g = Math.round(255 * Math.max(0.10, Math.min(1, lit)));
     ctx.fillStyle = `rgb(${g},${g},${g})`;
     ctx.beginPath();
     ctx.ellipse(x, y, r, r * imp.blobSquash, 0, 0, Math.PI * 2);
@@ -811,6 +908,7 @@ export function foliageMaterial(map, fadeOut, fadeIn, opts = {}) {
     uWindSpeed: { value: opts.windSpeed ?? TREES.windSpeed },
     uFade: { value: new THREE.Vector2(fadeOut[0], fadeOut[1]) },
     uFadeIn: { value: new THREE.Vector2(fadeIn ? fadeIn[0] : -2, fadeIn ? fadeIn[1] : -1) },
+    uFadeLone: { value: new THREE.Vector2(TREES.loneFadeIn[0], TREES.loneFadeIn[1]) },
   };
 
   material.onBeforeCompile = (shader) => {
@@ -820,6 +918,15 @@ export function foliageMaterial(map, fadeOut, fadeIn, opts = {}) {
       .replace('#include <common>', /* glsl */`
         #include <common>
         attribute float aSway;
+        // 1 on an impostor with no grown mesh behind it. See TREES.loneFadeIn
+        // and chunks.js:_buildProps — those instances take a much later
+        // fade-in, because there is nothing to hand over TO.
+        //
+        // Instanced, and absent from the near tier's geometry entirely: an
+        // attribute three does not enable reads as 0, which is exactly the
+        // paired behaviour. Both tiers share one compiled program (see
+        // customProgramCacheKey), so this could not have been a #define.
+        attribute float aLone;
         varying float vSway;
         uniform float uTime;
         uniform vec2  uWind;
@@ -827,6 +934,7 @@ export function foliageMaterial(map, fadeOut, fadeIn, opts = {}) {
         uniform float uWindSpeed;
         uniform vec2  uFade;
         uniform vec2  uFadeIn;
+        uniform vec2  uFadeLone;
         vec2 fr_gust(vec3 p) {
           // Three scales rather than the grass's two. A canopy is big enough to
           // show the difference between the swell crossing it and the flutter
@@ -844,7 +952,8 @@ export function foliageMaterial(map, fadeOut, fadeIn, opts = {}) {
         // Jitter the window per tree, so a stand thins out over a band instead
         // of retreating from the camera as a clean arc.
         float fr_d = distance( cameraPosition, fr_inst ) + ( fr_hash - 0.5 ) * 26.0;
-        float fr_fade = smoothstep( uFadeIn.x, uFadeIn.y, fr_d )
+        vec2 fr_in = mix( uFadeIn, uFadeLone, step( 0.5, aLone ) );
+        float fr_fade = smoothstep( fr_in.x, fr_in.y, fr_d )
                       * ( 1.0 - smoothstep( uFade.x, uFade.y, fr_d ) );
         // Shrink about the base, so a tree sinks into the ground rather than
         // dissolving. The material is a cutout; there is no opacity to fade.
