@@ -18,7 +18,7 @@ const WORLD_UP = new THREE.Vector3(0, 1, 0);
  */
 const SUN_YAW = Math.atan2(ATMOSPHERE.sunDir.x, ATMOSPHERE.sunDir.z);
 
-export const CAM_MODES = ['chase', 'close', 'hood'];
+export const CAM_MODES = ['close', 'chase', 'hood'];
 
 export class ChaseCamera {
   constructor(camera) {
@@ -449,8 +449,18 @@ export class ChaseCamera {
 
   _updateHood(dt, vehicle) {
     // Rigidly mounted — this one *should* transmit roll and suspension motion.
-    const eye = ((vehicle.V && vehicle.V.bodyHeight) || 1.45) * 0.62;
-    this._desired.set(0, eye, -0.35).applyQuaternion(vehicle.renderQuat).add(vehicle.renderPos);
+    const V = vehicle.V;
+    const bodyH = (V && V.bodyHeight) || 1.45;
+    const half = (V && V.bodyHalfLength) || 2.0;
+    const eye = bodyH * 0.62;
+    // The eye used to sit just 0.35 m forward of the body centre, which is
+    // still inside the passenger cell — the picture was of the front wheel
+    // wells and the exposed suspension. Sitting the eye at the base of the
+    // windscreen instead puts the view over the hood, where those are not in
+    // shot. Scaled off the car so a monster truck gets as much forward move as
+    // a hatchback.
+    const fwd = -(half * 0.5 + 0.3);
+    this._desired.set(0, eye, fwd).applyQuaternion(vehicle.renderQuat).add(vehicle.renderPos);
     this._fwd.copy(vehicle.renderFwd);
     this._up.copy(vehicle.renderUp);
 
