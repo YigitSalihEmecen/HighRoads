@@ -1,16 +1,7 @@
 /**
- * The engine_sim bridge contract.
+ * engine.mjs — checks the engine_sim bridge contract.
  *
- * engine_sim is a separate repository pulled in as a submodule, so it moves on
- * its own schedule and this game has to keep up with it. `powertrain.js` reaches
- * into a specific set of methods and fields; when one of them goes away the
- * failure is usually SILENT — `sim.comp` sat behind an `if` and simply stopped
- * doing anything the day upstream replaced it with a three-band compressor.
- *
- * So the contract is asserted explicitly here, and then every engine in the
- * roster is actually run to make sure it produces torque and revs.
- *
- * Run this after every `git submodule update --remote engine_sim`.
+ * Fails when a method or field the powertrain uses disappears.
  */
 import { createMockContext, installGlobals } from '../engine_sim/test/mock-audio.mjs';
 installGlobals(createMockContext().ctx);
@@ -78,13 +69,11 @@ for (const opt of ENGINE_OPTIONS) {
     gears.add(pt.gear);
   }
   // `presetLabel` since engine_sim gained its preset system; `profile.label` is
-  // the older field and is undefined for a preset-loaded engine. Neither is
-  // guaranteed, and a missing label is a cosmetic detail in a row about torque.
+  // the older field and undefined for a preset-loaded engine.
   const label = pt.sim.presetLabel || (pt.sim.profile && pt.sim.profile.label) || opt.id;
-  // Gear count is a property of the COMBINATION, not of the bridge: a 1.2 litre
-  // V-twin in a 1180 kg car really does spend a long time in first, and that is
-  // the engine-swap feature behaving correctly rather than a fault. What the
-  // bridge has to deliver is torque, revs, a working gearbox and no NaN.
+  // Gear count is a property of the COMBINATION (a small engine in a heavy car
+  // really does linger in first); what the bridge must deliver is torque, revs,
+  // a working gearbox and no NaN.
   const good = nan === 0 && maxForce > 500 && maxRpm > 2000 && gears.size >= 2;
   if (!good) bad++;
   rows.push(`  [${ok(good)}] ${opt.id.padEnd(9)} ${label.padEnd(30)} ` +

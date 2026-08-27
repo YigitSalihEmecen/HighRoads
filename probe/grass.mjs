@@ -1,15 +1,7 @@
 /**
- * Ground cover: how much of it, what it costs, and where it lands.
+ * grass.mjs — measures the near ground-cover tier.
  *
- * Grass is the first thing in this project placed in the tens of thousands, so
- * the failure modes are not the scatter's usual ones. Nobody will notice one
- * tuft in the wrong place; what will be noticed is a scatter that costs 40 ms
- * to build (bug #51 is about exactly that kind of spike), one that quietly
- * places ten times the intended density because an area calculation is wrong,
- * or one that puts grass on the carriageway.
- *
- * So this counts, times and bounds it. Rendering is not measured here — there
- * is no GPU — but the triangle budget is arithmetic and is checked.
+ * Reports tuft count, cost, and float off the collider.
  */
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
@@ -62,9 +54,8 @@ const tris = perChunk * live * 4;
 console.log(`  per chunk: ${counts.map((c) => c.toLocaleString()).join(', ')}`);
 console.log(`  chunks carrying grass: ${live}  (radius ${GRASS.chunkRadius})\n`);
 
-// A frame budget, not an absolute: this runs once when the car crosses a chunk
-// boundary, and at 240 km/h that is every 1.8 s. Over one 60 fps frame it is a
-// dropped frame — survivable since bug #51, but it is the ceiling.
+// A frame budget, not an absolute: this runs once per chunk boundary, so at
+// 240 km/h it is a dropped-frame ceiling every 1.8 s.
 check('scatter cost per chunk', mean(times) < 20,
   `${mean(times).toFixed(1)} ms mean, ${Math.max(...times).toFixed(1)} ms worst`);
 check('instances alive', perChunk * live < 120000,
@@ -72,13 +63,11 @@ check('instances alive', perChunk * live < 120000,
 check('triangles alive', tris < 600000,
   `${Math.round(tris).toLocaleString()}  — terrain is ~109,000 for comparison`);
 
-// Density, against what the config asks for.
 const band = (GRASS.halfExtent - (ROAD.halfWidth + ROAD.shoulder - 0.35)) * 2;
 const actual = perChunk / (CHUNK.length * band);
 check('density matches config', actual <= GRASS.density * 1.05,
   `${actual.toFixed(2)}/m^2 placed against ${GRASS.density.toFixed(2)} asked (thinning is expected)`);
 
-// Nothing on the carriageway, and nothing beyond the band.
 {
   const chunk = chunks.chunks.get(2);
   const mesh = chunks._buildGrass(2, 2 * CHUNK.length, 3 * CHUNK.length, chunk.origin);
@@ -112,11 +101,10 @@ check('density matches config', actual <= GRASS.density * 1.05,
   mesh.dispose();
 }
 
-// Two different edges, hidden two different ways, and confusing them is easy.
-// SIDEWAYS is hidden by the density taper reaching zero at the band edge; the
-// distance fade cannot do it, because a tuft beside the car at the band edge is
-// only as far off as the band is wide. UP THE ROAD is hidden by the fade, which
-// therefore has to reach further than the band is wide.
+// Two edges, hidden two different ways. SIDEWAYS by the density taper reaching
+// zero at the band edge (the distance fade cannot: a tuft beside the car is
+// only as far off as the band is wide); UP THE ROAD by the fade, which must
+// reach further than the band is wide.
 check('density taper reaches zero at the edge', GRASS.denseTo < GRASS.halfExtent,
   `full to ${GRASS.denseTo} m, zero at ${GRASS.halfExtent} m`);
 check('fade outlives the lateral band', GRASS.fadeEnd > GRASS.halfExtent,

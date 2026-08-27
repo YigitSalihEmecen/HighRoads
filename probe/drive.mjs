@@ -1,9 +1,8 @@
 /**
- * End-to-end drive. Boots the real modules — terrain, path, chunks, the raycast
- * vehicle, engine_sim through the powertrain bridge, and traffic — and drives
- * for a couple of simulated minutes with the same loop ordering main.js uses.
+ * drive.mjs — end-to-end drive.
  *
- * This is the only check that sees the pieces working against each other.
+ * Boots path, chunks, the vehicle, powertrain and traffic, then drives under
+ * the main.js loop ordering.
  */
 import { createMockContext, installGlobals } from '../engine_sim/test/mock-audio.mjs';
 installGlobals(createMockContext().ctx);
@@ -27,7 +26,7 @@ import { ChunkManager } from '../src/chunks.js';
 import { RaycastVehicle } from '../src/vehicle.js';
 import { Traffic } from '../src/traffic.js';
 
-/** Scratch frame for the autopilot's corner scan — it runs a dozen times a frame. */
+/** Scratch frame for the autopilot's corner scan — used a dozen times a frame. */
 const _look = makeFrame();
 import { Powertrain } from '../src/powertrain.js';
 import { CARS, carById, buildCarParams } from '../src/cars.js';
@@ -74,8 +73,8 @@ const dt = 1 / 60;
 
 // ---- parked on the title screen -------------------------------------------
 {
-  // A seed with a gradient under the spawn is the whole point of the test: the
-  // car used to roll away down the road while the player picked a paint colour.
+  // A gradient under the spawn used to let the car roll away while the player
+  // picked a paint colour.
   vehicle.setParked(true);
   const start = vehicle.pos.clone();
   const grade = (chunks.groundAt(carS + 20, 0, new THREE.Vector3()).y -
@@ -121,100 +120,38 @@ let acc = 0;
 const ok = (b) => (b ? ' ok ' : 'FAIL');
 let airborneFrames = 0, maxSpeed = 0, nan = 0, maxAccel = 0, hardHits = 0;
 let prevSpeed = 0, respawns = 0, maxAltDrop = 0;
-// Impacts are supposed to be violent. Counting them as "hard hits" would be
-// measuring the feature, so frames near one are attributed separately.
+// Impacts are supposed to be violent; frames near one are attributed separately.
 let impacts = 0, impactAccel = 0, sinceImpact = 999;
 let maxLat = 0, maxYaw = 0;
 const input = { steer: 0, throttle: 1, brake: 0, handbrake: false };
 
 for (let i = 0; i < steps; i++) {
-  /**
-   * Stanley-style lane keeping: a heading term plus a cross-track term whose
-   * authority falls off with speed. A bare proportional controller on lateral
-   * position oscillates and then leaves the road, which the project's own
-   * ledger records as having been mistaken for vehicle instability once
-   * already — an unstable autopilot measures the autopilot, not the car.
-   *
-   * Two "improvements" were tried here and both were worse, which is worth
-   * recording. Lengthening the 6 m reference point to scale with speed took the
-   * lane error from 5.8 m to 18 m and the car started spinning: Stanley's
-   * cross-track term is derived for a reference AT THE FRONT AXLE, and a long
-   * lookahead double-counts the correction. Replacing the whole thing with pure
-   * pursuit was worse again — its gain falls off as the lookahead grows, so it
-   * tracks a path it is already on beautifully and cannot recover onto one it
-   * has left. The controller was never the problem.
-   */
+  // Stanley-style lane keeping: heading term plus a cross-track term whose
+  // authority falls off with speed. A bare P controller on lateral position
+  // oscillates and leaves the road.
   const lat = path.lateralOffset(vehicle.pos, carS);
   {
     const f = path.frameAt(carS + 6);
     // Signed yaw from the car's heading to the road's, about world up.
     const cross = vehicle.fwd.x * f.tan.z - vehicle.fwd.z * f.tan.x;
     const headingErr = Math.atan2(-cross, vehicle.fwd.x * f.tan.x + vehicle.fwd.z * f.tan.z);
-    // Positive steer yaws left, which moves the car toward -x — the direction
-    // of DECREASING lateral offset. Hence the sign on the cross-track term.
+    // Positive steer yaws left toward -x — hence the sign on the cross-track term.
     const crossTrack = Math.atan2(2.2 * (lat - ROAD.laneWidth * 0.5), Math.abs(vehicle.forwardSpeed) + 4);
 
-    /**
-     * Feed-forward: the steer the corner needs, before any error exists.
-     *
-     * A purely proportional tracker has a STEADY-STATE OFFSET against a
-     * constant-curvature path — it can only ask for steering in proportion to
-     * how far off line it already is, so on a long bend it settles wherever the
-     * error is big enough to buy the angle the corner needs, and sits there.
-     * That is a property of the controller, not of the road: traced on the
-     * alignment this reported 5.8 m on, the car was carrying zero tyre slip and
-     * a third of available lock the whole way round, quietly running wide at a
-     * millimetre a metre.
-     *
-     * Raising the gain does not fix it and makes it worse — swept, 3.6 and 5.0
-     * took the worst seed to 14.9 m and 15.1 m as the loop went unstable. The
-     * Ackermann angle for the local radius does fix it, because it is the term
-     * that was missing rather than a larger dose of the term that was there.
-     */
+    // Feed-forward: the Ackermann angle for the local radius. A purely
+    // proportional tracker holds a steady-state offset against a constant
+    // curvature path, and raising the gain goes unstable.
     const steerFF = (vehicle.V.wheelbaseHalf * 2) * path.frameAt(carS + 12, _look).curv;
 
-    /**
-     * ...divided by the lock ACTUALLY AVAILABLE, not by `V.maxSteer`.
-     *
-     * `input.steer` is a normalised command: the vehicle multiplies it by
-     * whatever lock the grip and rollover limits leave at this speed, which is
-     * the right contract for a human holding a stick. Everything above computes
-     * a steering ANGLE, and converting an angle to that command with the
-     * unlimited maximum quietly divides it by six at 160 km/h. The car then
-     * tracked a wider radius than the road, drifted out at about a millimetre a
-     * metre with zero tyre slip and a third of the lock it thought it was
-     * using, and reported the verge it eventually found as a fault in the road.
-     *
-     * This is a harness bug of the same family as the ones in AGENT_CONTEXT §7:
-     * it looked exactly like the world being wrong, and it got worse as the
-     * alignment got more interesting, which is precisely the correlation that
-     * makes it convincing.
-     */
+    // ...divided by the lock ACTUALLY available, not `V.maxSteer`.
     const lock = Math.max(1e-3, vehicle.steerLimit || vehicle.V.maxSteer);
     input.steer = Math.max(-1, Math.min(1,
       (headingErr + crossTrack + steerFF) / lock));
 
-    /**
-     * ...and it lifts for corners, which is the one thing that actually needed
-     * fixing.
-     *
-     * The alignment used to barely turn, so "90 s flat out" was a fair
-     * description of a lap and the throttle could be pinned at 1. The cost
-     * router puts real bends in it — measured, the tightest need about 265 km/h
-     * against a top speed of 250 — and a test that refuses to brake for those
-     * is measuring what happens when you do not brake. "Worst lane error" stops
-     * meaning anything about the road or the car.
-     *
-     * Corner speed from the curvature ahead and the grip actually available:
-     * v = sqrt(a / kappa), at 85% of the tyres' limit so it is a driver's
-     * margin rather than a computer's.
-     */
-    // The WORST curvature between here and the lookahead, not the curvature at
-    // one point of it. Reading a single station ahead misses the corner the car
-    // is already in — traced on one seed, the model was looking at an 828 m
-    // radius 73 m up the road while the car sat in a 270 m one, so it held full
-    // throttle into a bend it had never seen. A driver looks at the whole
-    // corner; so does this now.
+    // ...and it lifts for corners. Corner speed from the curvature ahead and
+    // the grip actually available, at 85% of the tyres' limit.
+    // The WORST curvature between here and the lookahead, not at one station:
+    // reading a single point misses the corner the car is already in.
     const reach = Math.min(110, 25 + Math.abs(vehicle.forwardSpeed) * 1.4);
     let kappa = 0;
     for (let d = 0; d <= reach; d += 10) {
@@ -226,11 +163,7 @@ for (let i = 0; i < steps; i++) {
     input.throttle = speed < vCorner ? 1 : 0;
     input.brake = speed > vCorner * 1.1 ? 0.6 : 0;
 
-    // And it lifts when it is running wide, which is the other thing a driver
-    // does and the reason this matters here: the autopilot is a fixed-gain
-    // controller with no sense of its own error, so on a road with corners in
-    // it, it will hold the throttle open while drifting onto the verge and then
-    // report the ditch it finds there as a fault in the world.
+    // And it lifts when running wide, so the drift is not reported as a fault.
     const wide = Math.abs(lat - ROAD.laneWidth * 0.5);
     if (wide > 2.4) {
       input.throttle = 0;
@@ -277,9 +210,7 @@ for (let i = 0; i < steps; i++) {
   }
   prevSpeed = vehicle.speed;
 
-  // Against the road under the car's own lateral offset, not the centreline:
-  // on a banked road in a lane those differ, and after a shunt the car may
-  // genuinely be down an embankment.
+  // Ground under the car's own lateral offset: on a banked road those differ.
   const groundY = chunks.groundAt(carS, 0, new THREE.Vector3()).y;
   if (sinceImpact > 120) {
     maxAltDrop = Math.max(maxAltDrop, chunks.groundAt(carS, lat, new THREE.Vector3()).y - vehicle.pos.y);

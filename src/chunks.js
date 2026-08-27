@@ -1,24 +1,9 @@
 /**
- * chunks.js — infinite streaming terrain, road ribbon, colliders and props.
+ * chunks.js — streaming terrain, road ribbon, colliders and props.
  *
- * THE KEY IDEA: terrain is generated in *road space*, not world space.
- *
- * A chunk is a strip of the spline, parameterised by (u, v) where u is arc
- * length along the road and v is lateral offset from the centreline. Every
- * vertex row is placed on the spline frame at its own u. This buys three
- * things for free:
- *
- *   1. Carving is a 1D blend on |v| instead of a mesh-boolean against a curve.
- *      Near the centreline the height *is* the road height; far away it's pure
- *      noise; in between, a smoothstep produces the cut-and-fill slopes.
- *   2. Chunk seams are exact. Neighbouring chunks share the same u values at
- *      the boundary, so their boundary rows are bit-identical — no cracks.
- *   3. Resolution follows the player. Lateral spacing is 2 m on the asphalt and
- *      tens of metres out at the fog line, where nobody is looking closely.
- *
- * The price is that the parameterisation folds if the road ever curves tighter
- * than the corridor is wide, which is why ROAD.maxCurvature is a hard limit and
- * not a taste preference.
+ * Terrain is generated in road space: a chunk is a strip of the spline at
+ * arc length u with lateral offset v. This carves the corridor, keeps seams
+ * exact, and streams the ring of chunks with the car.
  */
 
 import * as THREE from 'three';
@@ -38,51 +23,29 @@ import { createBushAssets } from './env/bushes.js';
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const ROAD_LIFT = 0.035;
 
-/** Painted on for one `dashLength`, off for the next. */
 function dashOn(s, half) {
   return Math.floor(s / half) % 2 === 0;
-} // visual asphalt sits just above the collision surface
+}
 
-/** Where the paved surface ends and the verge begins. */
 const EDGE = ROAD.halfWidth + ROAD.shoulder;
 
-/**
- * Lateral sample positions. Dense across the road and verge, then geometric so
- * the far field costs almost nothing.
- */
 function buildLateralOffsets() {
-  // Road surface and verge: fixed columns so the painted edges land exactly.
-  // Every entry derived, and strictly increasing. Mixing derived values with
-  // literals silently breaks that ordering the moment the road width changes —
-  // and the binary search that finds a column assumes it is sorted.
+  // Every entry derived and strictly increasing: a literal would break the
+  // sort the binary search below assumes.
   const half = [
     0, ROAD.laneWidth * 0.5, ROAD.laneWidth, ROAD.laneWidth * 1.5,
     ROAD.halfWidth, ROAD.halfWidth + 0.9, EDGE, EDGE + 1.4, EDGE + 2.8,
   ];
   let v = half[half.length - 1];
 
-  // Drivable band: uniform, and no coarser than the longitudinal rows. Letting
-  // this grow geometrically produced 12–16 m columns against 2.5 m rows, and
-  // triangles that long and thin read as random ridges to a suspension ray —
-  // the car catches on edges that are not really there.
+  // Drivable band: uniform, and no coarser than the longitudinal rows.
   while (v < CHUNK.nearBand) {
     v = Math.min(v + CHUNK.nearStep, CHUNK.nearBand);
     half.push(v);
   }
 
-  // Far field: geometric, capped so the ridge noise stays sampled well enough
-  // not to alias into spikes.
-  //
-  // The cap was 55 m, which was the right answer for a world whose mountains
-  // topped out at 300 m. They now reach past a kilometre (`noise.js:continent`
-  // and `mountainH`), and a hillside three times as steep sampled at the same
-  // spacing is three times the angle between neighbouring faces: measured, the
-  // 200–420 m band went from 19.5 degrees at the 99th percentile to 41.3. That
-  // is not aliasing — the features out there are hundreds of metres across and
-  // 55 m samples them honestly — it is simply that the ground now turns faster
-  // than the mesh can follow. Thirty-four metres costs eleven percent more
-  // terrain vertices, which against a scene whose grass alone is three times
-  // the whole sheet is not a number worth defending.
+  // Far field: geometric, capped at 34 m so the ridge noise stays sampled well
+  // enough not to alias into spikes.
   let step = CHUNK.nearStep;
   while (v < CHUNK.halfExtent) {
     step = Math.min(step * 1.32, 34);
@@ -94,11 +57,6 @@ function buildLateralOffsets() {
   return left.concat(half);
 }
 
-/**
- * Road ribbon columns. Duplicated v positions give each painted stripe a hard
- * edge — without the duplicate, vertex colours would smear the line across the
- * whole lane.
- */
 const ASPHALT = 0;
 const PAINT = 1;
 const CENTER = 2;
@@ -147,50 +105,10 @@ function buildRoadColumns() {
  * Guards the road-space parameterisation against folding.
  *
  * Rows of vertices fan out sideways from the spline, so on a bend they radiate
- * from the curve's centre of rotation, which sits at a lateral distance of
- * R = 1/|curvature| on the *inside* of the turn. A vertex placed beyond that
- * point has passed through the centre and comes back out the other side: the
- * mesh folds through itself, producing inverted normals and degenerate
- * triangles. The outside of the bend has no such limit.
- *
- * The compression must therefore asymptote below L = 0.7*R — rows are spaced
- * ds*(1 + v*kappa) apart, so a column sitting at R would have zero longitudinal
- * extent, and the resulting slivers yield garbage normals even though they
- * never technically invert. 0.7 keeps every quad at >=30% of its nominal depth.
- *
- * `foldL` and `foldR` are the two curvature limits, one per side, and they come
- * from the ACTUAL frame-to-frame rotation rather than from `curv` — see
- * `path.js:_buildFoldLimits` for why that distinction is the difference between
- * this working and this not working. Everything below assumes they are honest.
- *
- * ── the shape of the mapping ────────────────────────────────────────────────
- *
- * What matters is how it behaves WELL SHORT of the limit, and that is where the
- * previous version — v' = L*(1 - e^(-|v|/L)) — was the largest single source of
- * visible terrain artefacts. The exponential starts bending immediately: at
- * |v| = 0.35*L it has already taken 16% off, so a road that is all but straight
- * still had its far corridor squeezed. Since L is inversely proportional to
- * curvature and a straight has curvature wandering through zero, adjacent rows
- * 2.5 m apart could carry a 2.8 km radius each way — both of them "straight" by
- * any sane reading — and the guard would leave the far column alone on one row
- * and pull it 87 METRES inboard on the next. The sheet was being sheared by a
- * quantity that has no business existing there at all, and what it looked like
- * on screen was chunks that did not line up.
- *
- * The replacement is a soft minimum against L rather than an exponential
- * approach to it:
- *
- *     v' = |v| / (1 + (|v|/L)^p)^(1/p),   p = 6
- *
- * Same guarantees — strictly increasing, strictly below L, C-infinity — but the
- * correction is O((|v|/L)^p), so it is numerically invisible until |v| is a real
- * fraction of the radius, and its sensitivity to curvature falls with the FIFTH
- * power of it instead of the first. The same pair of rows above now disagree by
- * 0.1 m. On a genuinely tight corner (R = 165 m, the ROAD.maxCurvature limit) it
- * still clamps the 700 m corridor edge to 115 m, which is what it is for.
- *
- * Curvature is a function of arc length alone, so neighbouring chunks compute an
- * identical correction at a shared boundary and seams stay exact.
+ * from the curve's centre of rotation, which sits R = 1/|curvature| from the
+ * axis on the INSIDE of the turn. A vertex past that point folds the mesh
+ * through itself. `foldL`/`foldR` are the two limits, built from the actual
+ * frame-to-frame rotation (see `path.js:_buildFoldLimits`).
  */
 const FOLD_P = 6;
 /** Scratch for `lateralAt`, which runs once per sheet vertex. */
@@ -204,71 +122,24 @@ function foldSafeOffset(v, k) {
   const L = ROUTE.foldMargin / k;
   const u = Math.abs(v) / L;
   // Below ~0.4*L the correction is under a part in a thousand; skipping it
-  // there keeps a pow() out of the hot path for the overwhelming majority of
-  // samples, since most of the world is not inside a hairpin.
+  // there keeps a pow() out of the hot path.
   if (u < 0.4) return v;
   return v / Math.pow(1 + Math.pow(u, FOLD_P), 1 / FOLD_P);
 }
 
 /**
  * Where the sheet's column `v` actually goes, and along what direction.
- *
  * Writes a unit XZ direction into `outDir` and returns the offset to travel
- * along it — which is `v` itself unless the backstop below had to bite.
- *
- * ── why the direction is not simply `right` ─────────────────────────────────
- *
- * Rows are spaced `ds * (1 + v * kappa)` apart, so the guard has to hold
- * `v * kappa <= foldMargin` or the mesh turns inside out. Bounding that by
- * squeezing `v` is what the sheet used to do, and it means the world ENDS at
- * `foldMargin / kappa` — 94 m on the default seed's tightest bend, with 12.4%
- * of the ground within 300 m of the road simply absent. Bug #70.
- *
- * `kappa` is the rate the lateral direction turns with `s`, though, and that
- * direction is ours to choose. Near the carriageway it must be `right`: the
- * cut and fill have to be square to the road. Four hundred metres out nothing
- * requires it. So the direction is rotated from `right` toward the relaxed
- * heading `path.js:_buildRelaxed` maintains, by a weight that rises with
- * offset, and the effective curvature falls with it:
- *
- *     kEff(v) = (1 - b) * kappa + b * kappaRelaxed
- *
- * `b` is chosen as the smallest weight that satisfies the invariant at this
- * offset, so the near field is untouched — `b` is 0 wherever the road's own
- * heading can carry the column — and the far field straightens exactly as much
- * as it must. Rotating by `b * relaxDev` makes that `kEff` an identity rather
- * than an approximation; see `_buildRelaxed`.
- *
- * `foldSafeOffset` stays as the backstop for the case the relaxed heading is
- * itself too tight to carry the full extent, which at `relaxWindow` = 800 m
- * happens past about 400 m. It bites on `kEff`, so it is now a soft landing at
- * the edge of a wide sheet rather than the thing that decides its width.
+ * along it.
  */
 function lateralAt(frame, rightFlat, v, outDir) {
   const av = Math.abs(v);
   const k = v < 0 ? frame.foldL : frame.foldR;
   const kr = v < 0 ? frame.relaxL : frame.relaxR;
 
-  // b IS A FUNCTION OF THE OFFSET ALONE, and that is load-bearing.
-  //
-  // The obvious thing is to solve for the smallest b that satisfies the
-  // invariant here — `b = (kappa - foldMargin/|v|) / (kappa - kappaRelaxed)` —
-  // which relaxes the sheet only exactly as much as each station needs. It
-  // produces a beautiful corridor and 10,895 inverted cells, because the
-  // direction's turn rate is then
-  //
-  //     d(theta_d)/ds = (1-b)*kappa + b*kappaRelaxed  +  (db/ds) * relaxDev
-  //
-  // and that last term is not small. `kappa` is a running maximum, so it steps;
-  // `b` steps with it; and `relaxDev` is up to half a radian. A schedule in
-  // `|v|` has `db/ds = 0` identically, which deletes the term and makes the
-  // first two an exact identity rather than a hopeful approximation.
-  //
-  // So the near band stays in honest road space — the earthwork has to be
-  // square to the carriageway — and everything past it straightens on a fixed
-  // ramp, whether this particular station needed it or not. A straight road
-  // pays nothing for it: `kappaRelaxed` and `kappa` are both ~0 there, so the
-  // rotation is by `b * relaxDev` of an angle that is itself ~0.
+  // b is a function of the offset ALONE, and that is load-bearing: the
+  // direction's turn rate is (1-b)*kappa + b*kappaRelaxed + (db/ds)*relaxDev,
+  // and a schedule in |v| has db/ds = 0 identically.
   const b = smoothstep(CHUNK.relaxBand[0], CHUNK.relaxBand[1], av);
 
   if (b <= 0) {
@@ -285,12 +156,9 @@ function lateralAt(frame, rightFlat, v, outDir) {
   return foldSafeOffset(v, (1 - b) * k + b * kr);
 }
 
-/* ------------------------------------------------------------------------- */
-
 export class ChunkManager {
   constructor({ scene, world, RAPIER, path, terrain, anisotropy = 1 }) {
     this.scene = scene;
-    /** Texture filtering budget, from the renderer. The plants are the users. */
     this.anisotropy = anisotropy;
     this.world = world;
     this.RAPIER = RAPIER;
@@ -301,13 +169,6 @@ export class ChunkManager {
     this.roadCols = buildRoadColumns();
     this.chunks = new Map();
     this.pending = [];
-    /**
-     * Chunks whose ground exists but whose scenery does not yet. Terrain and
-     * its collider must appear the instant a chunk is needed — the car can
-     * drive onto it — but nothing depends on the trees being there the same
-     * frame, and scattering them is over half the build cost. Deferring that
-     * work halves the worst-case frame spike.
-     */
     this.propQueue = [];
     /** Seconds since boot, for the wind. Advanced by the game loop. */
     this.time = 0;
@@ -325,29 +186,13 @@ export class ChunkManager {
     this._pos = new THREE.Vector3();
     this._scl = new THREE.Vector3();
     this._color = new THREE.Color();
-    /**
-     * The foreign-road list for the row currently being sampled, and the arc
-     * length it was gathered for. See `sampleGround`.
-     *
-     * Cached on the row rather than looked up per vertex because it is a pure
-     * function of `s` and a row is hundreds of vertices at the same `s` — but
-     * it is only ever a CACHE. Anything that samples out of row order simply
-     * pays for a re-gather and gets the identical answer, which is what keeps
-     * chunk seams exact: two chunks meeting at a shared row gather the same
-     * list because they ask the same question.
-     */
+    // Cached per row because this is a pure function of `s`; sampling out of row
+    // order re-gathers and gets the identical answer, which keeps seams exact.
     this._foreign = { s: NaN, n: 0, list: [] };
-    /**
-     * Reused by every call to `foliage.js:vegetation`. The grass scatter asks
-     * it once per terrain cell and there are five thousand cells a chunk, so an
-     * allocation here is tens of thousands of objects handed to the collector
-     * every time a chunk streams in.
-     */
+    /** Reused by every call to `foliage.js:vegetation`; the grass scatter asks it once per cell. */
     this._field = {};
     /** Coarse field cache, cleared per grass chunk. See `_buildGrass`. */
     this._coverMemo = new Map();
-    // The terrain palette, allocated once — _groundColor runs per vertex on
-    // every chunk and per tuft on tens of thousands of tufts.
     this._grassLow = new THREE.Color(TERRAIN_COLORS.grassLow);
     this._grassHigh = new THREE.Color(TERRAIN_COLORS.grassHigh);
     this._grassDeep = new THREE.Color(TERRAIN_COLORS.grassDeep);
@@ -360,23 +205,9 @@ export class ChunkManager {
 
     this._buildSharedAssets();
 
-    /**
-     * Ground-cover tiers, and the queue of chunks each is waiting to build.
-     *
-     * Separate from `propQueue` because trees and grass have different
-     * LIFETIMES, not just different costs: a tree lives as long as its chunk,
-     * grass only as long as the car is near enough to resolve it, so grass is
-     * built and thrown away several times over the life of the chunk it belongs
-     * to. And separate from each OTHER because the near field and the middle
-     * distance are two different problems — see GRASS.far.
-     *
-     * A tier is a plain descriptor. Everything that differs between the close
-     * field and the far one is a number in here, so `_buildGrass` is one
-     * function and there is no second scatter to keep in step with the first.
-     */
-    /** Chunks waiting for their stone. Same lifetime rule as the grass. */
+    // A tier is a plain descriptor; everything that differs is a number, so
+    // `_buildGrass` is one function.
     this.rockQueue = [];
-    /** And for their grown canopy — shorter still. See `_updateCanopy`. */
     this.canopyQueue = [];
     this.grassTiers = [];
     if (this.grass) {
@@ -402,15 +233,8 @@ export class ChunkManager {
         queue: [],
       });
       if (GRASS.wood.enabled && this.grass.woodMaterial) {
-        /**
-         * The woodland floor. Same function, same geometry, same shader — a
-         * tier is a descriptor and not a second code path (trap #27) — and
-         * every difference is a number here.
-         *
-         * The one that is not a number is `cover`: this tier is gated on
-         * `floor` rather than `ground`, which is the density that RISES with
-         * canopy instead of being thinned by it.
-         */
+        // Same function, geometry and shader — the only non-number is `cover`,
+        // gated on `floor` rather than `ground` (density that rises with canopy).
         const W = GRASS.wood;
         this.grassTiers.push({
           key: 'grassWood',
@@ -440,19 +264,16 @@ export class ChunkManager {
           behind: F.behind,
           ahead: F.ahead,
           halfExtent: F.halfExtent,
-          // Constant card size across the whole band: the near tier grows its
-          // cards outward because it is trying to reach the middle distance,
-          // and this tier IS the middle distance.
+          // Constant card size across the whole band: this tier IS the middle
+          // distance, so cards stay the same size instead of growing outward.
           denseTo: F.halfExtent,
           farScale: 1,
-          // Area-preserving density, times the coverage this tier is allowed.
-          // Bigger cards cover more ground per instance, so the count falls
-          // with the square of the scale before `coverage` thins it further.
+          // Area-preserving density: bigger cards cover more ground per
+          // instance, so the count falls with the square of the scale.
           density: (GRASS.density * F.coverage) / (F.widthScale * F.heightScale),
           maxSlope: F.maxSlope,
           sizeMul: F.heightScale,
-          // Wider than it is tall, which is what makes the far tier read as
-          // ground cover rather than as a field of spikes. See GRASS.far.
+          // Wider than tall, so the far tier reads as ground cover.
           widthMul: F.widthScale / F.heightScale,
           cover: 'ground',
           height: GRASS.height,
@@ -465,7 +286,6 @@ export class ChunkManager {
     }
   }
 
-  /** Advances anything animated in the shared materials. */
   advanceTime(dt) {
     this.time += dt;
     if (this.grass) this.grass.setTime(this.time);
@@ -473,55 +293,29 @@ export class ChunkManager {
     if (this.bushes) this.bushes.setTime(this.time);
   }
 
-  // ------------------------------------------------------------- materials --
-
   _buildSharedAssets() {
-    // The terrain material now comes from env/ground.js, which is the same
-    // smooth-shaded vertex-coloured standard material it always was plus a
-    // procedural detail overlay. The overlay is a multiply on the albedo AFTER
-    // the vertex colour, so nothing already decided about the palette changes;
-    // it only puts something between one vertex and the next, which past the
-    // verge is tens of metres of perfectly smooth interpolation.
     this.ground = createGroundAssets({ anisotropy: this.anisotropy });
     this.matTerrain = this.ground.material;
-    /** The world-space ground under everything; see `_updateApron`. */
     this.apron = null;
 
     this.road = createRoadAssets({ anisotropy: this.anisotropy });
     this.matRoad = this.road.material;
 
-    /**
-     * The canopy and the understorey. Both are grown from code at boot; see
-     * `env/trees.js`. Null where switched off, and — like the grass — they come
-     * back texture-less rather than throwing where there is no canvas, so the
-     * headless probes run the real scatter without pixels.
-     */
-    // Neither takes an anisotropy any more: both are untextured faceted solids.
+    // Null where switched off; both come back texture-less rather than throwing
+    // when there is no canvas, so the headless probes run the real scatter.
     this.trees = TREES.enabled ? createTreeAssets() : null;
     this.bushes = BUSHES.enabled ? createBushAssets() : null;
 
-
-    /**
-     * Ground cover. Null where it cannot be built — the headless probes have no
-     * canvas, so `createGrassAssets` returns a texture-less pair and everything
-     * here still runs; `GRASS.enabled` off skips it entirely.
-     */
     this.grass = GRASS.enabled ? createGrassAssets({ anisotropy: this.anisotropy }) : null;
 
     /** Procedural stone. See env/rocks.js — texture for the verge, not scenery. */
     this.rocks = ROCKS.enabled ? createRockAssets() : null;
   }
 
-  // ------------------------------------------------------------- sampling --
-
   /**
-   * Refreshes `_foreign` for the row at `frame.s`.
-   *
-   * Control-point segments, not spline samples: an exact perpendicular against
-   * a 46 m polyline is both closer to the truth and orders of magnitude cheaper
-   * than re-framing the road a few hundred times per row. The range is the
-   * corridor plus the ramp's own reach, so a road just outside the sheet still
-   * pulls the edge of it down toward itself instead of ending in a step.
+   * Refreshes `_foreign` for the row at `frame.s`. Control-point segments, not
+   * spline samples: an exact perpendicular against a 46 m polyline is both
+   * closer to the truth and far cheaper than re-framing per vertex.
    */
   _gatherForeign(frame) {
     const fo = this._foreign;
@@ -530,99 +324,50 @@ export class ChunkManager {
       frame.s, frame.pos.x, frame.pos.z, CHUNK.halfExtent + 120, fo.list);
   }
 
-  /**
-   * The single source of truth for ground height, shared by the mesh builder,
-   * the prop scatterer and the respawn logic. Anything that disagrees with this
-   * function will visibly float or sink.
-   */
+  /** Single source of truth for ground height — mesh, props, respawn all agree. */
   sampleGround(frame, rightFlat, v, out) {
-    /** Column index in the lateral table, before the guard — see below. */
+    // Nominal (pre-guard) offset, used by the horizon falloff.
     const nominal = Math.abs(v);
     v = lateralAt(frame, rightFlat, v, _latDir);
     const av = Math.abs(v);
     const x = frame.pos.x + _latDir.x * v;
     const z = frame.pos.z + _latDir.z * v;
 
-    // Road plane, banked. The bank flattens out past the verge so the cross
-    // slope doesn't tilt the entire hillside with it.
-    // Cross-slope only applies to the carriageway and its verge; past that the
-    // hillside has its own shape. (This referenced the old blend width, which
-    // was removed with the smoothstep carve — leaving it undefined turned every
-    // height into NaN, which is why the terrain silently vanished.)
+    // Bank flattens out past the verge so the cross-slope does not tilt the
+    // hillside with it.
     const bankFade = 1 - smoothstep(EDGE, EDGE + CHUNK.bankRunout, av);
     const yRoad = frame.pos.y + v * Math.tan(frame.bank) * bankFade;
 
     const yNatural = this.terrain.height(x, z, av);
 
-    // Cut and fill. The ground is the natural surface, clamped between a plane
-    // rising from the road edge at the cut slope and one falling at the fill
-    // slope. One expression covers every case an alignment meets: both sides
-    // cut through a valley, one cut and one filled along a mountainside, both
-    // filled across a hollow, and a rock cutting through a ridge.
-    //
-    // Cut and fill, rounded at both ends.
-    //
-    // The plain version — a linear ramp from the verge edge, hard-clamped
-    // against the natural surface — has a corner at each join. Measured, the
-    // ground went from 3 degrees to 40 in a single step at the verge, a
-    // curvature of 1.54/m, which at 30 m/s is 1389 m/s² straight up. Nothing is
-    // standing there; the crease alone is enough to stop a car dead.
-    //
-    // Two changes remove it. The ramp starts with zero gradient and eases into
-    // the cut slope (t²/(t+R) — value and first derivative both zero at the
-    // verge), and the clamp becomes a smooth min/max so the top of a cutting
-    // and the toe of an embankment round into the hillside instead of meeting
-    // it at a corner.
+    // Cut and fill: the natural surface clamped between a plane rising at the
+    // cut slope and one falling at the fill slope. The ramp starts at zero
+    // gradient and the clamp is a smooth min/max, so joins round instead of
+    // creasing.
     const t = Math.max(0, av - EDGE);
     const ramp = (t * t) / (t + ROAD.shoulderRound);
     const ceiling = yRoad + ROAD.cutSlope * ramp;
     const floorY = yRoad - ROAD.fillSlope * ramp;
 
-    // THE BLEND WIDTH MUST CLOSE WITH THE GAP IT IS BLENDING.
-    //
-    // `smin` and `smax` do not agree with `min` and `max` near the crossover —
-    // that is the entire point of them — and each contributes up to k/4 of
-    // error. On the carriageway the ceiling and the floor are the SAME plane
-    // (ramp = 0), so the pair is smoothing a gap of zero width: with a fixed
-    // k = 3.5 the two errors compound to +0.875 m of terrain standing on the
-    // road wherever the natural surface happens to pass near road level. That
-    // is the road disappearing into the ground.
-    //
-    // Tying k to a quarter of the gap makes the smoothing vanish exactly where
-    // there is nothing to smooth. On the carriageway it degrades to a hard
-    // clamp and the surface is the road plane, to the bit. Out on the slopes
-    // the gap is metres wide and the full blend is back.
+    // Blend width tied to a quarter of the gap: on the carriageway the floor
+    // and ceiling are the same plane, so a fixed k compounds to ~1 m of terrain
+    // standing on the road.
     const k = Math.min(ROAD.slopeBlend, (ceiling - floorY) * 0.25);
     let y = smax(smin(yNatural, ceiling, k), floorY, k);
 
-    // ---- other passes of the road ----------------------------------------
-    //
-    // Everything above carves this sheet for ITS OWN road. Where the route
-    // doubles back inside `CHUNK.halfExtent` the sheet also covers somebody
-    // else's, and over there it is uncarved hillside standing on a carriageway.
-    // See CHUNK.foreignSink for the measurement and the reasoning.
-    //
-    // The same cut ramp, against the other road's plane, sunk far enough that
-    // the two surfaces are never coplanar — and then floored at this road's own
-    // fill line, which is what makes it impossible for the correction to touch
-    // the carriageway it is standing on. On the carriageway `floorY` IS the
-    // road plane, so the guard is exact there rather than merely tight.
+    // Where the road doubles back, carve for the OTHER pass too, sunk below
+    // this road's own fill line so the correction cannot touch its carriageway.
     const fo = this._foreign;
     if (fo.s !== frame.s) this._gatherForeign(frame);
     if (fo.n) {
-      // The MINIMUM over the segments first, then one smooth clamp. Smoothing
-      // inside the loop compounds — thirty segments each conceding up to k/4
-      // is nine metres of terrain quietly removed — and a `if (lower) blend`
-      // guard is worse still: it steps by exactly k/4 the moment it engages,
-      // which is a cliff. A plain minimum over a polyline is continuous, so
-      // taking it first leaves exactly one place that needs to be smooth.
+      // Plain minimum over the segments first: smoothing inside the loop would
+      // compound by k/4 per segment.
       let fCeil = Infinity;
       for (let i = 0; i < fo.n; i++) {
         const a = fo.list[i * 2];
         const b = fo.list[i * 2 + 1];
-        // Closest point on the segment, in plan. `t` doubles as the interpolant
-        // for the road's height there, so a clamp under a climbing road climbs
-        // with it instead of stepping between control points.
+        // Closest point on the segment, in plan; `t` doubles as the interpolant
+        // for the road's height there.
         const ex = b.x - a.x;
         const ez = b.z - a.z;
         const len2 = ex * ex + ez * ez;
@@ -634,41 +379,20 @@ export class ChunkManager {
           + CHUNK.foreignSlope * Math.sqrt(fx * fx + fz * fz);
         if (c < fCeil) fCeil = c;
       }
-      // Never below THIS road's own fill line, and blended with the SAME `k`
-      // the cut-and-fill clamp uses — which is trap #6 and it has now cost time
-      // twice. A smooth minimum disagrees with a real one by up to k/4 AT THE
-      // CROSSOVER, and on the carriageway `ceiling`, `floorY` and `y` are all
-      // the same plane, so a fixed blend width here concedes that k/4
-      // unconditionally: measured, 0.875 m of trench down the middle of the
-      // road wherever a foreign segment was in range. The car met it at
-      // 175 km/h as a 1361 m/s^2 hit with all four wheels on the ground.
-      //
-      // Tying the width to the gap makes the smoothing vanish exactly where
-      // there is nothing to smooth. On the carriageway `k` is zero, both
-      // operations degrade to exact min/max, and the floor guarantees the
-      // result is the road plane to the bit. Out on the slopes the gap is
-      // metres wide and the full blend is back.
+      // Same k as the cut-fill clamp: on the carriageway these degrade to exact
+      // min/max. The floor then guarantees the result is this road's plane.
       y = smin(y, smax(fCeil, floorY, k), k);
     }
 
-    // Drainage ditch hugging the verge — but only where the road is roughly at
-    // grade. On a tall embankment or a deep cutting a ditch makes no sense.
+    // Drainage ditch hugging the verge, only where the road is at grade.
     const dt = clamp((av - EDGE) / CHUNK.ditchWidth, 0, 1);
     if (dt > 0 && dt < 1) {
       const fit = 1 - smoothstep(1.5, 8.0, Math.abs(yNatural - yRoad));
       y -= CHUNK.ditchDepth * Math.sin(Math.PI * dt) * fit;
     }
 
-    // Horizon falloff: the far edge of the corridor slopes away beneath the
-    // eyeline so the world ends out of sight instead of at a visible cut.
-    //
-    // Keyed on the NOMINAL offset — the column's place in the lateral table —
-    // and not on where the guard put it. Those are the same number on a
-    // straight and they were not on a bend, so wherever the sheet was squeezed
-    // the falloff never fired at all and the world ended at full height, as a
-    // clean vertical cut, exactly where it was most visible. The whole point of
-    // this term is to be the last few columns of the sheet whatever the guard
-    // did with them.
+    // Horizon falloff, keyed on the NOMINAL offset: the guard moves `v`, and
+    // the last few columns of the sheet must fall off whatever the guard did.
     if (nominal > CHUNK.horizonFalloff) {
       y -= smoothstep(CHUNK.horizonFalloff, CHUNK.halfExtent, nominal) * CHUNK.horizonDrop;
     }
@@ -678,14 +402,8 @@ export class ChunkManager {
   }
 
   /**
-   * Height of the *triangulated* surface at (s, v).
-   *
-   * `sampleGround` returns the analytic height, but what the player sees — and
-   * what a suspension ray hits — is the mesh, which is a chord across each
-   * quad. Between vertices the two disagree by the sagitta of the terrain, and
-   * anything placed with the analytic value floats above a valley or sinks into
-   * a ridge. Props therefore interpolate across the same triangle the renderer
-   * draws: same four corner samples, same diagonal, same winding.
+   * Height of the *triangulated* surface at (s, v): the mesh is a chord across
+   * each quad, so props interpolate the same triangle the renderer draws.
    */
   meshGroundPoint(s, s0, s1, v, out) {
     const nu = CHUNK.segmentsU;
@@ -722,12 +440,8 @@ export class ChunkManager {
     const c = corner(sB, i0, this._cC);
     const d = corner(sB, i0 + 1, this._cD);
 
-    // Interpolate the whole position, not just the height. Placing a prop at
-    // the analytic (s, v) while taking its height from the mesh leaves the two
-    // disagreeing wherever the road curves or the columns are coarse — the
-    // point simply is not on the triangle whose height was read. Interpolating
-    // x and z as well puts it on the surface by construction.
-    // Quad is split a,b,c / b,d,c, matching _buildTerrain's index order.
+    // Interpolate the whole position onto the same triangle the renderer draws
+    // (split a,b,c / b,d,c, matching _buildTerrain's index order).
     if (fu + fv <= 1) {
       out.copy(a);
       out.x += fv * (b.x - a.x) + fu * (c.x - a.x);
@@ -744,10 +458,7 @@ export class ChunkManager {
     return out;
   }
 
-  /**
-   * Ground height at an arbitrary (s, v). Allocates a frame; not for hot loops.
-   *
-   */
+  /** Ground height at an arbitrary (s, v). Allocates a frame; not for hot loops. */
   groundAt(s, v, out = new THREE.Vector3()) {
     const f = this.path.frameAt(s, this._frame);
     this._rightFlat.crossVectors(f.tan, WORLD_UP).normalize();
@@ -755,57 +466,26 @@ export class ChunkManager {
     return out;
   }
 
-  // ------------------------------------------------------------------ apron --
-
   /**
    * The world-space ground under everything else.
    *
-   * ── why a second surface exists at all ─────────────────────────────────────
-   *
-   * The terrain sheet is parameterised by (s, v), and that parameterisation has
-   * a hard limit nothing can argue with: the family of curves parallel to a
-   * curve of radius R degenerates at distance R, on the inside. Ground further
-   * out than the road's own turning circle is not addressable in road space,
-   * because two rows that should be 2.5 m apart have already crossed.
-   *
-   * `lateralAt` buys a great deal of room by turning the lateral direction
-   * toward a heading that barely curves — the corridor goes from 94 m to
-   * 250-700 m depending on the seed — and it cannot buy all of it. Measured on
-   * seed "echo": with the direction relaxed far enough to claim a 404 m
-   * corridor, the direction is by then 52 degrees off perpendicular, so each
-   * sheet covers a sliver rather than a band and 5.7% of the ground within
-   * 300 m was still missing. Trading the angle back to fix the coverage costs
-   * the reach. There is no setting that wins both.
-   *
-   * So the far field stops being road space. The apron is a plain world-space
-   * grid of `terrain.height`, centred on the car — no road, no arc length, no
-   * parameterisation to degenerate — and it is drawn and collided UNDER the
-   * sheets. Wherever a sheet exists it wins; wherever one has run out, the
-   * apron is what the car lands on. It is the reason there is now no such thing
-   * as a hole rather than a reason there are fewer of them.
-   *
-   * It carries no earthwork, and does not need to: the cut and fill ramps die
-   * within ~60 m of the centreline and the sheet is never narrower than 94 m,
-   * so the two surfaces agree analytically everywhere the apron is ever seen.
-   * `CHUNK.apronSink` is the only thing between them, and it exists to cover
-   * the chord error between a 22 m grid and a 2.4 m one, not to hide a
-   * disagreement.
+   * Road space degenerates at distance R inside a turn — rows 2.5 m apart have
+   * already crossed — so the far field ends as a plain world-space grid of
+   * `terrain.height`, drawn and collided UNDER the sheets.
    */
   _updateApron(carS) {
     const step = CHUNK.apronStep;
     const half = Math.round(CHUNK.apronHalf / step) * step;
 
     const f = this.path.frameAt(carS, this._frame);
-    // Snap the centre to the grid the samples land on, so the apron does not
-    // shimmer as it follows the car: every rebuild reuses the same world
-    // lattice and the vertices come back at identical heights.
+    // Snap the centre to the sample lattice so the apron does not shimmer as
+    // the car moves.
     const cx = Math.round(f.pos.x / step) * step;
     const cz = Math.round(f.pos.z / step) * step;
 
     const a = this.apron;
     if (a && a.cx === cx && a.cz === cz) return;
-    // Hysteresis: rebuild only once the car has left the middle of the apron,
-    // not every time it crosses a grid line.
+    // Hysteresis: rebuild only once the car has left the middle of the apron.
     if (a && Math.abs(cx - a.cx) < CHUNK.apronMove && Math.abs(cz - a.cz) < CHUNK.apronMove) return;
 
     const n = (half * 2) / step + 1;
@@ -819,20 +499,12 @@ export class ChunkManager {
       const z = cz - half + j * step;
       for (let i = 0; i < n; i++) {
         const x = cx - half + i * step;
-        // The LOD argument is the apron's own resolution, not a lateral
-        // offset: `terrain.height` uses it to drop octaves it cannot resolve,
-        // and asking for 2 cm detail on a 22 m grid is aliasing paid for at
-        // full price.
+        // The LOD arg is the apron's own resolution, not a lateral offset.
         let y = this.terrain.height(x, z, CHUNK.apronDetail) - CHUNK.apronSink;
 
-        // Duck under the carriageway. The apron carries no earthwork, so in a
-        // cutting the natural surface it samples is metres ABOVE the road it is
-        // supposed to be beneath — measured, 24,396 steps over 30 cm on the
-        // carriageway and a worst case of 2.60 m standing in the road. This is
-        // bug #55 exactly, turned on the road's own pass instead of a foreign
-        // one, and it takes the same cure: cut down to the road's plane on a
-        // shallow ramp, and then further, so the two never argue about which
-        // owns a given depth. The sheets draw over all of it.
+        // Duck under the carriageway: the apron carries no earthwork, so in a
+        // cutting its natural surface can stand metres above the road. Cut down
+        // to the road's plane, and slightly below, on a shallow ramp.
         this.path.roadNear(x, z, carS, CHUNK.apronHalf, _apronRoad);
         if (_apronRoad.dist < Infinity) {
           const cap = _apronRoad.y - CHUNK.apronRoadSink
@@ -887,9 +559,7 @@ export class ChunkManager {
     const mesh = new THREE.Mesh(geometry, this.matTerrain);
     mesh.position.set(cx, 0, cz);
     mesh.receiveShadow = true;
-    // No shadow CASTING: the apron is a coarse copy of ground the sheets
-    // already draw, and letting it into the shadow map puts its 22 m facets
-    // over their 2.4 m ones.
+    // No shadow casting: a coarse copy of ground the sheets already draw.
     mesh.castShadow = false;
     mesh.renderOrder = -1;
     mesh.matrixAutoUpdate = false;
@@ -922,26 +592,22 @@ export class ChunkManager {
   update(carS, budget = CHUNK.buildPerFrame) {
     this._updateApron(carS);
     const center = Math.floor(carS / CHUNK.length);
-    // The spline is undefined before s = 0 (frameAt clamps), so a negative
-    // chunk would collapse every row onto s = 0 and generate a degenerate mesh
-    // with no collidable surface. Never build them.
+    // The spline is undefined before s = 0, so a negative chunk would collapse
+    // onto s = 0 and generate a degenerate, uncollidable mesh.
     const lo = Math.max(0, center - CHUNK.behind);
     const hi = center + CHUNK.ahead;
 
-    // The spline must exist before the chunk that samples it does.
     this.path.ensureLength((hi + 2) * CHUNK.length);
 
-    // Keep queued work scoped to the current window. Stale requests otherwise
-    // survive a fast transition and consume the build budget before the new
-    // window is filled, leaving visible holes behind the car.
+    // Drop stale requests so a fast transition cannot consume the budget on old
+    // chunks before the new window is filled.
     this.pending = this.pending.filter((i) => i >= lo && i <= hi && !this.chunks.has(i));
     for (let i = lo; i <= hi; i++) {
       if (!this.chunks.has(i) && !this.pending.includes(i)) this.pending.push(i);
     }
 
-    // Nearest-first, with the current chunk explicitly first. This guarantees
-    // a teleport or recovery gets a collidable surface before filling the
-    // surrounding look-ahead window.
+    // Nearest-first, with the current chunk first, so a teleport immediately
+    // gets a collidable surface.
     this.pending.sort((a, b) => {
       const da = a === center ? -1 : Math.abs(a - center);
       const db = b === center ? -1 : Math.abs(b - center);
@@ -955,8 +621,8 @@ export class ChunkManager {
       built++;
     }
 
-    // Scenery for one already-built chunk, on a frame where no ground was
-    // generated. Splitting the two keeps either half under a frame budget.
+    // Scenery on a frame where no ground was built: either half stays under a
+    // frame budget.
     if (!built) for (let k = 0; k < budget; k++) if (!this._flushProps()) break;
 
     for (const [i, chunk] of this.chunks) {
@@ -976,21 +642,17 @@ export class ChunkManager {
       }
     }
 
-    // Ground cover last, and only on a frame that did no other building —
-    // scattering a chunk of it is tens of thousands of surface samples, and
-    // landing that in the same frame as a terrain build is the frame spike
-    // bug #51 exists to keep the car's motion honest through.
+    // Ground cover only on a frame that did no other building, so two heavy
+    // scatters never land in the same frame as a terrain build.
     if (!built) {
-      // The canopy first: it is the tier whose absence is a hole in the world
-      // rather than a patch of missing detail, and it is by far the cheapest of
-      // the three to build — the scatter already ran, so this is only turning
-      // cached matrices into an InstancedMesh.
+      // Canopy first: its absence is a hole in the world, and it is the
+      // cheapest to build — the scatter already ran.
       this._updateCanopy(carS, 1);
       this._updateGrass(carS, GRASS.buildPerFrame);
       this._updateRocks(carS, 1);
     } else {
-      // Eviction still has to run every frame, or a chunk that left the window
-      // keeps its cover until something else happens to trigger a build.
+      // Eviction still has to run every frame, or a departed chunk keeps its
+      // cover.
       this._updateCanopy(carS, 0);
       this._updateGrass(carS, 0);
       this._updateRocks(carS, 0);
@@ -1003,21 +665,18 @@ export class ChunkManager {
     this.path.ensureLength((center + count + 2) * CHUNK.length);
     const lo = Math.max(0, center - CHUNK.behind);
     const hi = center + CHUNK.ahead;
-    // Preload the same window update() maintains. Loading fewer chunks leaves
-    // large terrain sections absent while the first-frame queue catches up.
+    // Same window `update()` maintains, so nothing is absent at the first frame.
     for (let i = lo; i <= Math.min(hi, lo + count - 1); i++) {
       if (!this.chunks.has(i)) this._build(i);
     }
-    // Nothing is on screen yet, so the whole backlog can be paid up front.
     while (this._flushProps());
   }
 
   _dispose(chunk) {
     for (const obj of chunk.objects) {
       this.scene.remove(obj);
-      // Only terrain and road geometry belong to this chunk. Prop geometries
-      // and every material are shared globally — disposing those would blank
-      // out every other live chunk.
+      // Only terrain and road geometry belong to this chunk; prop geometries
+      // and materials are shared and must survive.
       if (obj.userData.ownsGeometry) obj.geometry.dispose();
       if (obj.isInstancedMesh) obj.dispose();
     }
@@ -1048,15 +707,11 @@ export class ChunkManager {
     const s0 = index * CHUNK.length;
     const s1 = s0 + CHUNK.length;
 
-    // The foreign-road clamp asks about road up to `ROUTE.selfFar` AHEAD, and
-    // an answer that depends on how much of the route has been generated is not
-    // a pure function of position — which is bug #27's whole lesson. Routing is
-    // greedy and deterministic, so extending it early changes nothing about
-    // where it goes; it only makes the question answerable.
+    // Extend early so the foreign-road clamp's answer is a pure function of
+    // position, not of how much route happened to be generated yet.
     this.path.ensureLength(s1 + ROUTE.selfFar);
 
-    // Chunk-local origin. Keeping vertices relative to it (rather than absolute
-    // world space) preserves float precision hundreds of kilometres out.
+    // Chunk-local origin preserves float precision far from the world origin.
     const origin = this.path.frameAt(s0, this._frame).pos.clone();
 
     const objects = [];
@@ -1081,8 +736,7 @@ export class ChunkManager {
     this.scene.add(roadMesh);
     objects.push(roadMesh);
 
-    // Static trimesh collider. Rapier owns the transform, so the same
-    // origin-relative vertex buffer serves both rendering and physics.
+    // Static trimesh collider; the origin-relative buffer serves both passes.
     const desc = this.RAPIER.ColliderDesc.trimesh(terrainData.positions, terrainData.indices)
       .setTranslation(origin.x, origin.y, origin.z)
       .setFriction(1.0)
@@ -1093,33 +747,23 @@ export class ChunkManager {
 
     const chunk = {
       index, objects, collider, origin, props: false, extraColliders,
-      /**
-       * The terrain sheet, kept so ground cover can be scattered ON it rather
-       * than re-derived beside it. `positions` and `colors` are the very
-       * buffers the renderer draws from, so a tuft placed by interpolating
-       * them is on the visible surface and painted the visible colour by
-       * construction — there is no second evaluation to disagree.
-       */
+      // The renderer's own buffers, so scattered cover sits on the visible
+      // surface (and colour) by construction, not by agreement.
       sheet: {
         positions: terrainData.positions,
         colors: terrainData.colors,
       },
-      /**
-       * The near canopy's RECIPE — matrices and colours per species, computed
-       * once by `_buildProps` — and the meshes built from it, which come and go
-       * with the car. See `_updateCanopy`.
-       */
+      /** The near canopy's recipe and its live meshes (short-lived; see `_updateCanopy`). */
       canopySpec: null,
       canopy: null,
-      /** The live ground-cover meshes, or null. They come and go with the car. */
+      /** Live ground-cover meshes, or null; they come and go with the car. */
       grass: null,
       grassFar: null,
       grassWood: null,
-      /** True once this chunk is known to have nowhere to put any. */
+      /** True once the chunk is known to have nowhere to put any. */
       grassEmpty: false,
       grassFarEmpty: false,
       grassWoodEmpty: false,
-      /** Procedural stone — same lifetime rule as the grass. */
       rocks: null,
       rocksEmpty: false,
     };
@@ -1127,12 +771,11 @@ export class ChunkManager {
     this.propQueue.push({ index, s0, s1, origin });
   }
 
-  /** Scatters one deferred chunk's scenery. */
   _flushProps() {
     while (this.propQueue.length) {
       const job = this.propQueue.shift();
       const chunk = this.chunks.get(job.index);
-      // The chunk may have streamed back out before we got to it.
+      // The chunk may have streamed back out before this ran.
       if (!chunk || chunk.props) continue;
       for (const obj of this._buildProps(job.index, job.s0, job.s1, job.origin)) {
         obj.position.copy(job.origin);
@@ -1156,35 +799,14 @@ export class ChunkManager {
     const vertCount = rows * nv;
 
     /**
-     * GHOST ROWS.
-     *
-     * The sheet is sampled one row PAST each end of the chunk and the normals
-     * are computed over that extended mesh; only the interior rows are then
-     * kept. Nothing else in the build sees them.
-     *
-     * This replaces a `_seamNormals` pass that re-derived the boundary normal
-     * analytically, from central differences of `sampleGround`, and it replaces
-     * it because the two answers are not the same answer. Every interior vertex
-     * gets the area-weighted average of its six adjacent triangles, which is
-     * what `computeVertexNormals` does; an analytic tangent plane agrees with
-     * that only where the surface is locally flat. Out in the far field, where
-     * a cell is 55 m across and the ground is not flat at 55 m, they disagree
-     * by degrees — so the seam row was shaded differently from its own
-     * neighbours, on both sides, and the world grew a subtly mismatched line
-     * across it every 120 m. It also fed `_colorTerrain`, so the seam was a
-     * colour boundary as well as a shading one.
-     *
-     * With ghost rows the boundary vertices are computed by exactly the same
-     * rule as everything else, from exactly the triangles the neighbouring
-     * chunk will build. Both sides agree because both are evaluating the same
-     * function of position, not because two different derivations were tuned
-     * to match.
+     * GHOST ROWS: sample one row past each end and compute normals over the
+     * extended mesh, so boundary normals are computed by the same rule as every
+     * other vertex — the neighbouring chunk's answer agrees exactly.
      */
     const extRows = rows + 2;
     const extPos = new Float32Array(extRows * nv * 3);
     const indices = new Uint32Array(nu * (nv - 1) * 6);
 
-    // Kept alongside the positions so colouring can use them without re-deriving.
     const lateralAbs = new Float32Array(vertCount);
     const worldY = new Float32Array(vertCount);
 
@@ -1217,12 +839,8 @@ export class ChunkManager {
       }
     }
 
-    // Winding: +row is the tangent, +column is `right`, and up = right x tangent.
-    // Counter-clockwise (a,b,c) therefore yields an upward face normal — get
-    // this backwards and the whole world is backface-culled and lit from below.
-    // Built twice over the same rule: once across every extended row, purely to
-    // drive `computeVertexNormals`, and once across the interior rows, which is
-    // what gets drawn and collided against.
+    // Winding +column/+row: a,b,c must give an upward face or the whole world
+    // is backface-culled and lit from below.
     const extIdx = new Uint32Array((extRows - 1) * (nv - 1) * 6);
     let e2 = 0;
     for (let j = 0; j < extRows - 1; j++) {
@@ -1240,9 +858,7 @@ export class ChunkManager {
     ext.setIndex(new THREE.BufferAttribute(extIdx, 1));
     ext.computeVertexNormals();
 
-    // Drop the ghosts. `slice` on a typed array copies, which is what both the
-    // renderer and Rapier want — a view with a byte offset is a thing to have
-    // to think about later.
+    // Drop the ghosts; slice copies, which is what the renderer and Rapier want.
     const from = nv * 3;
     const to = (nu + 2) * nv * 3;
     const positions = extPos.slice(from, to);
@@ -1276,66 +892,39 @@ export class ChunkManager {
   }
 
   /**
-   * Vertex colours from altitude, slope and distance to the road. Normals are
-   * already computed, so slope comes free from normal.y — no extra sampling.
-   */
-  /**
-   * The colour of the ground at one point, into `out`.
+   * Ground colour at one point, into `out`. Extracted so the terrain mesh and
+   * the grass standing in it are painted by the SAME function.
    *
-   * Extracted so the terrain mesh and the grass standing in it are painted by
-   * the SAME function rather than by two expressions that agree today. A tuft
-   * takes its hue from here, so grass over a rock face goes grey with the rock
-   * and grass on a high shoulder pales with the altitude, automatically and
-   * permanently — there is no second palette to keep in step.
-   *
-   * @param {number} x,z    world position
-   * @param {number} y      ground height there
-   * @param {number} ny     |normal.y| — how flat the ground is
-   * @param {number} av     |lateral offset| from the centreline
-   * @param {THREE.Color} out
    * @returns {number} the value jitter applied, so callers can reuse it
    */
   _groundColor(x, z, y, ny, av, out) {
-    // Two mottles at different scales rather than one. A single low-frequency
-    // field can only ever say "more of this way or that way" — it grades, and a
-    // grade over a smoothly interpolated mesh is the flat wash this is here to
-    // break. Two of them, one about 70 m and one about 350 m, put patches
-    // inside regions: a dry bank in a green valley, a green hollow on a dry
-    // hillside.
+    // Two mottles, ~70 m and ~350 m, put patches inside regions rather than a
+    // single graded wash.
     const fine = this.terrain.nC(x * 0.014, z * 0.014) * 0.5 + 0.5;
     const broad = this.terrain.nB(x * 0.0029, z * 0.0029) * 0.5 + 0.5;
 
-    // Height ABOVE THE LOCAL BASE, not above zero. See TERRAIN_COLORS and
-    // noise.js:continent — the map itself now rises and falls by hundreds of
-    // metres, so an absolute ramp would paint whole regions at the top of it.
+    // Height above the LOCAL base, not absolute: the map rises and falls by
+    // hundreds of metres.
     const rel = y - this.terrain.continent(x, z);
 
-    // Damp low ground to dry high ground, with the broad mottle deciding which
-    // way a given hillside leans.
     const alt = smoothstep(20, 210, rel);
     out.copy(this._grassDeep).lerp(this._grassLow, smoothstep(0.28, 0.62, broad + alt * 0.25));
     out.lerp(this._grassHigh, clamp(alt * 0.9 + (fine - 0.5) * 0.4, 0, 1));
 
-    // Sun-bleached patches. Weighted toward higher, flatter ground, which is
-    // where a real sward burns off first, and broken up by the fine mottle so
-    // it lands as patches rather than as a band.
+    // Sun-bleached patches, weighted to higher, flatter ground.
     const dry = clamp((fine - 0.42) * 2.1, 0, 1) * lerp(0.35, 1, smoothstep(0.45, 0.9, ny))
       * lerp(0.5, 1, alt);
     out.lerp(this._grassDry, dry * 0.62);
 
-    // Scrub takes over where grass cannot hold: moderately steep, or high.
+    // Scrub where grass cannot hold: moderately steep, or high.
     const steep = smoothstep(0.92, 0.68, ny);
     out.lerp(this._scrub, Math.max(steep * 0.55, smoothstep(150, 330, rel) * 0.45));
 
-    // Steep faces expose rock. 0.86 -> 0.55 in normal.y is roughly 30-57 deg.
     out.lerp(this._rock, smoothstep(0.86, 0.55, ny));
-    // Bare stone above the vegetation line, and snow above that — but only
-    // where the ground is flat enough to hold it. Snow on a vertical face is
-    // the giveaway that a palette is keyed to height alone.
+    // Peak and snow only where the ground is flat enough to hold them.
     out.lerp(this._peak, smoothstep(300, 520, rel) * 0.8);
     out.lerp(this._snow, smoothstep(430, 640, rel) * smoothstep(0.52, 0.86, ny));
 
-    // Gravel verge fading into the vegetation.
     out.lerp(this._dirt, (1 - smoothstep(EDGE - 0.4, EDGE + 4.5, av)) * 0.9);
 
     return 0.92 + fine * 0.16;
@@ -1346,15 +935,12 @@ export class ChunkManager {
     const c = this._color;
 
     for (let k = 0; k < lateralAbs.length; k++) {
-      // Far out on the inside of a bend the fold guard squeezes columns into
-      // slivers whose computed normals are unreliable. Here the normal only
-      // drives colour, so take the magnitude: a bad sliver can then never paint
-      // a grass slope as a cliff.
+      // Fold-squeezed slivers have unreliable normals; magnitude keeps a bad
+      // sliver from painting a grass slope as a cliff.
       const ny = Math.abs(normals[k * 3 + 1]);
       const x = positions[k * 3] + origin.x;
       const z = positions[k * 3 + 2] + origin.z;
 
-      // Slight per-vertex value jitter keeps the flat-shaded facets distinct.
       const jitter = this._groundColor(x, z, worldY[k], ny, lateralAbs[k], c);
       colors[k * 3 + 0] = c.r * jitter;
       colors[k * 3 + 1] = c.g * jitter;
@@ -1362,29 +948,18 @@ export class ChunkManager {
     }
   }
 
-  // ----------------------------------------------------------------- road --
-
   /**
-   * The road ribbon.
-   *
-   * Dashes are painted with vertex colours, which interpolate across a quad —
-   * so a dash whose ends fall in the middle of a 2.5 m row fades in and out
-   * over that whole row instead of stopping. The fix is the same one the
-   * painted edge lines use laterally: emit a *duplicated row* at every dash
-   * boundary, one carrying the old colour and one the new. The pair has zero
-   * length, so there is nothing for the interpolator to smear across and the
-   * dash ends land exactly where the geometry says.
+   * The road ribbon. Dash boundaries emit a duplicated zero-length row so the
+   * vertex colour ends exactly where the geometry says, not faded across a quad.
    */
   _buildRoad(s0, s1, origin) {
     const cols = this.roadCols;
     const nv = cols.length;
     const half = ROAD.dashLength;
 
-    // Row schedule: the union of regular subdivisions and dash boundaries. A
-    // boundary emits a doubled row; a regular station emits one. They have to
-    // be merged rather than interleaved, because the two spacings coincide
-    // periodically (2.5 m rows against 3 m dashes meet every 15 m) and a
-    // boundary that lands on a regular row must still be doubled.
+    // Row schedule: union of regular rows and dash boundaries, merged because
+    // the two spacings coincide periodically and a boundary on a regular row
+    // must still be doubled.
     const step = CHUNK.length / CHUNK.segmentsU;
     const stations = [];
     for (let k = 0; k <= CHUNK.segmentsU; k++) stations.push({ s: s0 + k * step, mark: false });
@@ -1413,11 +988,8 @@ export class ChunkManager {
     const colors = new Float32Array(nu * nv * 3);
     const indices = new Uint32Array((nu - 1) * (nv - 1) * 6);
 
-    // Warmer and a little lighter than the 0x37373c this replaces, which was
-    // blue enough to read as slate. Real asphalt is a neutral-to-warm grey; the
-    // blue in the old value was doing the job of the sky's own tint twice.
-    // Lighter also matters because everything `env/road.js` does is a MULTIPLY,
-    // and a multiply on a very dark base has almost no range to work in.
+    // Neutral-warm grey: env/road.js multiples the base, so a dark, blue base
+    // would leave the multiply almost no range to work in.
     const asphalt = new THREE.Color(0x46443f);
     const paint = new THREE.Color(0xe9e3d2);
     const frame = makeFrame();
@@ -1430,7 +1002,6 @@ export class ChunkManager {
       rightFlat.crossVectors(frame.tan, WORLD_UP).normalize();
       const slope = Math.tan(frame.bank);
 
-      // Asphalt tone wanders slightly along the road: patches, repairs, wear.
       const wear = this.terrain.nB(s * 0.03, 4.2) * 0.5 + 0.5;
 
       for (let i = 0; i < nv; i++) {
@@ -1520,47 +1091,19 @@ export class ChunkManager {
    */
   _buildProps(index, s0, s1, origin) {
     if (!this.trees && !this.bushes) return [];
-    // The scatter reads the chunk's own terrain sheet, so the chunk has to have
-    // one. It always does — `_build` queues the props after writing it — and
-    // returning empty rather than throwing keeps a caller that reorders the two
-    // from taking the world down with it.
     const chunk = this.chunks.get(index);
     if (!chunk || !chunk.sheet) return [];
 
-    // Seeded per chunk: a chunk unloaded and reloaded comes back identical, so
-    // scenery does not reshuffle itself in the mirror.
+    // Seeded per chunk, so a reload comes back identical instead of reshuffling.
     const rng = mulberry32(hashInt(index) ^ 0x9e3779b9);
     const out = [];
 
     const p = new THREE.Vector3();
     const field = this._field;
 
-    /**
-     * Where the ground is, read out of the sheet the renderer draws.
-     *
-     * THIS IS THE 591-MILLISECOND LESSON, and it is worth restating because
-     * this scatter learned it the same way the grass did. The obvious version
-     * asks `meshGroundPoint` — the honest answer, four road frames and four
-     * analytic ground samples, every one an fBm evaluation — and at two
-     * thousand samples a chunk that measured 62 ms. Halving the samples and
-     * halving the probes got it to 33. It is not a slow function; it is the
-     * right function asked far too often, about a surface the chunk builder
-     * answered ten milliseconds earlier and wrote into a buffer.
-     *
-     * So this reads that buffer, exactly as `_buildGrass` does: find the cell,
-     * interpolate its corners over the same diagonal with the same winding, and
-     * take the slope from the corner heights for four subtractions. There is no
-     * noise evaluation left in the loop at all, the result is MORE correct than
-     * the original — a tree is on the surface the renderer draws, by
-     * construction rather than by agreement — and the whole two-phase
-     * cheap-then-exact dance it replaces is unnecessary, because the cheap
-     * answer and the exact answer are now the same answer.
-     *
-     * Positions come back ORIGIN-RELATIVE, because that is how the sheet stores
-     * them. `_setLocalMatrix` is the one that takes them; handing them to
-     * `_setMatrix` subtracts the origin twice and puts the tree a chunk-length
-     * away. Trap #19.
-     */
+    // Ground read out of the sheet's own buffers (like _buildGrass): no noise
+    // evaluation left in the loop, and the result is on the surface the renderer
+    // draws. Positions are origin-relative (trap #19).
     const nv = this.lateral.length;
     const nu = CHUNK.segmentsU;
     const rowLen = (s1 - s0) / nu;
@@ -1573,7 +1116,6 @@ export class ChunkManager {
       const j = Math.floor(fj);
       const fu = fj - j;
 
-      // Column by binary search — `lateral` is strictly increasing.
       let lo = 0, hi = nv - 2;
       while (lo < hi) {
         const mid = (lo + hi + 1) >> 1;
@@ -1588,7 +1130,7 @@ export class ChunkManager {
       const c = a + nv;
       const d = c + 1;
 
-      // The same split as `_buildTerrain`'s index order: a,b,c then b,d,c.
+      // Same quad split as _buildTerrain: a,b,c then b,d,c.
       let i0, i1, i2, w0, w1, w2;
       if (fu + fv <= 1) {
         i0 = a; i1 = b; i2 = c;
@@ -1611,16 +1153,8 @@ export class ChunkManager {
 
     /**
      * Picks `count` species from `names`, seeded, and one variant of each.
-     * Returns a Map of species -> proto index.
-     *
-     * `rank` is optional and is what makes the canopy's picks land on the guild
-     * that actually grows here. A flat shuffle spends a chunk's six slots
-     * uniformly across a table of eight, so in conifer country half of them go
-     * to broadleaves that the guild field will then reject at every sample —
-     * measured, the scatter ran three times as many candidates for the same
-     * number of trees. Weighted, the local guild is always represented and the
-     * rest of the table still turns up, because the weight is multiplied by a
-     * random factor rather than sorted on outright.
+     * `rank` makes the pick favour the guild that actually grows here; the
+     * weight is multiplied by a random factor rather than sorted on outright.
      */
     const commit = (names, library, count, rank = null) => {
       const pool = names.filter((n) => library.has(n));
@@ -1658,12 +1192,8 @@ export class ChunkManager {
     // ---- the canopy ------------------------------------------------------
 
     if (this.trees) {
-      /**
-       * The guild field at the middle of the chunk, sampled once, purely to
-       * weight which species this chunk commits to. It is a hint and not a
-       * rule: the per-sample field still decides everything, and a chunk that
-       * straddles a boundary simply gets a pick list from one side of it.
-       */
+      // The guild field at the chunk's middle, sampled once, only to weight
+      // which species the chunk commits to.
       look(lerp(s0, s1, 0.5), 60);
       {
         const mx = p.x + origin.x, mz = p.z + origin.z;
@@ -1674,18 +1204,8 @@ export class ChunkManager {
         (n) => (0.15 + guildAffinity(FOLIAGE[n], field)) * FOLIAGE[n].weight);
       const kinds = [...chosen.keys()];
 
-      /**
-       * Cluster seeds, placed where the canopy field is already strong and each
-       * committed to one species. A seed that lands in a clearing is dropped
-       * rather than moved: the clearings are the point.
-       *
-       * The RADIUS IS DRAWN ON A POWER LAW, not uniformly, and that is the
-       * change that did most for how the woods read. A uniform draw over
-       * [16, 46] gives nine copses all of much the same size, which is a
-       * texture rather than a landscape; squaring the draw over a wider range
-       * gives mostly thickets with the occasional wood among them, which is the
-       * size distribution real stands actually have.
-       */
+      // Cluster seeds where the field is already strong; each commits to one
+      // species. Radius on a power law: mostly thickets with the odd wood.
       const clusters = [];
       for (let i = 0; i < TREES.clusterCount && kinds.length; i++) {
         const cs = lerp(s0, s1, rng());
@@ -1697,13 +1217,8 @@ export class ChunkManager {
         vegetation(this.terrain, cx, cz, crelief, cslope, Math.abs(cv), field);
         if (field.canopy < 0.22) continue;
         const u = rng();
-        /**
-         * The seed's species is drawn AGAINST THE GUILD FIELD AT THE SEED, not
-         * uniformly from the chunk's picks. Uniformly is how a conifer stand
-         * lands in the middle of lowland broadleaf country: the field already
-         * knows what kind of wood belongs here, and the cluster is the thing
-         * that decides what a whole copse will be.
-         */
+        // Drawn against the field AT THE SEED, not the chunk's picks, so the
+        // copse's species is the one that belongs here.
         let best = null, bestW = 0;
         for (const name of kinds) {
           const w = suitability(FOLIAGE[name], field, crelief, cslope, Math.abs(cv)) *
@@ -1721,20 +1236,8 @@ export class ChunkManager {
         });
       }
 
-      /**
-       * Crown-aware spacing, on a hash grid.
-       *
-       * Without it two trees can stand in the same square metre, and a pair of
-       * interpenetrating solid crowns is far more obvious than a pair of
-       * interpenetrating alpha cards ever was — it is the single most visible
-       * artefact the switch to solids introduced. The rule is that two crowns
-       * may overlap by `TREES.crownGap` of their combined radii, which is what
-       * a closed canopy does; below that, the sample is dropped.
-       *
-       * The grid cell is sized to the widest crown pair in the table so a
-       * three-by-three neighbourhood is a complete answer. A flat list would be
-       * O(n^2) over a thousand candidates a chunk.
-       */
+      // Crown-aware spacing on a hash grid sized to the widest crown pair, so a
+      // 3x3 neighbourhood is a complete answer and the check stays O(1).
       const GRID = TREES.spacingCell;
       const grid = new Map();
       const cellKey = (a, b) => `${Math.floor(a / GRID)},${Math.floor(b / GRID)}`;
@@ -1768,18 +1271,8 @@ export class ChunkManager {
       const plant = (name, height, wobble, yaw, wx, wz, wy, av, paired) => {
         const variant = this.trees.library.get(name)[chosen.get(name)];
 
-        /**
-         * A per-instance MODULATION, near 1.0 — not a colour.
-         *
-         * The hue is baked into the geometry now (`env/trees.js:crownShader`),
-         * one palette per variant, which is what gives the world its orange
-         * maples and its pale birch without a per-instance decision. So all
-         * this has left to do is what a per-instance value is actually good
-         * for: individual variation, and enough of the ground's own colour that
-         * a wood in a dry region is not obviously the same wood as the one in
-         * the hollow. Taking the ground colour raw — which is what this used to
-         * do — now flattens the palettes back into mud.
-         */
+        // Per-instance modulation near 1.0 (hue is baked into the geometry), so
+        // individual variation and a hint of the ground's own colour.
         this._groundColor(wx, wz, wy, 1, av, this._color);
         const k = TREES.groundTint;
         const vary = TREES.instanceVary;
@@ -1787,16 +1280,12 @@ export class ChunkManager {
         this._color.g = ((1 - k) + k * this._color.g * 2) * (1 + (rng() - 0.5) * vary);
         this._color.b = ((1 - k) + k * this._color.b * 2) * (1 + (rng() - 0.5) * vary * 1.6);
 
-        // The two tiers take the SAME matrix. Both protos are unit-tall, built
-        // from the same seed and normalised the same way, so this is what makes
-        // the cross-fade invisible: it is one tree at one size the whole way
-        // through the band, drawn at two subdivisions.
+        // Both tiers take the same matrix, so the cross-fade is one tree at one
+        // size, drawn at two subdivisions.
         this._setLocalMatrix(p, height * wobble, height, height * wobble, yaw);
 
         if (paired) {
-          // STASHED, not built. The near mesh has a shorter life than its own
-          // chunk — see `_updateCanopy` — so what a chunk carries is the recipe
-          // and the meshes come and go with the car.
+          // Stashed as a recipe; the near meshes come and go with the car.
           let spec = canopy.get(name);
           if (!spec) {
             spec = { geometry: variant.geometry, matrices: [], colours: [] };
@@ -1807,9 +1296,8 @@ export class ChunkManager {
           placed++;
         }
         if (far < TREES.farCap) {
-          // `paired` decides which fade window the shader uses: a far tree with
-          // no near mesh behind it must not appear until it is far enough away
-          // that nobody sees it arrive. See `TREES.loneFadeIn`.
+          // A far tree with no near mesh must fade in only once far enough that
+          // its arrival is not seen.
           push(`f:${name}`, this.trees.far.get(name)[chosen.get(name)].geometry,
             this.trees.farMaterial, this._mat, this._color, false, !paired);
           far++;
@@ -1822,22 +1310,17 @@ export class ChunkManager {
         let s, v, home = null, edgeness = 0;
         if (clusters.length && rng() < TREES.clusterShare) {
           home = clusters[Math.floor(rng() * clusters.length)];
-          // Gaussian-ish about the seed: two uniforms averaged. A flat disc has
-          // a hard edge and a stand does not.
+          // Two averaged uniforms: a flat disc would have a hard edge.
           s = home.s + (rng() + rng() - 1) * home.r;
           v = home.v + (rng() + rng() - 1) * home.r;
           if (s < s0 || s > s1) continue;
-          // How far out of the stand this is, 0 at the middle to 1 at the rim.
-          // A stand that is as dense at its edge as at its heart has a wall
-          // round it; thinning outward is what gives it a fringe of its own,
-          // above and beyond the scrub the EDGE signal hangs there.
+          // Thin from the middle out, so the stand gets a fringe.
           edgeness = Math.min(1, Math.hypot(s - home.s, v - home.v) / home.r);
           if (rng() < Math.pow(edgeness, TREES.clusterFalloff)) continue;
         } else {
           s = lerp(s0, s1, rng());
           const side = rng() < 0.5 ? -1 : 1;
-          // sqrt biases toward the road: a uniform draw over a 165 m band puts
-          // almost nothing where the player can actually see it.
+          // sqrt biases toward the road, where trees are seen.
           v = side * lerp(CHUNK.plantClear, 165, Math.sqrt(rng()));
           edgeness = 1;
         }
@@ -1849,8 +1332,7 @@ export class ChunkManager {
         const wx = p.x + origin.x, wy = p.y + origin.y, wz = p.z + origin.z;
         const relief = wy - this.terrain.continent(wx, wz);
         vegetation(this.terrain, wx, wz, relief, slope, av, field);
-        // The stand mask gates the canopy and nothing else, so a clearing keeps
-        // its scrub and its grass.
+        // The stand mask gates canopy only; clearings keep their scrub and grass.
         if (rng() > field.canopy) continue;
 
         // Weighted pick across every committed species that will grow here,
@@ -1861,18 +1343,8 @@ export class ChunkManager {
           let w = suitability(FOLIAGE[name], field, relief, slope, av) *
             FOLIAGE[name].weight;
           if (home) {
-            /**
-             * A stand is one species, and everything else in it is at least the
-             * same KIND of tree.
-             *
-             * The old rule left an off-species member at 0.32 of its weight
-             * whatever it was, so roughly one tree in six of a bright birch
-             * copse was a dark conifer — the single most obviously wrong thing
-             * in the woods. A guild-mate is allowed in at `clusterMix`, because
-             * a birch wood does carry the odd aspen; a tree from another guild
-             * is not allowed in at all, because it does not carry a spruce.
-             * `dead` has no guild and is admitted everywhere.
-             */
+            // A stand is one species; guild-mates are admitted at `clusterMix`,
+            // other guilds never, and `dead` has no guild so appears anywhere.
             if (name === home.species) w *= 1 + TREES.clusterSpecies * 6;
             else if (!FOLIAGE[name].guild || FOLIAGE[name].guild === home.guild) {
               w *= TREES.clusterMix;
@@ -1895,17 +1367,8 @@ export class ChunkManager {
         const kind = FOLIAGE[name];
         const variant = this.trees.library.get(name)[chosen.get(name)];
 
-        /**
-         * Height in metres, and the two things that modulate it.
-         *
-         * VIGOUR is the age gradient: a stand is oldest and tallest at its
-         * heart and youngest at its rim, because that is the order it grew in.
-         * It costs one lerp and it is the difference between a copse and a
-         * batch of the same tree.
-         * SAPLINGS are a straight fraction of the draw taken down to a third
-         * height. Real woodland regenerates underneath itself, and without them
-         * every stand is one age class — which reads, correctly, as planted.
-         */
+        // Height in metres, modulated by VIGOUR (oldest at the stand's heart)
+        // and, for a few, sapling height so woodland regenerates underneath.
         let height = lerp(kind.height[0], kind.height[1], rng() * rng() + 0.15);
         height *= lerp(1, 1 - TREES.vigour, edgeness);
         if (rng() < TREES.saplings) height *= 0.30 + rng() * 0.25;
@@ -1921,15 +1384,8 @@ export class ChunkManager {
         const paired = placed < TREES.nearCap;
         plant(name, height, wobble, yaw, wx, wz, wy, av, paired);
 
-        /**
-         * Coppicing: a second and third stem from the same stool.
-         *
-         * Every reference image of a low-poly wood has them — two or three
-         * trunks leaving one point, at different heights. They are placed
-         * without the spacing check on purpose, because touching is the whole
-         * idea, and they are always the same species because a stool is one
-         * plant.
-         */
+        // Coppicing: a second/third stem from the same stool, always the same
+        // species, and placed without the spacing check — touching is the point.
         if (rng() < TREES.coppice) {
           const stems = 1 + (rng() < 0.4 ? 1 : 0);
           for (let c = 0; c < stems; c++) {
@@ -1954,14 +1410,8 @@ export class ChunkManager {
       const weights = new Array(kinds.length);
       let placed = 0;
 
-      /**
-       * Thicket seeds, the canopy's cluster mechanism at a smaller scale.
-       *
-       * The EDGE signal already puts scrub where woodland thins, but it puts it
-       * there EVENLY, and an even scatter of shrubs along a wood's fringe is a
-       * hedge. Real scrub goes in patches with bare ground between them, and
-       * four seeds a chunk is enough to break the line.
-       */
+      // The canopy's cluster mechanism at a smaller scale: the EDGE signal
+      // puts scrub down evenly, and an even scatter along a fringe is a hedge.
       const thickets = [];
       for (let i = 0; i < BUSHES.clusterCount; i++) {
         thickets.push({
@@ -2017,11 +1467,7 @@ export class ChunkManager {
         const height = lerp(kind.height[0], kind.height[1], rng());
         const wobble = 0.85 + rng() * 0.3;
 
-        // The canopy's rule exactly: a near-1.0 MODULATION, because the hue is
-        // in the geometry now (`env/bushes.js:shrubShader`, one palette per
-        // variant). This used to blend the species tint halfway toward the
-        // ground colour, which desaturated bramble, hazel, gorse and heather to
-        // the same pale olive.
+        // The canopy's rule: a near-1.0 modulation of the baked-in hue.
         this._groundColor(wx, wz, wy, 1, av, this._color);
         const gk = TREES.groundTint;
         const gv = TREES.instanceVary;
@@ -2039,19 +1485,14 @@ export class ChunkManager {
       }
     }
 
-    // ---- one InstancedMesh per (chunk, geometry) -------------------------
-
     for (const batch of batches.values()) {
       const mesh = new THREE.InstancedMesh(batch.geometry, batch.material, batch.matrices.length);
-      // The shadow cascade is 78 m at 2048 px — four centimetres a texel — so
-      // anything under about a third of a metre casts nothing worth the pass.
-      // Impostors are excluded for a different reason: a shadow cast by two
-      // crossed cards is two crossed cards.
+      // 78 m cascade at 2048 px is ~4 cm/texel, so nothing under ~0.3 m casts;
+      // impostor cards would cast as crossed cards.
       mesh.castShadow = batch.shadow;
       mesh.receiveShadow = true;
-      // The material displaces vertices three knows nothing about — the wind,
-      // and the distance fade — so its bounding sphere is a lie and culling
-      // against it pops whole batches in and out at the screen edge.
+      // The shader displaces vertices, so three's bounding sphere is a lie;
+      // culling against it pops batches at the screen edge.
       mesh.frustumCulled = false;
       batch.matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
       mesh.instanceMatrix.needsUpdate = true;
@@ -2061,30 +1502,15 @@ export class ChunkManager {
       out.push(mesh);
     }
 
-    // The near tier travels back as data on the chunk rather than as meshes.
     chunk.canopySpec = canopy.size ? [...canopy.values()] : null;
 
     return out;
   }
 
   /**
-   * Adds and removes the GROWN canopy as the car moves.
-   *
-   * A near tree exists out to `TREES.lodFade[1]` — ninety-five metres — and its
-   * chunk exists out to seven hundred and twenty. Building the grown mesh with
-   * the chunk therefore submitted nine chunks of tree geometry to draw one
-   * chunk's worth of it: measured, 520,000 triangles alive to render about
-   * 110,000 of them, with the rest scaled to nothing by the shader and still
-   * costing a vertex each. That is the same lifetime mistake the ground cover
-   * exists to avoid, and the fix is the same one — see `_updateGrass`.
-   *
-   * The far tier stays with the chunk, because it is a fifth of the triangles
-   * and because it is the tier that has to be there at five hundred metres.
-   *
-   * The recipe is computed ONCE, at chunk build, and cached on the chunk. Two
-   * tiers derived from two runs of a seeded scatter would agree until the first
-   * time anything about the sampling changed, and then a tree and its own far
-   * stand-in would be in different places.
+   * Adds and removes the GROWN canopy as the car moves. A near tree's lifetime
+   * is far shorter than its chunk's, so the grown mesh is built per position
+   * from the recipe cached once at chunk build.
    */
   _updateCanopy(carS, budget) {
     if (!this.trees) return;
@@ -2139,26 +1565,10 @@ export class ChunkManager {
   // ---------------------------------------------------------------- grass --
 
   /**
-   * Scatters one chunk's ground cover, ONTO the terrain sheet rather than
-   * beside it.
-   *
-   * The obvious implementation — draw a random (s, v) and ask
-   * `meshGroundPoint` where the ground is — was measured at **591 ms per
-   * chunk**. That is not a slow function; it is the right function called far
-   * too often. Each call re-derives the surface from scratch: four road frames
-   * and four analytic ground samples, every one of them an fBm evaluation, and
-   * at thirty thousand tufts a chunk that is a quarter of a million noise
-   * evaluations to answer a question the terrain builder answered ten
-   * milliseconds earlier and wrote into a buffer.
-   *
-   * So this reads that buffer. A cell of the terrain grid is chosen with
-   * probability proportional to its ground area, and the tuft is placed by
-   * interpolating the four corner vertices exactly as `meshGroundPoint` does —
-   * same quad, same diagonal, same winding — with the vertex COLOURS
-   * interpolated alongside. There are no noise evaluations left in the loop,
-   * the cost falls by two orders of magnitude, and the result is more correct
-   * than the original: grass is on the surface the renderer draws and painted
-   * the colour the renderer paints, by construction rather than by agreement.
+   * Scatters one chunk's ground cover onto the terrain sheet, interpolating
+   * the sheet's own corner vertices (same quad, diagonal and winding as the
+   * mesh) so each tuft is on the surface the renderer draws and painted its
+   * colour. No noise evaluations are left in the loop.
    *
    * @returns {THREE.InstancedMesh|null}
    */
@@ -2172,40 +1582,21 @@ export class ChunkManager {
     const nu = CHUNK.segmentsU;
     const rowLen = (s1 - s0) / nu;
 
-    // Seeded per chunk, so a chunk that streams out and back comes back with
-    // the same field. Offset from the prop seed, or grass would land in
-    // exactly the places the trees did.
+    // Seeded per chunk, salted off the prop seed so grass and trees differ.
     const rng = mulberry32(hashInt(index) ^ tier.salt);
 
     const inner = EDGE - 0.35;             // start just inside the paved edge
     const outer = tier.halfExtent;
     if (!(outer > inner)) return null;
 
-    /**
-     * Card size by lateral distance: full size out to `denseTo`, then growing
-     * to `farScale` at the edge of the band. See GRASS.farScale — bigger cards
-     * cover more ground for the same instance, and the count per unit area is
-     * divided by the square of this, so COVERAGE stays flat while the instance
-     * count does not follow the field out into the distance.
-     *
-     * It starts at `denseTo` rather than at the road, because near the car the
-     * cards are the thing being looked at and enlarging them there is just
-     * coarser grass.
-     */
+    // Card size grows past `denseTo`; the count scales with its square, so
+    // coverage stays flat while the instance count falls with distance.
     const span = Math.max(1e-3, outer - tier.denseTo);
     const boost = (av) =>
       lerp(1, tier.farScale, clamp((av - tier.denseTo) / span, 0, 1));
 
-    /**
-     * Coverage taper, over the outer quarter of the band only.
-     *
-     * This is the one thing hiding the sideways edge of the field, so it has to
-     * reach zero exactly at `halfExtent` — but it must not start any earlier
-     * than it needs to. Tapering across the whole of `denseTo..halfExtent`,
-     * which is what this did first, compounds with the size boost above and
-     * empties the middle distance: two independent falloffs over the same
-     * range, and the field ends up a ribbon along the tarmac again.
-     */
+    // Coverage taper over the outer quarter of the band only: it must reach
+    // zero exactly at halfExtent, and start no earlier than it needs to.
     const taperFrom = outer * 0.75;
     const thin = (av) => {
       if (av <= taperFrom) return 1;
@@ -2213,50 +1604,23 @@ export class ChunkManager {
       return Math.max(0, 1 - t * t);
     };
 
-    // ---- cell table ------------------------------------------------------
-    // One pass over the grid, collecting the cells that can hold grass and the
-    // area each contributes. `cum` is the cumulative weight, so a sample is a
-    // binary search rather than a scan.
-    //
-    // THE FIELD IS APPLIED HERE, once per cell, and that placement is the whole
-    // trick. Ground cover used to be uniform over every square metre the slope
-    // test allowed, which is what made the verge read as a mown lawn with
-    // objects standing on it — a clearing and a thicket carried exactly the
-    // same sward. `foliage.js:vegetation` returns the density that the canopy
-    // and the understorey were also derived from, so grass thins under a wood
-    // and goes bald on dry ground because the same number said so.
-    //
-    // Per CELL rather than per tuft, and that is not an approximation being
-    // apologised for: cells are 2.4 m wide beside the road, which is finer than
-    // the field's own smallest feature, and the alternative is a noise
-    // evaluation inside a thirty-thousand-iteration loop — the exact cost this
-    // whole function was rewritten to remove.
+    // One pass over the grid: cells weighted by plantable area, with the
+    // foliage field applied once per cell (not per tuft).
     const cells = [];
     const cum = [];
     const field = this._field;
     let total = 0;
     let bare = 0;
 
-    /**
-     * The field, MEMOISED ON A COARSE GRID.
-     *
-     * Asked per cell it costs 14 ms a chunk — five thousand cells, each an fBm
-     * evaluation or three — and took the grass scatter from 5 ms to 19, which
-     * is straight back into bug #51's territory. Asked per 10 m of road by 6 m
-     * of verge it costs a fifth of a millisecond and gives the same answer,
-     * because the field's own finest feature is `terrain.mask` at 0.0135 — a
-     * wavelength of about seventy metres. Sampling a 70 m signal every 2.4 m
-     * was never buying anything; it was paying for resolution the field does
-     * not have.
-     */
+    // Field memoised on a coarse grid: its finest feature is ~70 m, so per-cell
+    // sampling was paying for resolution the field does not have.
     const memo = this._coverMemo;
     memo.clear();
     const coverAt = (j, a, mid, width) => {
       const key = (j >> 2) * 512 + Math.round(mid / 6);
       const hit = memo.get(key);
       if (hit !== undefined) return hit;
-      // Origin-relative in the sheet, so the origin goes back on before the
-      // field is asked anything about the world — trap #19.
+      // Sheet data is origin-relative; put the origin back on (trap #19).
       const wx = positions[a * 3] + origin.x;
       const wy = positions[a * 3 + 1] + origin.y;
       const wz = positions[a * 3 + 2] + origin.z;
@@ -2274,7 +1638,6 @@ export class ChunkManager {
         const av1 = Math.abs(lat[i + 1]);
         const lo = Math.min(av0, av1);
         const hi = Math.max(av0, av1);
-        // Wholly on the carriageway, or wholly outside the band.
         if (hi <= inner || lo >= outer) continue;
 
         const a = j * nv + i;
@@ -2283,8 +1646,7 @@ export class ChunkManager {
         const d = c + 1;
         const width = Math.abs(lat[i + 1] - lat[i]);
         if (width < 1e-4) continue;         // duplicated road-marking column
-        // Clip the cell to the band so a wide far-field column is not counted
-        // as if all of it were plantable.
+        // Clip to the band so a wide far-field column is not wholly plantable.
         const usable = Math.min(hi, outer) - Math.max(lo, inner);
         if (usable <= 0) continue;
 
@@ -2308,23 +1670,15 @@ export class ChunkManager {
     if (samples <= 0) return null;
     const maxSlopeSq = tier.maxSlope * tier.maxSlope;
 
-    /**
-     * Instance data is written STRAIGHT into its final buffers.
-     *
-     * The prop scatter composes a Matrix4 and pushes a clone, which is fine for
-     * fifty trees and is thirty thousand object allocations here — measured at
-     * roughly half the scatter's total cost, all of it handed to the collector
-     * a frame later. A yaw-and-scale matrix is nine non-zero terms anyway, so
-     * writing them out is both cheaper and clearer than composing a quaternion
-     * to describe a rotation about one axis.
-     */
+    // Instance data written straight into its final buffers — a yaw-scale
+    // matrix is nine non-zero terms, and composing Matrix4s here is thirty
+    // thousand object allocations a chunk.
     const mats = new Float32Array(samples * 16);
     const colours = new Float32Array(samples * 3);
     const p = this._cA;
     let placed = 0;
 
     for (let n = 0; n < samples; n++) {
-      // Pick a cell by area.
       const target = rng() * total;
       let lo2 = 0, hi2 = cum.length - 1;
       while (lo2 < hi2) {
@@ -2342,13 +1696,11 @@ export class ChunkManager {
       const fu = rng();                     // along the road
       const fv = rng();                     // across it
 
-      // Reject anything landing on the carriageway side of the verge. The cell
-      // table already dropped the cells that are entirely road, so this only
-      // trims the one straddling column.
+      // Trims the one straddling column — the table already dropped full-road cells.
       const av = Math.abs(lat[col] + fv * (lat[col + 1] - lat[col]));
       if (av < inner || av > outer) continue;
 
-      // Same split as _buildTerrain's index order: a,b,c then b,d,c.
+      // Same quad split as _buildTerrain: a,b,c then b,d,c.
       let i0, i1, i2, w0, w1, w2;
       if (fu + fv <= 1) {
         i0 = a; i1 = b; i2 = c;
@@ -2393,12 +1745,7 @@ export class ChunkManager {
       mats[o16 + 12] = p.x; mats[o16 + 13] = p.y; mats[o16 + 14] = p.z;
       mats[o16 + 15] = 1;
 
-      // The ground's own colour, interpolated over the same triangle, lifted:
-      // the card texture is luminance only, so this carries the entire hue,
-      // and grass is brighter than the soil it stands in.
-      // Brighter than the soil for a meadow; DARKER for the woodland floor,
-      // which is in shade and reads wrong if it is the lightest thing under a
-      // canopy that is itself in shade.
+      // Lift: meadow brighter than soil; the woodland floor darker (in shade).
       const lift = lerp(tier.lift[0], tier.lift[1], rng());
       const o = placed * 3;
       colours[o] = (colors[i0 * 3] * w0 + colors[i1 * 3] * w1 + colors[i2 * 3] * w2) * lift;
@@ -2410,54 +1757,32 @@ export class ChunkManager {
     if (!placed) return null;
 
     const mesh = new THREE.InstancedMesh(this.grass.geometry, tier.material, placed);
-    // Swap in the buffers rather than copying into the ones the constructor
-    // made. `subarray` is a view, so the trim costs nothing.
+    // Swap buffers in; `subarray` is a view, so the trim costs nothing.
     mesh.instanceMatrix = new THREE.InstancedBufferAttribute(mats.subarray(0, placed * 16), 16);
     mesh.instanceColor = new THREE.InstancedBufferAttribute(colours.subarray(0, placed * 3), 3);
-    // Never casts. A 78 m shadow cascade cannot resolve a 60 cm blade, and the
-    // shadow pass would be another sixty thousand instances for nothing.
+    // A 78 m cascade cannot resolve a 60 cm blade, so no cast.
     mesh.castShadow = false;
     mesh.receiveShadow = true;
-    // The shader shrinks tufts with distance and leans them sideways, neither
-    // of which three knows about, so let it draw them and skip the cull.
+    // The shader shrinks and leans tufts; three knows nothing about either, so
+    // skip the cull.
     mesh.frustumCulled = false;
     mesh.userData.grass = true;
     return mesh;
   }
 
-  // ---------------------------------------------------------------- stone --
-
   /**
    * Scatters one chunk's stone.
    *
-   * The whole point of this module is TEXTURE, not scenery — see env/rocks.js.
-   * A cut face is a smooth green ramp until there is broken rock spilling out
-   * of it, and a verge is a mown edge until there is gravel on it. So the two
-   * placement rules that matter are both about slope and about the road:
-   *
-   *   - the band is the shoulder-to-grass strip (`ROCKS.band`, 9.8-16 m), because
-   *     that is where loose stone actually collects and because a 40 cm chip
-   *     any further out is a sub-pixel object with a draw call attached
-   *   - the STEEPER the ground, the more likely stone is, and the more of it is
-   *     scree rather than boulders. That single rule produces talus under a
-   *     cutting, chips along a bank and the occasional stone in a flat field,
-   *     without any of those being a separate case
-   *
-   * Like the grass, it is placed by interpolating the terrain sheet's own
-   * vertices — same quad, same diagonal, same winding — so a rock is on the
-   * surface the renderer draws rather than on the analytic surface underneath
-   * it. Unlike the grass it does NOT take the ground's colour: stone is
-   * mineral, and the verge's green on a chip reads as algae. `ROCKS.palette`.
-   *
-   * One InstancedMesh per variant, so the whole chunk's stone is a handful of
-   * draw calls. Returns the meshes, or null.
+   * Stone is placed by interpolating the terrain sheet's vertices like the
+   * grass (on the drawn surface), on the shoulder-to-grass band where loose
+   * stone collects, denser the steeper the ground. It takes NO ground colour:
+   * stone is mineral, and the verge's green on a chip reads as algae.
    */
   _buildRocks(index, s0, s1, origin) {
     const chunk = this.chunks.get(index);
     if (!this.rocks || !chunk || !chunk.sheet) return null;
 
-    // `colors` is deliberately NOT destructured here: stone takes its hue from
-    // `ROCKS.palette`, not from the sheet. See below.
+    // `colors` deliberately not destructured: stone's hue is ROCKS.palette.
     const { positions } = chunk.sheet;
     const lat = this.lateral;
     const nv = lat.length;
@@ -2469,22 +1794,16 @@ export class ChunkManager {
     const outer = ROCKS.band[1];
     if (!(outer > inner)) return null;
 
-    // Per-variant instance lists. Flat arrays of [m16..., r, g, b] would be
-    // tidier; separate arrays keep the InstancedMesh construction below trivial.
     const buckets = new Map();
     const names = Object.keys(this.rocks.classes);
-    // Where this chunk's window into each class's variant library starts. Drawn
-    // once, from the chunk's own seed, so a chunk that streams out and back
-    // comes back with the same stone in it. See ROCKS.variantsPerChunk.
+    // Seeded window into each class's variants, so a reload comes back the same.
     const offsets = {};
     for (const k of names) offsets[k] = Math.floor(rng() * this.rocks.classes[k].variants.length);
     const p = this._cA;
 
     for (let n = 0; n < ROCKS.samples; n++) {
-      // Uniform over the grid rather than over area. The far columns are wider,
-      // so this biases toward the near ones — which is exactly right here: the
-      // verge is where the stone belongs and the far band is where it stops
-      // being resolvable.
+      // Uniform over the grid, not area: biases toward the near columns, which
+      // is where the verge's stone belongs.
       const j = Math.floor(rng() * nu);
       const i = Math.floor(rng() * (nv - 1));
       const width = Math.abs(lat[i + 1] - lat[i]);
@@ -2500,7 +1819,7 @@ export class ChunkManager {
       const c = a + nv;
       const d = c + 1;
 
-      // Same split as _buildTerrain's index order: a,b,c then b,d,c.
+      // Same quad split as _buildTerrain: a,b,c then b,d,c.
       let i0, i1, i2, w0, w1, w2;
       if (fu + fv <= 1) {
         i0 = a; i1 = b; i2 = c;
@@ -2510,21 +1829,18 @@ export class ChunkManager {
         w1 = fu + fv - 1; w2 = 1 - fv; w0 = 1 - w1 - w2;
       }
 
-      // Slope from the cell's own corners — the gradient of the very triangle
-      // the rock will stand on, for four subtractions.
       const ya = positions[a * 3 + 1];
       const gv = (positions[b * 3 + 1] - ya) / width;
       const gu = (positions[c * 3 + 1] - ya) / rowLen;
       const slope = Math.sqrt(gu * gu + gv * gv);
 
-      // The one rule: stone clusters densely along the road shoulder-to-grass verge
-      // and on cuttings/banks.
+      // Steeper ground is stone and scree; the shoulder-to-grass verge fills in.
       const scree = smoothstep(ROCKS.screeSlope * 0.55, ROCKS.screeSlope, slope);
       const vergeWeight = 1 - smoothstep(inner, inner + 5.5, av);
       const chance = lerp(0.40, 0.96, Math.max(scree, vergeWeight * 0.85));
       if (rng() > chance) continue;
 
-      // Which class. Scree dominates on a face, boulders only on open ground.
+      // Scree dominates on a face; the mix table decides on open ground.
       const mix = scree > 0.5 ? ROCKS.screeMix : ROCKS.mix;
       let roll = rng();
       let name = names[0];
@@ -2533,14 +1849,8 @@ export class ChunkManager {
         if (roll <= 0) { name = k; break; }
       }
       const cls = this.rocks.classes[name];
-      // A chunk uses a SUBSET of the library, not all of it.
-      //
-      // Every distinct geometry in a chunk is another InstancedMesh and another
-      // draw call, and with fourteen variants across three classes a chunk was
-      // touching eleven of them for a hundred-odd rocks — a draw call per nine
-      // instances, which is the cost model of not instancing at all. Two
-      // variants per class per chunk caps it at six while the whole library
-      // still appears across the world, because which two is seeded per chunk.
+      // A chunk uses a subset: two variants per class caps draw calls at six,
+      // while the whole library still appears because which two is seeded.
       const pick = Math.floor(rng() * ROCKS.variantsPerChunk);
       const variant = (offsets[name] + pick) % cls.variants.length;
 
@@ -2551,7 +1861,7 @@ export class ChunkManager {
       );
 
       const size = lerp(cls.spec.size[0], cls.spec.size[1], rng() * rng());
-      // Firmly bedded into the ground (38% to 58% of height buried) so no rock floats or perches on a corner
+      // Firmly bedded (38-58% buried) so nothing floats or perches on a corner.
       p.y -= size * lerp(0.38, 0.58, rng());
 
       const key = name + ':' + variant;
@@ -2566,21 +1876,19 @@ export class ChunkManager {
         buckets.set(key, bucket);
       }
 
-      // Orient rock along the ground slope normal so its bottom rests naturally against the hill
+      // Orient along the slope normal so the bottom rests against the hill.
       const slopeLen = Math.hypot(gu, gv, 1.0) || 1.0;
       const ny = 1.0 / slopeLen, nx = -gu / slopeLen, nz = -gv / slopeLen;
       const yaw = rng() * Math.PI * 2;
       const cy = Math.cos(yaw), sy = Math.sin(yaw);
 
-      // Orthonormal basis tilted with terrain slope
+      // Orthonormal basis tilted with the terrain slope; right = up x fwd.
       const upX = nx, upY = ny, upZ = nz;
-      // Project horizontal direction onto plane perpendicular to normal
       let fwdX = cy - (cy * upX + sy * upZ) * upX;
       let fwdY = -(cy * upX + sy * upZ) * upY;
       let fwdZ = sy - (cy * upX + sy * upZ) * upZ;
       const fwdLen = Math.hypot(fwdX, fwdY, fwdZ) || 1.0;
       fwdX /= fwdLen; fwdY /= fwdLen; fwdZ /= fwdLen;
-      // right = up x fwd
       const rX = upY * fwdZ - upZ * fwdY;
       const rY = upZ * fwdX - upX * fwdZ;
       const rZ = upX * fwdY - upY * fwdX;
@@ -2592,14 +1900,8 @@ export class ChunkManager {
         p.x, p.y, p.z, 1
       );
 
-      // A mineral hue, from `ROCKS.palette`, NOT the ground's colour.
-      //
-      // This is the one scatter in the project that does not take its instance
-      // colour from the terrain vertex under it, and the exception is stated in
-      // `config.js` and in `src/env/README.md`: a rock does not photosynthesise,
-      // and sampling the verge gave every chip on the shoulder a mossy green
-      // that read as algae. The table lived inline here until it was the only
-      // colour decision in the project not in `config.js`.
+      // A mineral hue from ROCKS.palette, not the ground's colour: a rock does not
+      // photosynthesise, and the verge's green reads as algae.
       const pal = ROCKS.palette[Math.floor(rng() * ROCKS.palette.length)];
       const bright = lerp(ROCKS.shade[0], ROCKS.shade[1], rng());
       bucket.cols.push(pal[0] * bright, pal[1] * bright, pal[2] * bright);
@@ -2612,9 +1914,7 @@ export class ChunkManager {
       const mesh = new THREE.InstancedMesh(bucket.geometry, this.rocks.material, count);
       mesh.instanceMatrix = new THREE.InstancedBufferAttribute(new Float32Array(bucket.mats), 16);
       mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(bucket.cols), 3);
-      // Scree never casts. The sun's shadow cascade covers 78 m at 2048 px,
-      // which is 4 cm a texel — a 15 cm chip is three texels, so its shadow is
-      // noise, and there are more chips than everything else put together.
+      // Scree never casts: a 15 cm chip is ~3 texels of shadow noise.
       mesh.castShadow = bucket.shadow;
       mesh.receiveShadow = true;
       mesh.userData.rock = true;
@@ -2623,7 +1923,6 @@ export class ChunkManager {
     return meshes;
   }
 
-  /** Adds and removes stone as the car moves. Mirrors `_updateGrass`. */
   _updateRocks(carS, budget) {
     if (!this.rocks) return;
     const center = Math.floor(carS / CHUNK.length);
@@ -2669,19 +1968,9 @@ export class ChunkManager {
     }
   }
 
-  /**
-   * Adds and removes ground cover as the car moves.
-   *
-   * Grass has a shorter life than the chunk that holds it: it is invisible long
-   * before a chunk streams out, so building it for all nine would be six chunks
-   * of geometry nobody can resolve. This runs every frame and is a pure
-   * function of which chunk the car is in — the same rule bug #27 had to learn
-   * for the tunnel marking it used to carry, for the same reason. Nothing here
-   * depends on how the car arrived.
-   *
-   * The tiers share one budget and the NEAR one is served first, because it is
-   * the one whose absence is visible. A far-tier chunk arriving a few frames
-   * late is a patch of middle distance that fills in behind the fog.
+  /** Adds and removes ground cover as the car moves. Grass lives shorter than
+   * its chunk, so it tracks the car; the near tier is served first because its
+   * absence is the visible one, and the far tier fills in behind the fog.
    */
   _updateGrass(carS, budget) {
     if (!this.grass) return;
@@ -2706,9 +1995,7 @@ export class ChunkManager {
         }
       }
 
-      // Nearest first, and at most `budget` a frame: scattering one chunk is
-      // thousands of surface samples and it must not land in one frame beside a
-      // terrain build.
+      // Nearest first, at most `budget` a frame.
       tier.queue.sort((a, b) => Math.abs(a - center) - Math.abs(b - center));
       while (tier.queue.length && budget > 0) {
         const i = tier.queue.shift();
@@ -2724,8 +2011,7 @@ export class ChunkManager {
           chunk.objects.push(mesh);
           chunk[tier.key] = mesh;
         } else {
-          // Nothing to place here. Mark it done so the queue does not retry it
-          // on every frame for the rest of the chunk's life.
+          // Mark done so the queue does not retry this chunk every frame.
           chunk[tier.key] = null;
           chunk[emptyKey] = true;
         }
@@ -2735,13 +2021,9 @@ export class ChunkManager {
   }
 
   /**
-   * Instance transform from a WORLD position, made chunk-local.
-   *
-   * The distinction matters and has already cost a bug: the terrain sheet's
-   * vertex buffer is stored origin-relative, so handing one of its points to
-   * this function subtracts the origin a second time and puts the instance a
-   * chunk-length away from where it belongs. `_setLocalMatrix` is for points
-   * that are already local.
+   * Instance transform from a WORLD position, made chunk-local. The sheet's
+   * buffers are origin-relative, so `_setMatrix` on one of their points would
+   * subtract the origin twice — `_setLocalMatrix` is for already-local points.
    */
   _setMatrix(worldPos, origin, sx, sy, sz, yaw) {
     this._pos.set(worldPos.x - origin.x, worldPos.y - origin.y, worldPos.z - origin.z);

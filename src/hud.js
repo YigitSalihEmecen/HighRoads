@@ -1,10 +1,8 @@
 /**
- * hud.js — instrument cluster, trip computer and transient toasts.
+ * hud.js — instrument cluster, trip computer and toasts.
  *
- * The DOM lives in index.html; this module only pushes values into it. Text
- * nodes are written only when the displayed value actually changes, because
- * assigning textContent every frame forces a layout pass and shows up in the
- * profile long before the renderer does.
+ * The DOM lives in index.html; this module pushes values into it. Text
+ * updates only when the displayed value changes.
  */
 
 import { clamp } from './util.js';
@@ -34,8 +32,7 @@ export class HUD {
     this._lastScore = -1;
     this._lastMult = -1;
 
-    // Measure the arc rather than hard-coding it — the path is authored in the
-    // stylesheet's coordinate space and may be edited independently.
+    // Measure the arc; the path is authored in the stylesheet and may change.
     this.arcLen = this.fillEl.getTotalLength();
     this.fillEl.style.strokeDasharray = `${this.arcLen} ${this.arcLen}`;
     this.fillEl.style.strokeDashoffset = String(this.arcLen);
@@ -61,19 +58,11 @@ export class HUD {
     this.root.classList.remove('live');
   }
 
-  /** Traffic mode gets a score readout; Zen mode is just the instruments. */
   setMode(mode) {
     this.root.classList.toggle('traffic', mode === 'traffic');
   }
 
-  /**
-   * Score, multiplier and the chain timer.
-   *
-   * The chain bar is a CSS transform rather than a width so it never triggers
-   * layout — this runs every frame, and the whole reason the readouts below
-   * only write text when a value changes is that assigning to a live DOM node
-   * shows up in a profile long before the renderer does.
-   */
+  /** The chain bar is a CSS transform so it never triggers layout. */
   updateRun(dt, run) {
     if (!this.scoreEl) return;
 
@@ -114,12 +103,8 @@ export class HUD {
     this._toastTimer = seconds;
   }
 
-  /**
-   * @param {number} dt
-   * @param {object} s { speedKmh, rpm, maxRpm, gear, tripMeters, altitude, chunks }
-   */
   update(dt, s) {
-    // --- fps, averaged over half-second windows ---------------------------
+    // --- fps, half-second windows ---------------------------
     this._fpsFrames++;
     this._fpsTime += dt;
     if (this._fpsTime >= 0.5) {

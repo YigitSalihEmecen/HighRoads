@@ -1,32 +1,8 @@
 /**
- * Does the car move smoothly on screen, at any frame rate?
+ * smooth.mjs — measures on-screen smoothness at any frame rate.
  *
- * This is the only probe that measures what the PLAYER sees rather than what
- * the simulation does, and it exists because the two came apart badly. The
- * world-space motion was already perfect — render interpolation put the car
- * exactly `speed * dt` further along every single frame, at every frame rate —
- * and the car still visibly sprang backwards at speed, worse the lower the
- * frame rate went. Neither `drive.mjs` nor `handling.mjs` can see that: both
- * ask where the car IS, and the fault was entirely in where it was DRAWN
- * relative to the camera.
- *
- * So the metric here is the car's position in CAMERA SPACE, frame to frame.
- * Under constant motion a chase camera should hold the car at a constant
- * distance; anything else is the springing.
- *
- * Two faults were found this way, and both are re-introducible:
- *
- *   1. Exponential damping toward a MOVING goal settles at a lag containing
- *      `dt` (see util.dampTrack), so the camera sat 3.98 m behind at 60 fps and
- *      3.51 m at 30 fps — and moved between them whenever frame time wobbled.
- *   2. `WORLD.maxSubSteps * fixedStep` was 41.7 ms while `main.js` clamped the
- *      frame to 50 ms. Every frame between those two ran the physics short and
- *      discarded the rest, while the camera and everything else were handed the
- *      full `dt`. A 90 ms hitch advanced the world 46% of the frame.
- *
- * Frame times are SCRIPTED, including jitter and spikes, because a steady frame
- * rate hides both faults completely — every steady rate measured clean while
- * the game was visibly broken.
+ * The simulation and the render move separately; interpolation reconciles
+ * them. Compares commanded position with shown position.
  */
 globalThis.document = {
   createElement: (t) => ({

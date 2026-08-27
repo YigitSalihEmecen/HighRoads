@@ -1,16 +1,7 @@
 /**
- * What does the procedurally generated scenery cost, and does it land where it
- * is supposed to?
+ * env.mjs — measures the scenery outside the near grass tier.
  *
- * `grass.mjs` already answers those questions for the near tier of ground
- * cover. This one covers everything else in `src/env/`: the far grass tier, the
- * stone scatter, and the geometry the rock generator builds — the three things
- * that are new enough to have no measurement at all otherwise.
- *
- * The interesting number in all of it is the TRIANGLE BUDGET. The tree scatter
- * was switched off for spending 1,030,000 triangles on 468 instances, so
- * anything added here has to be able to say what it costs next to the 109,000
- * the whole terrain sheet uses.
+ * Covers the far grass tier, trees, bushes, rocks and ground detail.
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
@@ -56,14 +47,14 @@ check(rockVariants > 0, 'rock variants built',
   `${rockVariants} across ${Object.keys(rocks.classes).length} classes`);
 check(rockTris / rockVariants < 130, 'triangles per rock',
   `${(rockTris / rockVariants).toFixed(0)} mean, ${rockTris} for the whole library`);
-// A rock whose lowest vertex is not on y = 0 either floats or is buried, and
-// the scatter has no way to know which.
-check(worstFloat < 1e-5, 'every rock stands on y = 0',
-  `worst offset ${(worstFloat * 1000).toFixed(3)} mm`);
-// If the horizontal half-extent is not 0.5, "a 40 cm rock" is not 40 cm.
-check(worstSpan < 1e-5, 'every rock normalised to unit width',
-  `worst error ${(worstSpan * 1000).toFixed(3)} mm`);
-rocks.dispose();
+// Rocks are unit-normalised to stand on y = 0, or the scatter cannot know
+  // whether they float or are buried.
+  check(worstFloat < 1e-5, 'every rock stands on y = 0',
+    `worst offset ${(worstFloat * 1000).toFixed(3)} mm`);
+  // If the half-extent is not 0.5, "a 40 cm rock" is not 40 cm.
+  check(worstSpan < 1e-5, 'every rock normalised to unit width',
+    `worst error ${(worstSpan * 1000).toFixed(3)} mm`);
+  rocks.dispose();
 
 /* -------------------------------------------------------------- scatter -- */
 
@@ -121,8 +112,7 @@ if (!tier) {
     'card height inside the tier scale',
     `tallest ${tallest.toFixed(2)} m at x${GRASS.far.heightScale} height, ` +
     `x${GRASS.far.widthScale} width`);
-  // The two tiers have to hand over: the near one must still be full size where
-  // the far one starts growing, or there is a band with nothing in it.
+  // The tiers must overlap: the near one still full size where the far one grows.
   check(GRASS.far.fadeIn[0] < GRASS.fadeStart && GRASS.far.fadeIn[1] > GRASS.fadeStart,
     'the tiers overlap rather than abut',
     `far grows in ${GRASS.far.fadeIn[0]}..${GRASS.far.fadeIn[1]} m, near fades ` +
@@ -170,25 +160,16 @@ check(rCost / rChunks < 8, 'stone scatter cost', `${(rCost / rChunks).toFixed(1)
 
 /* ------------------------------------------------------------ tyre effects -- */
 
-/**
- * Smoke and rubber, driven directly rather than through a browser.
- *
- * `fx.js` has no dependency on the renderer beyond building meshes, so the whole
- * emission path can be exercised against a stub vehicle. That matters more than
- * it sounds: the effects are keyed to `wheel.slipAmount`, and what that number
- * actually REACHES is a property of the tyre model, not of anything visible. A
- * threshold set above it produces an effect that silently never happens, which
- * is exactly what the first tuning did — and a screenshot cannot tell you that,
- * because a screenshot of no smoke looks like a screenshot taken at the wrong
- * moment.
- */
-const { TyreFX } = await import('../src/fx.js');
+// Smoke and rubber, driven directly rather than through a browser — the
+  // effects key on `wheel.slipAmount`, which only the tyre model decides, and a
+  // threshold set above it silently never fires.
+  const { TyreFX } = await import('../src/fx.js');
 const { FX } = await import('../src/config.js');
 
 const fxScene = new THREE.Scene();
 const fx = new TyreFX(fxScene);
 
-/** A car doing a standing burnout: rears well past their peak, barely moving. */
+/** A car doing a standing burnout: rears well past peak slip, barely moving. */
 const stub = {
   forwardSpeed: 1.2,
   fwd: new THREE.Vector3(0, 0, 1),
@@ -204,7 +185,6 @@ const stub = {
   })),
 };
 
-/** Runs the effect for `seconds`, carrying the wheels forward as it goes. */
 function run(seconds) {
   const steps = Math.round(seconds * 60);
   for (let f = 0; f < steps; f++) {
@@ -226,8 +206,8 @@ check(livePuffs <= FX.smoke.max, 'the puff pool is a pool',
   `${livePuffs} of ${FX.smoke.max}, cursor wraps`);
 check(liveMarks > 0, 'a burnout leaves rubber',
   `${liveMarks} quads over ${(stub.forwardSpeed * 2).toFixed(1)} m of travel`);
-// The marks are laid between the previous contact point and this one, so two
-// wheels 1.6 m apart must produce two separate lines and not one wide one.
+// The marks are laid between consecutive contact points, so two wheels 1.6 m
+// apart must produce two separate lines and not one wide one.
 check(liveMarks >= 2, 'both driven wheels mark separately', `${liveMarks} quads`);
 
 // Nothing at all when the tyres are gripping — which is most of the time.
@@ -238,7 +218,7 @@ const quietPuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.
 check(quietPuffs === 0, 'a gripping tyre makes nothing', `${quietPuffs} puffs`);
 
 // And nothing at speed: the cloud would be a hundred metres behind by the time
-// it existed. See FX.smoke.speedFade.
+// it existed — see FX.smoke.speedFade.
 fx.reset();
 for (const w of stub.wheels) w.slipAmount = 0.6;
 stub.forwardSpeed = 50;

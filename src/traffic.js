@@ -1,42 +1,9 @@
 /**
- * traffic.js — other cars on the road.
+ * traffic.js — the other cars on the road.
  *
- * TRAFFIC IS NOT SIMULATED, AND THAT IS THE DESIGN.
- *
- * Every previous version of this file tried to make traffic real rigid bodies
- * so collisions would "just work", and every one of them failed in the same
- * way: a body that is driven by writing its velocity has effectively infinite
- * mass, so the solver's contact impulse is never consumed and compounds frame
- * over frame. The measured results were a struck car reaching 6920 km/h, the
- * player ejected 35 m vertically, wrecks leaving at several hundred metres per
- * second, and — after each was patched — cars that simply stopped and sat
- * there. Releasing control just before contact bounded the damage without
- * curing it, because the underlying object still had two masters.
- *
- * So traffic has ONE master. There are no traffic rigid bodies and no traffic
- * colliders anywhere in the world. A car is a position on the spline, `(s, v)`,
- * a speed, and a mesh. Nothing the solver does can touch it, which means:
- *
- *   - it cannot be launched, cannot gain energy, cannot come to rest in the
- *     middle of the road;
- *   - the player's suspension rays cannot find "ground" on its roof (the bug
- *     that arrived twice by different routes);
- *   - eight cars cost eight matrices per frame instead of eight rigid bodies.
- *
- * Hitting one still has to feel like hitting something, and it does — but the
- * exchange is computed directly. The overlap test is two boxes in road space;
- * the response is the closed-form impulse for two masses meeting at a closing
- * speed, applied to the player's body and nowhere else. The other car takes
- * its half as a scripted spin-out. Because the struck car is scripted it can be
- * moved out of the way immediately, so no penetration ever persists and there
- * is nothing for a solver to recover from.
- *
- * What IS simulated is the behaviour, because that is the part you feel: a
- * car-following model so traffic bunches and releases, awareness of the player
- * coming up behind, and lane changes to overtake or to pull aside when flashed.
- *
- * Lanes are numbered outward from the centreline. Positive offsets run with the
- * player, negative ones come the other way.
+ * Traffic is not a rigid-body simulation. Each car follows a kinematic path.
+ * The collision response is scripted, so a struck car cannot compound
+ * impulses against the player body.
  */
 
 import * as THREE from 'three';
@@ -62,9 +29,8 @@ export class Traffic {
 
     this.cars = [];
     this.lanes = laneOffsets();
-    // Seeded from the world, not from a constant: with a fixed seed every seed
-    // string produced the same nine cars in the same order, which a soak test
-    // across three worlds made obvious by returning identical numbers.
+    // Seeded from the world, not a constant: a fixed seed gave identical cars
+    // across worlds.
     this.rng = mulberry32(hashInt(0x51ed) ^ hashString(path.seed || ''));
     this._nextId = 0;
 
@@ -73,10 +39,8 @@ export class Traffic {
     /** Rises on every genuine collision. Traffic mode ends a run on a change. */
     this.impacts = 0;
     /**
-     * Near misses completed this frame, drained by the scorer. A pass is only
-     * emitted once the car is properly astern, so the gap recorded is the
-     * closest the two ever actually got rather than wherever they happened to
-     * be on the frame the test ran.
+     * Near misses completed this frame, drained by the scorer. Emitted only
+     * once the car is astern, so the gap is the closest they ever got.
      */
     this.passes = [];
     /** Whether cars are wanted at all — Zen mode turns them off. */
@@ -91,9 +55,7 @@ export class Traffic {
     this._n = new THREE.Vector3();
     this._vel = new THREE.Vector3();
     this._spunQ = new THREE.Quaternion();
-    // frameAt() allocates a frame when not given one, and this file calls it
-    // three times per car per frame. Reused scratch keeps the update pass free
-    // of garbage, which is the same rule the rest of the hot path follows.
+    // Reused scratch for frameAt(); it allocates when not given a frame.
     this._fA = makeFrame();
     this._fB = makeFrame();
     this._fC = makeFrame();
@@ -103,7 +65,7 @@ export class Traffic {
 
   /**
    * Clones a roster model. Geometries and materials are shared with the
-   * original, so a clone costs a few matrices rather than a copy of the car.
+   * original, so a clone costs a few matrices.
    */
   _instance(spec) {
     const src = this.models.get(spec.id);
@@ -198,8 +160,8 @@ export class Traffic {
         this._advanceSpun(car, dt);
       } else {
         const target = this._targetSpeed(car, sorted, player, dt);
-        // Asymmetric: lift off gently, brake hard. Traffic that decelerates as
-        // slowly as it accelerates drives straight through the car in front.
+        // Asymmetric: lift off gently, brake hard. Slow deceleration drives
+        // through the car in front.
         const rate = target < car.speed ? TRAFFIC.brakeRate : TRAFFIC.accelRate;
         car.speed = damp(car.speed, target, rate, dt);
         car.s += car.speed * car.dir * dt;
@@ -215,14 +177,10 @@ export class Traffic {
   }
 
   /**
-   * Watches every car through its closest approach and reports it once it is
-   * astern.
+   * Watches every car through its closest approach and reports it once astern.
    *
-   * Sampling the gap on whatever frame the cars happen to be level would make
-   * the reward depend on frame rate, and at 250 km/h against oncoming traffic
-   * two cars can go from ten metres apart to ten metres past in a single frame.
-   * Keeping a running minimum over the whole encounter and emitting at the end
-   * measures the encounter rather than a moment of it.
+   * A running minimum over the whole encounter avoids frame-rate dependent
+   * sampling.
    */
   _trackPasses(player) {
     const halfWid = player.vehicle.V.chassis.hx;
@@ -248,11 +206,8 @@ export class Traffic {
   /**
    * Keeps a band of road around the player populated.
    *
-   * Cars appear beyond `spawnMin`, which is set past the point where fog and
-   * depth of field have taken them: the previous window started 40 m ahead, so
-   * cars materialised in plain sight in the middle of the carriageway. Nothing
-   * spawns behind — same-direction traffic is slower than the player by
-   * construction, so anything behind would never be seen again.
+   * Cars appear beyond `spawnMin`, past the fog. Nothing spawns behind: same-
+   * direction traffic is slower than the player.
    */
   _maintainPopulation(player) {
     for (const car of this.cars.slice()) {
@@ -261,10 +216,8 @@ export class Traffic {
       else if (car.spun < 0) this._despawn(car);
     }
 
-    // Enough attempts to actually fill the band. The spawn window is 160 m and
-    // a candidate is rejected if it lands near an existing car IN THE SAME LANE
-    // — cars abreast in different lanes are traffic, not a clash, and treating
-    // them as one was rejecting most candidates and leaving the road half empty.
+    // Reject a candidate only if it lands near a car in the same lane; cars
+    // abreast in different lanes are traffic, not a clash.
     let guard = 0;
     while (this.cars.length < TRAFFIC.count && guard++ < 40) {
       const dir = this.rng() < TRAFFIC.oncomingShare ? -1 : 1;
@@ -288,11 +241,8 @@ export class Traffic {
     let target = car.cruise;
 
     // ---- car in front, same direction and lane --------------------------
-    //
-    // Scan every car rather than stepping through the sorted list. Stepping
-    // breaks as soon as it meets a car in another lane or direction, and with
-    // four lanes interleaved that is almost immediately — so most cars saw an
-    // infinite gap and drove straight through the one in front.
+    // Scan every car, not the sorted list: stepping breaks at the first car in
+    // another lane, leaving an infinite gap.
     let gap = Infinity;
     let leadSpeed = 0;
     for (const other of sorted) {
@@ -307,8 +257,7 @@ export class Traffic {
       const t = clamp((gap - TRAFFIC.minGap) / Math.max(1, desired - TRAFFIC.minGap), 0, 1);
       target = Math.min(target, lerp(leadSpeed * 0.85, car.cruise, t));
     }
-    // Hard floor on separation. The headway model alone converges too slowly
-    // once two cars are already inside the minimum gap.
+    // Hard floor on separation; the headway model alone converges too slowly.
     if (gap < TRAFFIC.minGap) {
       target = Math.min(target, leadSpeed * clamp(gap / TRAFFIC.minGap, 0, 1) * 0.8);
     }
@@ -331,9 +280,7 @@ export class Traffic {
         const urgency = 1 - behind / TRAFFIC.noticeRange;
 
         if (player.flashing) {
-          // Being flashed: pull over, but only into a lane that is actually
-          // free. An unchecked change drops the car on top of whoever is
-          // already there.
+          // Being flashed: pull over, but only into a lane that is free.
           car.yielding = 1;
           if (car.lane === 0 && car.changeCooldown <= 0 && this._laneClear(car, 1)) {
             car.lane = 1;
@@ -369,14 +316,9 @@ export class Traffic {
   }
 
   /**
-   * Last line of defence against two cars occupying the same metre of road.
-   *
-   * The follow model converges, but it is a controller: give it a step input —
-   * a spawn, a spin-out braking hard in front — and it needs time it may not
-   * have. Because nothing here is simulated, separation can simply be asserted:
-   * push the trailing car back along the road until the gap is legal. It costs
-   * one pass over an already-sorted list and it makes overlap impossible rather
-   * than unlikely.
+   * Last line of defence against overlap. Because nothing here is simulated,
+   * separation can be asserted: push the trailing car back until the gap is
+   * legal.
    */
   _separate(sorted) {
     for (let i = 0; i < sorted.length; i++) {
@@ -400,20 +342,16 @@ export class Traffic {
   /* -------------------------------------------------------------- impacts -- */
 
   /**
-   * Player↔traffic contact, resolved in closed form.
+   * Player-traffic contact, resolved in closed form.
    *
-   * Overlap is two boxes in road space — cheap, and stable in a way a world
-   * space test on a curved road is not. The response is the textbook impulse
-   * for two masses meeting at a closing speed along the contact normal:
+   * Overlap is two boxes in road space. The response is the impulse for two
+   * masses meeting at a closing speed along the contact normal:
    *
-   *     j = -(1 + e) · (v_rel · n) · m1·m2/(m1 + m2)
+   *     j = -(1 + e) * (v_rel . n) * m1*m2/(m1 + m2)
    *
-   * applied to the player and to nothing else. The struck car takes its share
-   * as a spin-out, and because that is scripted it leaves immediately, so the
-   * two never remain interpenetrated and no correction impulse is ever needed.
-   * The player's Δv is capped: the cap is not a fudge, it is the difference
-   * between a shunt and being deleted from the world by a glancing blow at
-   * 300 km/h.
+   * applied to the player and to nothing else. The struck car takes a scripted
+   * spin-out and leaves immediately, so no correction impulse is ever needed.
+   * The player's delta-v is capped.
    */
   _resolvePlayer(dt, player) {
     const v = player.vehicle;
@@ -431,8 +369,7 @@ export class Traffic {
       const overV = car.halfWid + hitWid - Math.abs(dv);
       if (overV <= 0) continue;
 
-      // Resolve along the shallower axis — the same rule an AABB solver uses,
-      // and it is what tells a rear-end shunt from a side-swipe.
+      // Resolve along the shallower axis, as an AABB solver does.
       const frame = this.path.frameAt(car.s, this._fC);
       const sideways = overV < overS;
       const n = this._n;
@@ -445,8 +382,7 @@ export class Traffic {
       if (n.lengthSq() < 1e-8) continue;
       n.normalize();
 
-      // Closing speed along the normal. The traffic car's velocity is exactly
-      // what we told it to do, so there is no state to reconcile.
+      // Closing speed along the normal; the traffic car's velocity is scripted.
       const lv = v.body.linvel();
       this._vel.copy(frame.tan).multiplyScalar(car.speed * car.dir);
       const rel =
@@ -459,8 +395,7 @@ export class Traffic {
       j = Math.min(j, TRAFFIC.maxImpactDv * mP);
 
       v.body.applyImpulse({ x: n.x * j, y: 0, z: n.z * j }, true);
-      // A shove that is purely linear reads as a bumper-car nudge. A little
-      // yaw, signed by which end took the hit, is what makes it a collision.
+      // A little yaw, signed by the end hit, makes the shove read as a crash.
       const yaw = sideways ? 0 : (dv > 0 ? -1 : 1) * j * 0.05;
       if (yaw) v.body.applyTorqueImpulse({ x: 0, y: yaw, z: 0 }, true);
 
@@ -482,10 +417,8 @@ export class Traffic {
   }
 
   /**
-   * A spin-out, animated rather than simulated. The car slews toward the verge,
-   * rotating and slowing, then is taken off the board. It never stops in a live
-   * lane, never tumbles, and never needs a velocity clamp — none of which could
-   * be said of it when the solver owned it.
+   * A spin-out, animated rather than simulated. The car slews to the verge,
+   * rotating and slowing, then is removed.
    */
   _advanceSpun(car, dt) {
     car.spun -= dt;
@@ -495,8 +428,7 @@ export class Traffic {
     car.spunYaw += car.spunRate * dt;
     car.spunRate = damp(car.spunRate, 0, 1.4, dt);
 
-    // Slide off the carriageway; that is where a spun car belongs, and it
-    // clears the lane for everyone behind.
+    // Slide off the carriageway to clear the lane behind.
     car.vSmooth += car.spunDrift * dt;
     car.spunDrift = damp(car.spunDrift, 0, 0.8, dt);
     car.vSmooth = clamp(car.vSmooth, -ROAD.halfWidth - 6, ROAD.halfWidth + 6);
@@ -510,9 +442,7 @@ export class Traffic {
   /**
    * Puts a car on the road surface, facing along it and leaning with it.
    *
-   * The full road frame is used, not just a yaw: a car that stays level while
-   * the road climbs and banks under it is one of those things nobody names but
-   * everybody notices.
+   * The full road frame is used, not just a yaw.
    */
   _place(car, dt) {
     const f = this.path.frameAt(car.s, this._fA);
@@ -526,8 +456,7 @@ export class Traffic {
 
     this.chunks.groundAt(car.s, car.v, this._pos);
 
-    // Basis from the road: local -Z is forward, so local +Z is the reverse of
-    // travel, and local +Y is the road's own up (which carries the banking).
+    // Basis from the road: local -Z is forward, local +Y is the road's up.
     this._az.copy(f.tan).multiplyScalar(-car.dir).normalize();
     this._ay.copy(f.up);
     this._ax.crossVectors(this._ay, this._az).normalize();

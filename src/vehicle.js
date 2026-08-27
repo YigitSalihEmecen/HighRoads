@@ -1,46 +1,9 @@
 /**
- * vehicle.js — a raycast vehicle controller built on top of a Rapier rigid body.
+ * vehicle.js — a raycast vehicle controller on a Rapier rigid body.
  *
- * Rapier provides exactly three things here: a rigid body with a mass/inertia
- * tensor, an impulse API, and a ray query against the terrain trimeshes. The
- * chassis collider exists only so a genuine crash has something to hit — it is
- * excluded from every suspension ray and plays no part in normal driving. All
- * of the vehicle dynamics below are hand-rolled.
- *
- * PER WHEEL, PER SUBSTEP:
- *
- *   1. SUSPENSION.  Cast a ray from the wheel anchor down the chassis' local
- *      -Y. Compression x = (restLength + radius) - hitDistance, and the spring
- *      is Hooke plus a viscous damper:
- *
- *          F = k·x  +  c·ẋ          ẋ = -(contact point velocity · up)
- *
- *      with separate bump/rebound damping (rebound stiffer, as on a real car)
- *      and a force ceiling so a hard landing can't launch the chassis.
- *      Because the force is colinear with the ray, applying it at the contact
- *      patch or at the anchor produces identical torque — we use the contact.
- *
- *   2. ANTI-ROLL.  Per axle, the normalised travel difference between left and
- *      right pushes the compressed corner up and the extended corner down. This
- *      adjusts the stored wheel *load*, so lateral grip responds to weight
- *      transfer rather than merely resisting body roll cosmetically.
- *
- *   3. TYRE FORCES.  Build a wheel frame (Ackermann-steered forward × contact
- *      normal), project the contact-point velocity into it, then:
- *         lateral      — a slip-angle Magic Formula, Fy = D·sin(C·atan(B·α)).
- *                        Force builds with slip angle, peaks around 8°, then
- *                        eases off. That falloff is the feel of the front axle
- *                        going light; below walking pace it blends to plain
- *                        velocity cancellation, where slip angle is undefined.
- *         longitudinal — engine force through the gearbox, minus braking and
- *                        rolling resistance, with traction control capping
- *                        drive at the friction left over after cornering.
- *      Both are then clipped to a friction circle of radius μ·Fz·dt, which is
- *      what makes power oversteer, lock-ups and understeer emerge on their own
- *      instead of being special-cased.
- *
- *      Forces are applied slightly *above* the contact patch. Weight transfer
- *      survives; the roll moment that would otherwise trip the car does not.
+ * Rapier provides the body, impulses and ray queries. The chassis collider is
+ * excluded from every suspension ray. All dynamics are hand-rolled per wheel
+ * per substep: suspension, tyre, drive.
  */
 
 import * as THREE from 'three';
@@ -106,11 +69,8 @@ export class RaycastVehicle {
     this._ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
     this._rayFilter =
       (RAPIER.QueryFilterFlags && RAPIER.QueryFilterFlags.EXCLUDE_SENSORS) || undefined;
-    // Suspension rays must see the world but NOT other cars. Membership bit 0,
-    // mask everything except traffic's bit 1. Without this the springs find
-    // "ground" on a traffic car's roof during a collision and throw the player
-    // ten metres into the air — the same launch bug as before, via a different
-    // route now that traffic cars are solid rather than sensors.
+    // Suspension rays see the world but not other cars. The mask keeps the
+    // springs from finding "ground" on a traffic car's roof.
     this._rayGroups = (0x0001 << 16) | 0xfffd;
     this._a = new THREE.Vector3();
     this._b = new THREE.Vector3();
@@ -121,12 +81,8 @@ export class RaycastVehicle {
     this._q2 = new THREE.Quaternion();
 
     // ---- render interpolation -------------------------------------------
-    // Physics advances in fixed 8.33 ms steps but frames arrive on the display's
-    // clock, so at the moment we draw, the simulation is somewhere *between*
-    // two steps. Drawing the raw body state instead snaps the car to whichever
-    // step happened last, which at 60 m/s is a ~0.5 m jump every frame — the
-    // stutter reads as the car teleporting. We keep the previous step's
-    // transform and blend by the leftover accumulator.
+    // The display clock differs from the fixed physics step. Blend the previous
+    // step's transform with the current one by the leftover accumulator.
     this.prevPos = new THREE.Vector3();
     this.prevQuat = new THREE.Quaternion();
     this.prevSteer = 0;
@@ -141,18 +97,13 @@ export class RaycastVehicle {
   }
 
   /**
-   * Snapshot the transform about to be superseded. Must be called immediately
-   * before each world.step(), so `prev` and the post-step state bracket exactly
-   * one substep.
+   * Snapshots the transform before each world.step().
    */
   /**
    * Pins the car for the title screen.
    *
-   * Horizontal velocity and all rotation are cancelled every step, while
-   * vertical motion is left alone so the suspension still settles onto whatever
-   * the ground is doing. Without this the car simply rolls away down the road
-   * whenever the seed happens to put a gradient under it, and the player is
-   * choosing a paint colour for something disappearing into the distance.
+   * Horizontal velocity and rotation are cancelled each step; vertical motion
+   * is kept so the suspension still settles on the ground.
    */
   setParked(on) {
     this.parked = !!on;
@@ -166,12 +117,8 @@ export class RaycastVehicle {
 
   beginStep() {
     if (this.parked) {
-      // Velocity AND position. Zeroing the velocity alone leaves the drift that
-      // accumulates inside each step — gravity acts, the solver integrates, and
-      // the car creeps a few millimetres per step before the next reset catches
-      // it. Measured on a 4.7% grade that was 11 cm in five seconds, which over
-      // the time it takes to choose a car is the length of the bonnet. Height is
-      // left alone so the suspension still settles onto the road.
+      // Zero velocity and position, not velocity alone; the solver drift would
+      // creep the car away. Height is left alone so the suspension settles.
       const t = this.body.translation();
       this.body.setTranslation({ x: this.parkedPos.x, y: t.y, z: this.parkedPos.z }, true);
       this.body.setLinvel({ x: 0, y: Math.min(0, this.body.linvel().y), z: 0 }, true);
@@ -179,14 +126,8 @@ export class RaycastVehicle {
       this.body.setRotation(this.parkedQuat, true);
     }
 
-    // A hard ceiling on how fast the chassis may be travelling, in any
-    // direction, at the start of a step.
-    //
-    // Nothing in this game legitimately exceeds it — the fastest car tops out
-    // well below. What does exceed it is a solver artefact: a deep contact
-    // resolved in a single step can hand back hundreds of metres per second,
-    // and the car leaves for the horizon and never comes back. Physically the
-    // energy was never there, so removing it is a correction, not a cheat.
+    // Cap the chassis speed at the start of a step. A deep contact resolved in
+    // one step can hand back unreal velocity; removing it is a correction.
     const lv = this.body.linvel();
     const sp = Math.hypot(lv.x, lv.y, lv.z);
     if (sp > this.V.maxChassisSpeed) {
@@ -226,19 +167,9 @@ export class RaycastVehicle {
       .setCanSleep(false)
       .setCcdEnabled(true);
 
-    // Solid-box inertia, with two axes inflated.
-    //
-    // ROLL (Iz) — a real car carries mass high (engine, occupants, roof), so it
-    // resists roll more than a uniform slab of the same footprint would.
-    //
-    // YAW (Iy) — a uniform box is the wrong model in the other direction here.
-    // The heavy items are at the ends, not spread evenly: engine ahead of the
-    // front axle, fuel and boot behind the rear one. Real cars measure a yaw
-    // radius of gyration around 0.35–0.40 of their length against the 0.29 a
-    // solid box implies, which is (0.37/0.29)^2 ≈ 1.6x more yaw inertia. This
-    // is the single biggest lever on whether a car feels like it has mass: a
-    // slab-inertia body changes heading the instant a tyre asks it to, and a
-    // car that can be rotated for free is a car that can be spun for free.
+    // Solid-box inertia, with roll and yaw axes inflated: a real car carries
+    // mass at the ends and high up, so it resists yaw and roll more than a
+    // uniform slab does.
     const w = hx * 2, h = hy * 2, l = hz * 2;
     const Ix = (m / 12) * (h * h + l * l);
     const Iy = (m / 12) * (w * w + l * l) * 1.6;
@@ -258,10 +189,8 @@ export class RaycastVehicle {
       this.V.comOffset.z
     );
 
-    // Density 0: mass comes entirely from setAdditionalMassProperties above, so
-    // the collider's shape doesn't quietly fight our chosen inertia tensor.
-    // The body origin is the contact plane, so the box has to be raised to sit
-    // around the actual bodywork rather than straddling the road surface.
+    // Density 0: mass comes from setAdditionalMassProperties, so the collider
+    // cannot fight the chosen inertia tensor. The box is raised to the bodywork.
     const col = RAPIER.ColliderDesc.cuboid(hx, hy, hz)
       .setTranslation(0, this.V.chassisCentreY, 0)
       .setDensity(0)
@@ -317,15 +246,12 @@ export class RaycastVehicle {
   /**
    * Takes the model's groups back after the showroom has borrowed them.
    *
-   * The title screen re-parents the very same body and wheel groups onto its
-   * turntable rather than cloning them, so that paint, trim and lamp state are
-   * shared by construction. Starting a run has to put them back.
+   * The showroom re-parents the body and wheel groups onto its turntable.
    */
   reattachModel() {
     this.group.add(this.model.body);
     for (let i = 0; i < this.wheelMeshes.length; i++) this.group.add(this.wheelMeshes[i]);
-    // Poses are rewritten by syncVisuals on the next frame anyway; this only
-    // has to make sure nothing is left parented to the plate.
+    // Poses are rewritten by syncVisuals; this only unparents the groups.
   }
 
   /** Removes this vehicle from the scene and the physics world. */
@@ -337,8 +263,7 @@ export class RaycastVehicle {
   // ----------------------------------------------------------------- rays --
 
   /**
-   * Wraps Rapier's ray query and papers over the field rename between
-   * versions (`toi` became `timeOfImpact` in 0.14).
+   * Wraps Rapier's ray query; `timeOfImpact` was renamed from `toi`.
    */
   _castRay(origin, dir, maxToi) {
     this._ray.origin = origin;
@@ -348,8 +273,7 @@ export class RaycastVehicle {
       this._ray,
       maxToi,
       true,
-      // Ray casts hit sensors unless told not to, and would otherwise find
-      // "ground" on anything that happens to be alongside.
+      // Ray casts hit sensors unless excluded.
       this._rayFilter,
       this._rayGroups,
       undefined,
@@ -403,17 +327,12 @@ export class RaycastVehicle {
   }
 
   /**
-   * Steering authority is derived from grip rather than from a hand-drawn
-   * curve. For a steady-state turn v²/R = a_max, and Ackermann gives
-   * R = L/tan(δ), so the largest angle the car can actually follow is
+   * Steering authority comes from grip, not a hand-drawn curve. For a
+   * steady-state turn:
    *
-   *     δ_max = atan( L · a_max / v² )
+   *     delta_max = atan( L * a_max / v^2 )
    *
-   * a_max includes downforce, which genuinely raises the limit at speed. Let
-   * the player exceed this and the front tyres are asked for more than they
-   * have: the wheel turns, the car understeers straight on, and it feels
-   * completely disconnected from its front axle. The grip margin keeps enough
-   * headroom to still provoke a slide deliberately.
+   * a_max includes downforce, which raises the limit at speed.
    */
   _updateSteering(dt, input) {
     const V = this.V;
@@ -424,55 +343,27 @@ export class RaycastVehicle {
       (Math.abs(WORLD.gravity) + (V.downforce * v2) / V.mass) *
       V.steerGripMargin;
 
-    // Whichever limit arrives first: sliding, or tipping over. For a sports car
-    // that is grip; for a van or a monster truck it is roll.
+    // The limit is the lower of grip and rollover.
     const aMax = Math.min(aGrip, V.rolloverAccel);
     const gripSteer = Math.atan((L * aMax) / v2);
 
-    // ...but the whole derivation assumes a STEADY-STATE turn, and once the car
-    // is sideways that assumption is gone. In a slide the front wheels are being
-    // pointed down the velocity vector, not used to generate more lateral force,
-    // so neither the grip ceiling nor the rollover ceiling applies to them.
-    //
-    // Enforcing it anyway is what made a slide unrecoverable. Measured on the
-    // old tune at 108 km/h, the rollover limit capped the lock at 4.3 deg — a
-    // driver trying to catch a 190 deg/s spin had essentially no countersteer,
-    // and none of it was their fault. Opening the lock toward full as the
-    // chassis slip angle grows hands the car back, and costs nothing when
-    // straight because the term is zero there.
+    // The steady-state assumption fails in a slide. Open the lock toward full
+    // as chassis slip grows; the term is zero when straight.
     const betaSigned = Math.atan2(
       this.linvel.dot(this.rightV), Math.max(Math.abs(this.forwardSpeed), 1)
     );
     const beta = Math.abs(betaSigned);
     const slide = smoothstep(V.slideOpenFrom, V.slideOpenTo, beta);
-    // Proportional: a fixed multiple of the limit that already applied, never a
-    // jump to full lock. The steering ratio stays continuous — the wheel means
-    // the same thing throughout, there is just more of it to use.
+    // Proportional to the limit, never a jump to full lock.
     const base = clamp(gripSteer, V.minSteer, V.maxSteer);
     const opened = Math.min(V.maxSteer, base * V.slideLockGain);
     let maxSteer = lerp(base, opened, slide);
 
     /**
-     * COUNTERSTEER IS NOT TURN-IN, and giving them the same allowance is why
-     * "countersteering doesn't help" was a fair description of this car.
-     *
-     * Everything above is a limit on how hard the car may be asked to CORNER,
-     * and it is right for that: past it the front tyres are being asked for
-     * force they do not have. But steering that opposes the way the car is
-     * already sliding is not asking for cornering force at all — it is pointing
-     * the front wheels back down the velocity vector, which is the one input
-     * that recovers a slide, and the steady-state derivation has nothing to say
-     * about it. Measured on the old tune: 4.3 degrees of lock at 150 km/h and
-     * above, against the twenty to forty a driver would actually use to catch
-     * the car. There was no recovering anything.
-     *
-     * `slideOpen` above was the first attempt at this and it opens the lock
-     * SYMMETRICALLY, on `|beta|`, so it hands out just as much extra angle for
-     * winding MORE lock into a slide as for catching it — and it waits until
-     * the car is 8 degrees out before it does. What matters is the sign: the
-     * driver is countersteering when the input opposes the slip, and that
-     * deserves close to parking lock, as early as the car starts to move
-     * around.
+     * Countersteering is not turn-in. Steering that opposes the slip points the
+     * front wheels down the velocity vector, which recovers a slide.
+     * `slideOpen` opens the lock symmetrically on |beta|; the sign matters —
+     * input opposing the slip deserves full lock.
      */
     const counter = input.steer * betaSigned < 0
       ? smoothstep(V.counterFrom, V.counterTo, beta) : 0;
@@ -480,24 +371,17 @@ export class RaycastVehicle {
       maxSteer = Math.max(maxSteer, lerp(base, V.maxSteer * V.counterLock, counter));
     }
 
-    // Scale the slew rate with the available lock so time-to-full-lock stays
-    // roughly constant instead of snapping instantly at speed — but never damp
-    // a correction. At speed `scale` sits on its floor, and a quarter-rate slew
-    // took 240 ms to travel the lock the clause above had just opened, which is
-    // most of a spin.
+    // Scale the slew rate with the available lock; never damp a correction.
+    // The floor sits at a quarter rate at speed.
     const scale = clamp(maxSteer / V.maxSteer, 0.25, 1);
     const rate = (Math.abs(input.steer) < 0.05 ? V.steerReturnRate : V.steerRate)
       * lerp(scale, 1, counter);
 
     /**
-     * The lock actually available this frame.
+     * The lock available this frame.
      *
-     * Published because `input.steer` is a NORMALISED command — full stick is
-     * full available lock, which is the right thing for a human — and anything
-     * that wants to ask for a steering ANGLE has to divide by this rather than
-     * by `V.maxSteer`. The two differ by a factor of six or more at speed, and
-     * a controller that gets it wrong delivers a sixth of the angle it thinks
-     * it asked for. See the note in `probe/drive.mjs`.
+     * `input.steer` is normalised, so controllers asking for an angle divide
+     * by this rather than by `V.maxSteer`. See `probe/drive.mjs`.
      */
     this.steerLimit = maxSteer;
 
@@ -506,8 +390,7 @@ export class RaycastVehicle {
   }
 
   /**
-   * Maps the two pedals onto the current gear. In reverse the pedals swap, so
-   * "brake" still means "slow down" from the driver's point of view.
+   * Maps the two pedals onto the current gear. In reverse the pedals swap.
    */
   _resolveDirection(input) {
     const nearlyStopped = Math.abs(this.forwardSpeed) < 0.8;
@@ -555,15 +438,15 @@ export class RaycastVehicle {
       w.compression = clamp(maxToi - hit.toi, 0, V.restLength);
       w.suspLen = clamp(hit.toi - V.wheelRadius, 0, V.restLength);
 
-      // Velocity of the contact point: v + ω × r
+      // Velocity of the contact point: v + w x r
       const r = this._c.subVectors(w.contact, this.com);
       w.pointVel.copy(this.angvel).cross(r).add(this.linvel);
 
-      // ẋ > 0 means the spring is compressing.
+      // A positive compression rate means the spring is compressing.
       const compressRate = -w.pointVel.dot(this.up);
       const damper = compressRate > 0 ? V.damperBump : V.damperRebound;
 
-      // F = k·x + c·ẋ, one-sided: a suspension can push but never pull.
+      // F = k*x + c*xdot, one-sided: a suspension pushes, never pulls.
       w.load = clamp(V.springK * w.compression + damper * compressRate, 0, V.maxSpringForce);
     }
   }
@@ -579,8 +462,7 @@ export class RaycastVehicle {
     const tL = a.grounded ? a.compression / this.V.restLength : 0;
     const tR = b.grounded ? b.compression / this.V.restLength : 0;
 
-    // The bar twists to resist the difference: it lifts the compressed corner
-    // and pushes the extended one down.
+    // The bar lifts the compressed corner and pushes the extended one down.
     const f = (tL - tR) * k;
     if (a.grounded) a.load = Math.max(0, a.load + f);
     if (b.grounded) b.load = Math.max(0, b.load - f);
@@ -598,28 +480,22 @@ export class RaycastVehicle {
   // ----------------------------------------------------------- powertrain --
 
   /**
-   * Drive force is no longer computed here. The engine simulator in
-   * `powertrain.js` owns the whole driveline — torque curve, clutch, gearbox,
-   * torsional compliance — and writes the resulting contact-patch force in via
-   * `setDriveForce()` once per frame. What remains in this file is everything
-   * from the tyre outwards.
+   * The engine simulator in `powertrain.js` writes the contact-patch force via
+   * `setDriveForce()` once per frame. This file handles only the tyre outwards.
    */
   setDriveForce(force) {
     this.driveForce = Number.isFinite(force) ? force : 0;
   }
 
   /**
-   * How much of the car is off the asphalt, 0..1. Set once per frame by the
-   * game, which is the only thing that knows where the road is.
+   * How much of the car is off the asphalt, 0..1. Set by the game.
    */
   setSurface(offRoad) {
     this.offRoad = clamp(offRoad, 0, 1);
   }
 
   /**
-   * Head lamps: emissive on the lamp faces plus two spot lights that actually
-   * throw light down the road. Built lazily, because a car that never turns
-   * them on should not pay for two shadowless spots in the scene graph.
+   * Head lamps: two spot lights built lazily when first switched on.
    */
   setHeadlights(on, flash) {
     this.headlightsOn = on;
@@ -661,11 +537,8 @@ export class RaycastVehicle {
   // ---------------------------------------------------------------- tyres --
 
   /**
-   * Ackermann steering geometry: the inside wheel of a turn traces a tighter
-   * circle than the outside one, so it must be steered further. Parallel
-   * steering makes the front axle scrub and — because the visible wheel angle
-   * then disagrees with the path the car actually takes — is a large part of
-   * why a car can feel disconnected from its front wheels.
+   * Ackermann geometry: the inside wheel of a turn must steer further than
+   * the outside one.
    */
   _wheelSteer(w) {
     return this._wheelSteerAngle(w, this.steer);
@@ -677,8 +550,7 @@ export class RaycastVehicle {
 
     const L = this.V.wheelbaseHalf * 2;
     const R = L / Math.tan(Math.abs(d)); // turn radius at the axle centreline
-    // Steering left (d > 0) pivots about a centre to the left, so the left
-    // wheel (local.x < 0) is the inner one.
+    // Steering left pivots about a centre to the left; the inner wheel is left.
     const inner = d > 0 === w.local.x < 0;
     const radius = inner ? R - this.V.trackHalf : R + this.V.trackHalf;
     return Math.sign(d) * Math.atan(L / Math.max(radius, 0.4));
@@ -691,9 +563,8 @@ export class RaycastVehicle {
 
     const mLat = V.mass * V.lateralGripMass;
     const mLong = V.mass * 0.25;
-    // Slip angle is atan(v_lat / v_long) — undefined at a standstill and wildly
-    // noisy just above it. Below walking pace we blend back to plain velocity
-    // cancellation, which is what keeps a parked car parked.
+    // Slip angle is undefined near a standstill; below walking pace, blend to
+    // velocity cancellation to keep a parked car parked.
     const slipBlend = smoothstep(V.slipBlendSpeed[0], V.slipBlendSpeed[1], this.speed);
     let slipAccum = 0;
 
@@ -722,8 +593,7 @@ export class RaycastVehicle {
       const maxImpulse = V.tyreFriction * lerp(1, V.offRoadGrip, this.offRoad) * w.load * dt;
 
       // ---- lateral: Magic Formula ------------------------------------------
-      // The rear runs slightly more peak grip and slightly less cornering
-      // stiffness than the front: crisp turn-in, and the front lets go first.
+      // The rear runs more peak grip and less stiffness: the front lets go first.
       const handbrakeCut = w.rear && input.handbrake ? V.handbrakeGripMul : 1;
       const surface = lerp(1, V.offRoadGrip, this.offRoad);
       const peak = V.tyreFriction * w.load * handbrakeCut * surface * (w.rear ? V.rearGripBias : 1);
@@ -738,9 +608,8 @@ export class RaycastVehicle {
       // ---- longitudinal ----------------------------------------------------
       let driveImpulse = this.driveForce * V.driveBias[i] * dt;
 
-      // Traction control caps *drive* (never braking) at the friction left over
-      // once the tyre has paid for cornering. The margin still permits wheelspin
-      // and power-on rotation; the handbrake disables it so drifts survive.
+      // Traction control caps drive (never braking) at the friction left after
+      // cornering. The handbrake disables it so drifts survive.
       if (driveImpulse !== 0 && !input.handbrake) {
         const remaining = Math.sqrt(Math.max(0, maxImpulse * maxImpulse - lat * lat));
         const budget = remaining * V.tractionControl;
@@ -751,8 +620,7 @@ export class RaycastVehicle {
       if (input.handbrake && w.rear) brakeForce = Math.max(brakeForce, V.handbrakeForce);
       // Loose surfaces drag far harder than tarmac.
       brakeForce += V.rollingResistance * 0.25 * (1 + this.offRoad * V.offRoadDrag);
-      // Clamp to the impulse that exactly arrests this wheel, so braking
-      // settles at a standstill instead of buzzing around zero.
+      // Clamp to the impulse that exactly arrests this wheel.
       const brakeImpulse = -sign(vf) * Math.min(Math.abs(vf) * mLong, brakeForce * dt);
 
       let lon = driveImpulse + brakeImpulse;
@@ -768,8 +636,7 @@ export class RaycastVehicle {
         clampSlip = 1 - scale;
       }
 
-      // Skid feedback comes from slip angle past the tyre's peak, not just from
-      // the circle clamp — a tyre can be sliding audibly while still inside it.
+      // Skid feedback comes from slip angle past the tyre's peak.
       const alphaPeak = 1.86 / B;
       const angleSlip = smoothstep(alphaPeak * 1.1, alphaPeak * 3.0, Math.abs(alpha));
       w.slipAmount = Math.max(clampSlip, angleSlip);
@@ -792,8 +659,7 @@ export class RaycastVehicle {
       const drag = this._a.copy(this.linvel).multiplyScalar(-V.dragCoefficient * this.speed * dt);
       this.body.applyImpulse(drag, true);
     }
-    // Downforce presses the car into the road as speed rises, which is what
-    // keeps high-speed sweepers stable without simply raising grip everywhere.
+    // Downforce presses the car into the road as speed rises.
     const df = V.downforce * this.forwardSpeed * this.forwardSpeed * dt;
     this.body.applyImpulse(this._b.copy(this.up).multiplyScalar(-df), true);
   }
@@ -806,9 +672,7 @@ export class RaycastVehicle {
     const tilt = this.up.dot(WORLD_UP);
     const airborne = this.groundedCount === 0;
 
-    // Self-righting: strong in the air, and on the ground only once the car is
-    // already tipping past the point of no return. In between it does nothing,
-    // so normal body roll through a corner is untouched.
+    // Self-righting: strong in the air, inactive during normal cornering roll.
     if (tilt < 0.999) {
       const gain = airborne
         ? V.uprightTorque * 1.5
@@ -828,11 +692,8 @@ export class RaycastVehicle {
       this.body.applyTorqueImpulse(yaw, true);
     }
 
-    // Slide containment. See VEHICLE.driftAngle: beyond a generous chassis slip
-    // angle the car is no longer drifting, it is spinning, and countersteer has
-    // nothing left to work with because every tyre is far past its peak. A yaw
-    // damper faded in over that band gives the driver the car back without
-    // touching how it behaves at ordinary drift angles.
+    // Slide containment: beyond a generous slip angle a yaw damper fades in,
+    // so a spin hands the driver the car back without affecting normal drifts.
     if (!airborne && this.speed > 4) {
       const vFwd = this.linvel.dot(this.fwd);
       const vSide = this.linvel.dot(this.rightV);
@@ -868,15 +729,13 @@ export class RaycastVehicle {
 
   /**
    * Called once per rendered frame. Wheels are children of the chassis group,
-   * so suspension travel is just a local -Y offset and steering/spin are local
-   * rotations — no world-space bookkeeping needed.
+   * so travel, steering and spin are all local.
    */
   syncVisuals(alpha = 1) {
     // Re-read: the cached transform is from before the final world.step().
     this._readState();
 
-    // Blend between the last two physics steps. `alpha` is the unconsumed
-    // fraction of a substep still sitting in the accumulator.
+    // Blend the last two physics steps; `alpha` is the leftover accumulator.
     const a = this.hasPrev ? clamp(alpha, 0, 1) : 1;
     this.renderPos.lerpVectors(this.prevPos, this.pos, a);
     this.renderQuat.copy(this.prevQuat).slerp(this.quat, a);
@@ -906,7 +765,7 @@ export class RaycastVehicle {
 
   /** Drops the car back onto the road, upright and pointing along the tangent. */
   respawn(position, forward) {
-    // Local forward is -Z, so a yaw of θ points the car at (-sinθ, 0, -cosθ).
+    // Local forward is -Z, so yaw = atan2(-forward.x, -forward.z).
     const yaw = Math.atan2(-forward.x, -forward.z);
     const q = new THREE.Quaternion().setFromAxisAngle(AXIS_Y, yaw);
 

@@ -1,16 +1,12 @@
 /**
- * scene.js — renderer, golden-hour lighting rig, procedural sky, post stack.
+ * scene.js — renderer, lighting, sky and post-processing.
  *
- * The atmosphere is built around one rule: the fog colour, the sky horizon and
- * the sun tint all come from the same warm family. Distant geometry dissolves
- * into the horizon instead of ending at a visible edge, which is what lets the
- * chunk system get away with a finite draw distance.
+ * The fog colour, the sky horizon and the sun tint come from one warm family,
+ * so distant geometry ends in the fog instead of at a visible edge.
  */
 
 import * as THREE from 'three';
 import { ATMOSPHERE, CAMERA } from './config.js';
-
-/* ------------------------------------------------------------------ sky -- */
 
 const SKY_VERT = /* glsl */ `
   varying vec3 vDir;
@@ -52,10 +48,7 @@ const SKY_FRAG = /* glsl */ `
     vec3 dir = normalize(vDir);
     float h = clamp(dir.y, -1.0, 1.0);
 
-    // Three-stop gradient. A two-stop sky is the single biggest reason a scene
-    // reads as flat: real sky darkens and saturates toward the zenith while
-    // staying pale and desaturated at the horizon, and that vertical falloff is
-    // most of the depth cue.
+    // Three-stop gradient: real sky darkens and saturates toward the zenith.
     float t = pow(clamp(h * 1.15, 0.0, 1.0), 0.55);
     vec3 col = mix(uHorizon, uTop, t);
     col = mix(col, uZenith, pow(clamp(h, 0.0, 1.0), 2.1) * 0.85);
@@ -63,9 +56,8 @@ const SKY_FRAG = /* glsl */ `
     // Below the eyeline, settle into haze so terrain gaps read as ground.
     col = mix(col * 0.95, col, smoothstep(-0.25, 0.02, h));
 
-    // Clouds, projected onto the dome. Dividing by height stretches them toward
-    // the horizon the way perspective actually does, instead of pasting a
-    // uniform texture across the sky.
+    // Clouds projected onto the dome; dividing by height stretches them toward
+    // the horizon the way perspective does.
     float band = smoothstep(0.02, 0.36, h);
     vec2 cuv = dir.xz / max(0.16, h + 0.08) * 0.9 + vec2(uTime * 0.004, uTime * 0.0016);
     float n = fbm(cuv * 1.35);
@@ -86,23 +78,14 @@ const SKY_FRAG = /* glsl */ `
   }
 `;
 
-/* ------------------------------------------------------------ speed blur -- */
-
 /**
  * Radial blur, strength driven by road speed.
  *
- * This replaces a depth-of-field pass, which was the wrong tool: it focuses at
- * ONE distance, and with focus pulled out to the horizon at speed the car —
- * five metres from the camera — was the most out-of-focus thing on screen. A
- * driving game blurring the car the player is steering is nonsense.
+ * Replaces depth-of-field, which focused at one distance and blurred the car
+ * five metres ahead of the camera. Samples smear away from the screen centre,
+ * so the car and road ahead stay sharp and the periphery streaks.
  *
- * Radial blur is the effect that actually belongs here. The centre of the
- * screen, where the car and the road ahead are, stays perfectly sharp; samples
- * are smeared along the direction away from the centre, so the periphery
- * streaks past. It reads as speed because that is what speed looks like, and it
- * never touches the thing you are looking at.
- *
- * GLSL ES 1.00 only — no const arrays, no in/out. See the bug ledger.
+ * GLSL ES 1.00 only — no const arrays, no in/out.
  */
 const SPEED_BLUR_SHADER = {
   uniforms: {
@@ -144,8 +127,6 @@ const SPEED_BLUR_SHADER = {
   `,
 };
 
-/* --------------------------------------------------------------- vignette -- */
-
 const VIGNETTE_SHADER = {
   uniforms: {
     tDiffuse: { value: null },
@@ -170,14 +151,11 @@ const VIGNETTE_SHADER = {
     void main() {
       vec4 c = texture2D(tDiffuse, vUv);
 
-      // Split tone: warm the highlights, cool the shadows. A single global tint
-      // just shifts everything and still reads flat; opposing the two ends is
-      // what gives an image depth without touching contrast.
+      // Split tone: warm the highlights, cool the shadows, for depth.
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
       c.rgb = mix(c.rgb * uCool, c.rgb * uWarm, smoothstep(0.18, 0.85, l));
 
-      // Gentle S-curve. Gains a little contrast in the midtones while leaving
-      // the ends alone, so the highlights do not clip back to the flat look.
+      // Gentle S-curve for midtone contrast, leaving the ends alone.
       c.rgb = mix(c.rgb, c.rgb * c.rgb * (3.0 - 2.0 * c.rgb), 0.22);
 
       float d = distance(vUv, vec2(0.5));
@@ -186,8 +164,6 @@ const VIGNETTE_SHADER = {
     }
   `,
 };
-
-/* ------------------------------------------------------------------------- */
 
 export async function createScene(container) {
   const renderer = new THREE.WebGLRenderer({
@@ -198,9 +174,7 @@ export async function createScene(container) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  // Neutral rather than ACES: the filmic curve's shoulder is what was crushing
-  // the highlights into that blown-out glare. Neutral keeps hues stable and the
-  // midtones open, which is most of the "pastel" look.
+  // Neutral rather than ACES: its shoulder crushes highlights into glare.
   renderer.toneMapping = THREE.NeutralToneMapping;
   renderer.toneMappingExposure = ATMOSPHERE.exposure;
   renderer.shadowMap.enabled = true;
@@ -220,8 +194,6 @@ export async function createScene(container) {
   );
   camera.position.set(0, 6, 14);
 
-  // ------------------------------------------------------------- lighting --
-
   const sunDir = new THREE.Vector3(
     ATMOSPHERE.sunDir.x,
     ATMOSPHERE.sunDir.y,
@@ -238,8 +210,7 @@ export async function createScene(container) {
   sun.shadow.camera.right = r;
   sun.shadow.camera.top = r;
   sun.shadow.camera.bottom = -r;
-  // normalBias handles the low sun angle far better than a constant bias does:
-  // grazing light on the terrain would otherwise shadow-acne badly.
+  // normalBias handles the low sun angle better than a constant bias does.
   sun.shadow.bias = -0.0004;
   sun.shadow.normalBias = 0.06;
   scene.add(sun);
@@ -257,8 +228,6 @@ export async function createScene(container) {
   const fill = new THREE.DirectionalLight(0xaec8e8, 0.5);
   fill.position.copy(sunDir).multiplyScalar(-100).setY(60);
   scene.add(fill);
-
-  // ------------------------------------------------------------------ sky --
 
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(1, 32, 20),
@@ -283,10 +252,7 @@ export async function createScene(container) {
   sky.frustumCulled = false;
   scene.add(sky);
 
-  // ------------------------------------------------------- post-processing --
-  // Optional: if the addon modules fail to load we fall back to a direct render
-  // rather than taking the whole game down with us.
-
+  // Optional: if the addon modules fail to load we fall back to a direct render.
   let composer = null;
   let renderPass = null;
   let speedBlur = null;
@@ -312,8 +278,7 @@ export async function createScene(container) {
       )
     );
     const vignette = new ShaderPass(VIGNETTE_SHADER);
-    // Was hard-coded in the shader's default while ATMOSPHERE.vignette sat
-    // unread, so turning the knob in config did nothing.
+    // Drive the config value instead of the shader's hard-coded default.
     vignette.uniforms.uAmount.value = ATMOSPHERE.vignette;
     composer.addPass(vignette);
     if (ATMOSPHERE.speedBlur > 0) {
@@ -327,8 +292,6 @@ export async function createScene(container) {
     console.warn('[highroads] post-processing unavailable, rendering direct.', err);
   }
 
-  // ---------------------------------------------------------------- resize --
-
   function resize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -339,7 +302,7 @@ export async function createScene(container) {
   }
   window.addEventListener('resize', resize);
 
-  /** Keeps the sky dome and the shadow frustum locked to the vehicle. */
+  // Keeps the sky dome and the shadow frustum locked to the vehicle.
   let clock = 0;
   function follow(target, dt = 0) {
     clock += dt;
@@ -352,20 +315,12 @@ export async function createScene(container) {
     sun.target.updateMatrixWorld();
   }
 
-  /**
-   * Draws the world.
-   *
-   * There is one scene now. The title screen used to be a second one with its
-   * own camera and its own lights, swapped into this chain so it borrowed the
-   * bloom and the vignette rather than running a composer of its own; the car
-   * is back on the road, so the title screen IS the world and the swap is gone.
-   */
   function render() {
     if (composer) composer.render();
     else renderer.render(scene, camera);
   }
 
-  /** How hard the periphery streaks. `t` is 0..1 across the speed range. */
+  // How hard the periphery streaks. `t` is 0..1 across the speed range.
   function setSpeedBlur(t) {
     if (!speedBlur) return;
     speedBlur.uniforms.uStrength.value = ATMOSPHERE.speedBlur * Math.max(0, Math.min(1, t));

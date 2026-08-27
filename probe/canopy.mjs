@@ -1,26 +1,7 @@
 /**
- * What the canopy actually LOOKS like.
+ * canopy.mjs — screenshots the canopy library.
  *
- * `props.mjs` counts triangles, measures float off the collider and proves the
- * scatter is lumpy. None of that can see a tree. This screenshots the whole
- * library — every species, every variant, both tiers, one light, one ground —
- * so the two questions that matter to a stylised canopy can be answered by
- * looking:
- *
- *   Does it read as the reference art? (`style_examples/`)
- *   Is the far tier the SAME TREE as the near tier?
- *
- * The second is the one that caused the rewrite. A painted billboard and a
- * grown mesh are two pictures of one tree and they disagreed; both tiers are
- * now the same builder at different subdivisions, and this is the check that
- * says so. `props.mjs` proves the crown RADII agree to 2%, which is necessary
- * and says nothing about whether the silhouettes do.
- *
- *   node probe/canopy.mjs
- *
- * Image lands in probe/shots/canopy.png. Same SwiftShader harness as
- * `render.mjs`; Chrome is expected at the macOS path below, override with
- * CHROME=/path/to/chrome.
+ * Renders every species, variant and tier under one light and one ground.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -44,8 +25,7 @@ const server = await new Promise((res) => {
     if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       res2.writeHead(404); res2.end(); return;
     }
-    // No-store, or Chrome serves the module it cached on the previous run and
-    // the sheet photographs the code from before the edit being checked.
+    // No-store, or Chrome serves a cached module from a previous run.
     res2.writeHead(200, {
       'content-type': TYPES[path.extname(file)] || 'application/octet-stream',
       'cache-control': 'no-store',

@@ -1,30 +1,8 @@
 /**
- * Is there ground everywhere the player is allowed to drive?
+ * offroad.mjs — checks the ground off the paved surface.
  *
- * `surface.mjs` asks this of the carriageway and nowhere else, and for a long
- * time that was the whole of the answer: 0 holes in 220,000 probes, across
- * seven seeds. Off the asphalt nothing was ever checked, and off the asphalt
- * SIXTEEN PER CENT of probes within 290 m of the road hit nothing at all.
- *
- * The cause was not the streaming and not the colliders — the terrain mesh and
- * its trimesh are built from the same buffer in the same call, so they cannot
- * disagree. The sheet genuinely ENDED. `chunks.js:foldSafeOffset` asymptotes
- * every lateral offset toward `ROUTE.foldMargin / kappa`, and `kappa` was a
- * one-step difference of a spline through 46 m control points: it reached twice
- * the road's own design curvature on roughness alone, so the corridor stopped
- * 57 m from the centreline where the alignment guarantees 115. The outermost
- * columns piled up into a skirt, the horizon falloff tipped that skirt downward,
- * and on screen it read as a distant hillside rather than as the edge of the
- * world. Bug #64.
- *
- * So this probe does two things the carriageway one cannot:
- *
- *   1. Rays a grid over the whole area the recovery logic will let the car
- *      reach, and fails on any miss inside the bound `main.js` enforces.
- *   2. Reports the corridor width the fold guard is actually delivering, which
- *      is the number the bug was hiding in.
- *
- *   node probe/offroad.mjs [seed] [sMax]
+ * Probes everywhere the player can drive and reports voids beneath the
+ * wheels.
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
@@ -38,25 +16,13 @@ const seed = process.argv[2] || WORLD.seed;
 const S_MAX = Number(process.argv[3] || 2600);
 const S_MIN = 200;
 
-/** Matches `main.js:RECOVER_MARGIN` — the slack inside the sheet's own edge. */
+// Matches `main.js:RECOVER_MARGIN`:
 const RECOVER_MARGIN = 12;
 
-/**
- * How far out to demand ground, metres.
- *
- * DELIBERATELY PAST `CHUNK.recoverLateral`, and this line is the whole reason
- * the probe is worth running. It used to sweep to the recovery bound and then
- * SKIP every sample outside it, on the reasoning that the car is turned back
- * before it arrives — so "hole" meant "missing ground in the region the
- * recovery logic has already declared out of bounds", and the test could not
- * fail. It duly reported 0 holes in 42,942 probes while 12.4% of the ground
- * within 300 m of the road did not exist, and skipped 13,698 samples to do it.
- * The player reached that ground, fell through it, and got teleported back.
- *
- * A bound is a claim about the car. It is not a claim about the world, and this
- * probe is about the world. `CHUNK.apronHalf` is what now guarantees the
- * answer, so the sweep goes well past anything road space is responsible for.
- */
+// How far out to demand ground, metres. Deliberately past
+// `CHUNK.recoverLateral`: the sweep once stopped at the recovery bound and
+// skipped every sample outside it, so it could not fail and reported 0 holes
+// while 12.4% of the ground within 300 m did not exist.
 const PROBE_OUT = 600;
 
 await RAPIER.init();
@@ -98,24 +64,17 @@ for (let s = S_MIN; s <= S_MAX; s += 2.5) {
 }
 widths.sort((a, b) => a - b);
 const pct = (p) => widths[Math.floor(widths.length * p)];
-// Measured floor, not a design one: the corridor is whatever the geometry
-// allows. Across five seeds `ROUTE.foldSmooth` = 6 delivers 73.0-94.4 m against
-// 56.6-79.5 m before it, so 70 is a regression bar with a little slack in it.
+// Measured floor, not a design one: with `ROUTE.foldSmooth` = 6 this delivers
+// 73.0-94.4 m across five seeds, so 70 is a regression bar with slack.
 check('corridor stays usefully wide', minReach >= 70,
   `min ${minReach.toFixed(1)} m @ s=${minAt.toFixed(0)}, bar 70 m`);
 console.log(`         corridor width  p1 ${pct(0.01).toFixed(0)} m · ` +
   `p10 ${pct(0.10).toFixed(0)} m · median ${pct(0.5).toFixed(0)} m`);
 
-// ---- did loosening the guard fold the sheet --------------------------------
-//
-// The other half of the fix is a CAP on the turn rate the guard will believe,
-// and a cap on a safety limit is exactly the kind of change that trades one
-// bug for a worse one: the guard exists because the far corridor was folding
-// through itself in 1,240 to 4,353 cells per seed, drawn back to front with
-// garbage normals. So measure it directly. A cell is inverted when its
-// footprint in the XZ plane has changed sign — the row in front has crossed
-// the row behind.
-
+// The fix also caps the turn rate the guard will believe, and a cap on a safety
+// limit can trade one bug for a worse one — so measure it directly. A cell is
+// inverted when its XZ footprint has changed sign (the row in front crossed the
+// row behind).
 let cells = 0, inverted = 0, minDepth = Infinity, minDepthAt = null;
 {
   const nv = chunks.lateral.length;
@@ -148,14 +107,10 @@ let cells = 0, inverted = 0, minDepth = Infinity, minDepthAt = null;
     }
   }
 }
-// NOT zero, and that is not a standard being lowered. The guard has always
-// leaked a little at the very edge of the sheet — `frameAt` interpolates the
-// limits between road samples, so a row can sit between two frames whose
-// running maxima both under-read the rotation across it — and the measured
-// baseline before `ROUTE.foldSmooth` existed was 239-580 cells per seed of
-// 117,120. Smoothing took that to 204-459, so the bar is the old worst case:
-// anything above it means a change has made the sheet fold MORE, which is
-// bugs #58 and #59 coming back.
+// NOT zero: `frameAt` interpolates the limits between road samples, so a row
+// can sit between frames whose maxima both under-read the rotation. The old
+// baseline was 239-580 inverted of 117,120 cells; anything above is bugs #58/#59
+// coming back.
 check('sheet folds no more than it used to', inverted <= 580,
   `${inverted} inverted of ${cells} cells (was 239-580)`);
 console.log(`         thinnest cell ${(minDepth * 100).toFixed(0)}% of nominal depth`);
@@ -167,9 +122,8 @@ let firstHole = null;
 let loadedFor = -1e9;
 
 for (let s = S_MIN + 0.137; s <= S_MAX; s += 5) {
-  // Stream exactly the window the game keeps alive at that station. Building
-  // every chunk at once puts sheets in the world that can never coexist — the
-  // mistake `surface.mjs`'s header records.
+  // Stream exactly the window the game keeps alive: building every chunk at once
+  // puts sheets in the world that can never coexist.
   if (s - loadedFor > CHUNK.length * 0.5) { chunks.update(s, 99); world.step(); loadedFor = s; }
 
   const f = path.frameAt(s);
@@ -182,8 +136,8 @@ for (let s = S_MIN + 0.137; s <= S_MAX; s += 5) {
     const edge = v < 0 ? reach.left : reach.right;
     if (av > Math.min(CHUNK.recoverLateral, edge - RECOVER_MARGIN)) outside++;
 
-    // Offset off the mesh lattice: a ray straight down a shared triangle edge
-    // can miss both faces on floating-point grounds alone.
+    // Offset off the mesh lattice: a ray straight down a shared triangle edge can
+    // miss both faces on floating-point grounds alone.
     const off = v + 0.091;
     ray.origin = { x: f.pos.x + right.x * off, y: f.pos.y + START, z: f.pos.z + right.z * off };
     probes++;

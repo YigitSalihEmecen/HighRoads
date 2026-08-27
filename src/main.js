@@ -1,11 +1,9 @@
 /**
- * main.js — boot sequence and the frame loop.
+ * main.js — the boot sequence and the frame loop.
  *
- * Timing model: rendering runs on requestAnimationFrame, physics on a fixed
- * 120 Hz accumulator. The vehicle's suspension and tyre impulses are integrated
- * *inside* the substep loop, immediately before each world.step(), which is the
- * only way a hand-written raycast vehicle stays stable — feeding it a variable
- * frame delta makes spring damping frame-rate dependent and it will oscillate.
+ * Rendering runs on requestAnimationFrame; physics on a fixed 120 Hz
+ * accumulator. Suspension and tyre integration run inside each substep,
+ * immediately before world.step().
  */
 
 import * as THREE from 'three';
@@ -34,10 +32,8 @@ import { Settings } from './settings.js';
 import { ScoreRun } from './score.js';
 
 /**
- * The two ways to play. Zen is the original brief — an empty road, going
- * nowhere in particular. Traffic turns the same road into a game: the cars are
- * the obstacle and the reward at once, since the points are for threading past
- * them, and the run ends the moment you actually hit one.
+ * The two game modes. Traffic scores near misses and ends on a crash; Zen
+ * is an empty road with nothing to lose.
  */
 const GAME_MODES = [
   { id: 'traffic', name: 'Traffic', blurb: 'Points for near misses. One crash ends the run.' },
@@ -45,9 +41,8 @@ const GAME_MODES = [
 ];
 
 /**
- * The body origin now *is* the contact plane (see cars.buildCarParams), so a
- * car dropped with its origin on the terrain settles to exactly its static sag.
- * A couple of centimetres of clearance keeps it from starting interpenetrated.
+ * The body origin is the contact plane (see cars.buildCarParams), so the car
+ * settles to its static sag. Clearance avoids starting interpenetrated.
  */
 const SPAWN_HEIGHT = 0.03;
 
@@ -57,9 +52,8 @@ const START_S = 90;
 const IDLE_INPUT = { steer: 0, throttle: 0, brake: 0, handbrake: false };
 
 /**
- * How far inside the terrain sheet's own edge the car is turned back, metres.
- * See `_checkRecovery` — the corridor narrows as the road bends into a corner,
- * so the boundary is moving toward a car driving beside it.
+ * How far inside the terrain edge the car is recovered, metres.
+ * See `_checkRecovery`: the corridor narrows into bends.
  */
 const RECOVER_MARGIN = 12;
 
@@ -84,14 +78,12 @@ export async function boot() {
   const path = new RoadPath(terrain, startSeed);
 
   // ---- art -----------------------------------------------------------------
-  // The only art that is FETCHED is the cars. Everything the world is dressed
-  // with — ground cover, stone, the canopy, the understorey — is generated from
-  // code inside the ChunkManager's constructor; see `src/env/README.md`.
+  // Only the cars are fetched; the rest is generated in ChunkManager.
+  // See src/env/README.md.
   bootEl.textContent = 'loading vehicles…';
   const carTexture = await loadCarTexture();
 
-  // All models up front — under a megabyte in total, and it means switching
-  // cars in the menu is instant rather than a stall on every click.
+  // Load all models up front so switching cars is instant.
   const models = new Map();
   await Promise.all(
     CARS.map(async (spec) => {
@@ -107,16 +99,15 @@ export async function boot() {
 
   const chunks = new ChunkManager({
     scene: gfx.scene, world, RAPIER, path, terrain,
-    // Grass cards are seen at a very grazing angle down the verge, which is the
-    // one case anisotropic filtering exists for.
+    // Grass is seen at a grazing angle; that is why anisotropic filtering.
     anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
   });
 
   bootEl.textContent = 'carving terrain…';
   chunks.preload(START_S);
 
-  // Rapier only refreshes its query pipeline inside step(), so ray casts
-  // against freshly created colliders return null until one has run.
+  // Rapier refreshes its query pipeline only in step(); ray casts return
+  // null until one has run.
   world.step();
 
   const game = new Game({ gfx, world, path, terrain, chunks, models, roster });
@@ -126,15 +117,12 @@ export async function boot() {
   game.traffic = new Traffic({ scene: gfx.scene, path, chunks, models, roster });
   game.setCar(roster.some((c) => c.id === DEFAULT_CAR) ? DEFAULT_CAR : roster[0].id);
 
-  // Run the loop straight away, with controls inert. The scene behind the
-  // overlay compiles its shaders and settles the suspension before the player
-  // ever sees it, so there's no hitch on the first real frame.
+  // Run the loop now, controls inert, so shaders compile and the suspension
+  // settles before the first real frame.
   game.loop(performance.now());
 
-  // The settings panel is built once, here, and re-parented between the title
-  // screen's Settings drawer and the pause menu — see `Game.setPaused`. It used
-  // to be constructed on the first Drive, which meant its values did not exist
-  // until then and nothing on the title screen could show them.
+  // The settings panel is built once and re-parented between the title drawer
+  // and the pause menu — see `Game.mountSettings`.
   game.settings = new Settings(game);
 
   buildGarage(game, roster);
@@ -154,14 +142,8 @@ export async function boot() {
     if (game.active) return;
     await game.powertrain.start(game.car());
     /**
-     * Restore tilt steering, if the player had it last time.
-     *
-     * It has to happen HERE and not at boot: iOS only grants the orientation
-     * sensor inside a gesture, and this click is one. A player who has already
-     * granted it sees nothing — `requestPermission` resolves straight to
-     * "granted" for the rest of the session — and one who has since revoked it
-     * simply gets the buttons back, which is why the result is applied rather
-     * than assumed.
+     * Restore tilt steering if the player used it last time.
+     * iOS grants the sensor only inside a gesture; this click is one.
      */
     if (TiltSteering.remembered && !game.input.tilt.on) {
       const ok = await game.input.tilt.enable();
@@ -180,10 +162,8 @@ export async function boot() {
 }
 
 /**
- * Seed entry. Changing the seed is a full world rebuild, so it simply reloads
- * with the seed in the query string: the alternative is tearing down and
- * rethreading the terrain, path, chunk manager and physics world while a car is
- * sitting on them, for a control that is used once before you start driving.
+ * Seed entry. A new seed rebuilds the whole world, so it reloads the page
+ * with the seed in the query string.
  */
 function buildSeedBox(game) {
   const input = document.getElementById('seed-input');
@@ -214,13 +194,8 @@ function buildSeedBox(game) {
 }
 
 /**
- * The bistable Traffic / Zen selector beneath the Drive button.
- *
- * It used to live in the World drawer as one of the dropdown rows. A choice a
- * player makes on every single session got buried two taps deep, so it moved
- * out to sit with the one button that matters — and as a two-position switch,
- * where the active mode is a glance rather than a label on a fold. Each half
- * is its own segment; tapping the inactive half flips in one tap.
+ * The Traffic / Zen selector beneath the Drive button.
+ * A two-position switch; tapping the inactive half flips it.
  */
 function buildModeToggle(game) {
   const root = document.getElementById('mode-toggle');
@@ -245,10 +220,7 @@ function buildModeToggle(game) {
 
 /**
  * The How-to-play and Credits windows.
- *
- * One tiny shared behaviour: a button opens a modal, and a modal closes on its
- * ×, on a click of the backdrop, or on Escape. The modals sit above the dock
- * (`z-index` in the stylesheet), so a drawer left open behind them is fine.
+ * A button opens a modal; a modal closes on its ×, the backdrop, or Escape.
  */
 function buildModals(game) {
   const open = {};
@@ -270,14 +242,7 @@ function buildModals(game) {
 
 /**
  * Builds the pickers on the title screen.
- *
- * What is NOT here any more: the paragraph. Every car used to arrive with a
- * sentence of ad copy and a four-cell table of mass, engine, layout and
- * redline, held at a fixed height so that changing car did not move the
- * controls under the player's thumb. It was the tallest thing in the menu, it
- * pushed the one button that matters off the bottom of a phone, and none of it
- * survives contact with the car being visible on screen behind it. The chips
- * name the cars; the car shows what it is.
+ * The chips name the cars; the car shows what it is.
  */
 function buildGarage(game, roster) {
   /** Flashes an option for as long as the throttle blip lasts. */
@@ -291,13 +256,8 @@ function buildGarage(game, roster) {
 
   /**
    * A single select-dropdown.
-   *
-   * Every garage row used to be a swipe-through strip — a palette you scroll
-   * sideways, where the current choice could sit half-off-screen and the fold's
-   * overflow clipped the selected swatch's ring. A dropdown fixes both: every
-   * option is readable in one vertical glance, and the chosen value stays
-   * centre-screen on the button. The menu is positioned `fixed` and lives on
-   * <body> so the drawer's overflow clip can never cut it off.
+   * The menu is `fixed` and lives on <body> so the drawer's overflow
+   * cannot cut it off.
    */
   const dropdowns = [];
 
@@ -373,9 +333,7 @@ function buildGarage(game, roster) {
       const vh = window.innerHeight;
       const width = Math.min(r.width, vw - 16);
       const left = Math.max(8, Math.min(r.left, vw - 8 - width));
-      // The menu's own max-height caps how tall it really is; flip up when
-      // there is more room above than below, then clamp so it never goes
-      // off-screen.
+      // Flip up when there is more room above; clamp to stay on-screen.
       const maxH = parseFloat(getComputedStyle(menu).maxHeight) || 320;
       const height = Math.min(menu.scrollHeight, maxH);
       const below = r.bottom + 6;
@@ -437,9 +395,7 @@ function buildGarage(game, roster) {
       if (d) flash(d.btn);
       game.setCar(id);
       game.refreshSummaries();
-      // The click is a user gesture, which is the only moment Web Audio will
-      // start. Taking it means the player hears the engine before committing to
-      // it rather than discovering it a kilometre down the road.
+      // The click is the only moment Web Audio will start, so preview here.
       game.previewEngine().then(() => game.refreshSummaries());
     },
   });
@@ -453,8 +409,7 @@ function buildGarage(game, roster) {
   });
 
   // ---- second colour -----------------------------------------------------
-  // The second paint colour (see cars.CAR_TRIM_COLORS). `stock` has no colour
-  // of its own, so it reads as the outline swatch rather than a fill.
+  // `stock` has no colour, so it reads as the outline swatch.
   makeDropdown(document.getElementById('trim-list'), {
     showSwatch: true,
     values: CAR_TRIM_COLORS.map((c) => ({
@@ -476,7 +431,7 @@ function buildGarage(game, roster) {
   });
 
   // ---- shared behaviour ---------------------------------------------------
-  // One delegated tap closes whatever menu is open unless the tap was on it.
+  // A tap closes any open menu unless the tap was on it.
   document.addEventListener('click', (e) => {
     for (const d of dropdowns) if (d.isOpen() && !d.contains(e.target)) d.close();
   });
@@ -484,9 +439,7 @@ function buildGarage(game, roster) {
     if (e.key === 'Escape') for (const d of dropdowns) d.close();
   });
   window.addEventListener('resize', () => { for (const d of dropdowns) d.close(); });
-  // The drawer scrolls; a menu pegged to the button would stay put while the
-  // button scrolls away, so any outside scroll closes it. Scrolling the menu
-  // itself (to reach more options) must not.
+  // Scrolling outside a menu closes it; scrolling the menu itself does not.
   window.addEventListener('scroll', (e) => {
     const t = e.target;
     for (const d of dropdowns) {
@@ -496,13 +449,8 @@ function buildGarage(game, roster) {
 }
 
 /**
- * Accordion behaviour for a set of `.drawer` sections.
- *
- * ONE OPEN AT A TIME, and that is the whole reason the title screen fits on a
- * phone now. Four folded drawers plus the Drive button is a fixed height; four
- * OPEN drawers is the wall of controls this replaced. The summary in each
- * header is what makes a shut drawer honest — it still answers the question you
- * would have opened it to ask.
+ * Accordion behaviour for a set of `.drawer` sections. One drawer is open
+ * at a time.
  *
  * @param {Element} root  the container to scope the accordion to
  * @param {?function(string)} onOpen  called with the drawer's key when it opens
@@ -520,8 +468,7 @@ function wireDrawers(root, onOpen) {
         other.querySelector('.drawer-head').setAttribute('aria-expanded', String(on));
       }
       if (!open) return;
-      // Let the fold finish before scrolling, or the browser scrolls to the
-      // height the drawer had a third of a second ago.
+      // Scroll after the fold finishes, or the browser uses the old height.
       setTimeout(() => d.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 340);
       if (onOpen) onOpen(d.dataset.drawer || d.id);
     });
@@ -535,9 +482,7 @@ function buildDrawers(game) {
   if (!host) return;
   wireDrawers(host, null);
 
-  // The settings panel writes its own values; the drawer header mirrors them.
-  // One delegated listener rather than a callback per control — every slider in
-  // there raises `input`, and none of them needs to know a header exists.
+  // One delegated listener: every slider raises `input`.
   const body = document.getElementById('settings-body');
   if (body) body.addEventListener('input', () => game.refreshSummaries());
 
@@ -545,12 +490,8 @@ function buildDrawers(game) {
 }
 
 /**
- * The pause menu.
- *
- * Note what it does NOT contain: a second copy of the settings controls. The
- * panel `settings.js` builds is moved in here and moved back out again, because
- * two sets of sliders bound to the same buses are two things that can disagree
- * about what the volume is.
+ * The pause menu. It contains no second copy of the settings controls;
+ * `settings.js` builds one panel that is moved in here.
  */
 function buildPauseMenu(game) {
   const root = document.getElementById('pause');
@@ -570,7 +511,7 @@ function buildPauseMenu(game) {
 
   // Clicking the backdrop resumes; clicking the card does not.
   root.addEventListener('click', (e) => { if (e.target === root) game.setPaused(false); });
-  // Nothing typed into the menu should reach the driving controls.
+  // Nothing typed into the menu reaches the driving controls.
   root.addEventListener('keydown', (e) => e.stopPropagation());
   root.addEventListener('keyup', (e) => e.stopPropagation());
 }
@@ -616,9 +557,8 @@ class Game {
     this.hud = new HUD();
     this.powertrain = new Powertrain();
     /**
-     * Wind noise. It shares the powertrain's AudioContext rather than making
-     * its own — one clock, one output bus — so it can only be started once
-     * engine_sim has built that, which is inside the Drive click.
+     * Wind noise shares the powertrain's AudioContext, so it can start only
+     * after the engine simulator has built that — inside the Drive click.
      */
     this.wind = new Wind();
     /** Tyre smoke and rubber. */
@@ -640,12 +580,8 @@ class Game {
     this._reach = { left: 0, right: 0 };
 
     /**
-     * The pause key is bound here rather than going through `Input`.
-     *
-     * Everything in `_handleActions` is read only while the game is running,
-     * which is exactly the state a pause key has to work in BOTH sides of. It
-     * also has to keep working while the menu is up, and the menu swallows key
-     * events so a slider cannot steer the car.
+     * The pause key is bound here because it must work both while running
+     * and while the menu is up.
      */
     this._onPauseKey = (e) => {
       if (e.code !== 'Escape' && e.code !== 'KeyP') return;
@@ -658,8 +594,7 @@ class Game {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         this.powertrain.suspend();
-        // Drop the accumulator: coming back from a backgrounded tab with two
-        // minutes of pending physics would fling the car into orbit.
+        // Drop the accumulator so a long background gap is not simulated.
         this.accumulator = 0;
         this.lastTime = performance.now();
       } else if (this.active && !this.paused) {
@@ -671,9 +606,8 @@ class Game {
   }
 
   /**
-   * Builds (or rebuilds) the vehicle for a roster entry. Geometry comes from
-   * the model, rates are derived from mass, and the old body is removed from
-   * the physics world so switching cars in the menu doesn't accumulate wrecks.
+   * Builds or rebuilds the vehicle for a roster entry. The old body is
+   * disposed, so switching cars does not accumulate wrecks.
    */
   setCar(id) {
     if (id === this.carId) return;
@@ -694,12 +628,10 @@ class Game {
     this.carId = spec.id;
     // The title rig fits the car to the free rectangle from these.
     this.carMetrics = model.metrics;
-    // A car the player has never coloured takes its own default; once they
-    // choose, that choice follows them from car to car.
+    // The first choice of colour sticks across cars; otherwise use the default.
     if (!this.colorId) this.colorId = spec.defaultColor || CAR_COLORS[0].id;
     this.setColor(this.colorId);
-    // Each model carries its own stock second colour, so this has to be
-    // reapplied per car rather than surviving from the last one.
+    // Each model has its own stock second colour; reapply it per car.
     this.setTrim(this.trimId);
     this.powertrain.setCar(this.car());
     this.respawn(this.carS);
@@ -725,16 +657,10 @@ class Game {
   // ------------------------------------------------------------ run flow --
 
   /**
-   * Back to the title screen: car parked, camera orbiting, overlay up. The
-   * overlay is hidden rather than removed precisely so this can happen — a
-   * Traffic run always ends somewhere, and it has to end somewhere the player
-   * can choose what to do next.
+   * Back to the title screen: car parked, camera orbiting, overlay up.
    */
   enterGarage() {
-    // Before `inGarage` flips, so a run abandoned from the pause menu leaves
-    // the audio context running rather than suspended behind the title screen —
-    // `setPaused` will not resume anything once it believes we are in the
-    // garage, and the garage still wants to hear the engine blip.
+    // Before `inGarage` flips, so the garage keeps the audio context running.
     this.setPaused(false);
     this.powertrain.resume();
     this.active = false;
@@ -743,14 +669,10 @@ class Game {
     this.overlayEl.classList.remove('gone');
     this.cam.setTitle(true);
     this.hud.hide();
-    // The on-screen driving controls belong to driving. Left up over the title
-    // screen they are a steering wheel on top of a menu — live, tappable, and
-    // attached to a car that is parked.
+    // The driving controls stay off over the title screen.
     document.body.classList.remove('driving');
     if (this.traffic) this.traffic.dispose();
-    // Back to the start of the road rather than to wherever the last run ended.
-    // The title screen is a photograph of the world you are about to be dropped
-    // into, and you are dropped in at the beginning of it.
+    // Back to the start of the road for the title screen.
     this.carS = START_S;
     this.respawn(START_S);
     this.vehicle.setParked(true);
@@ -761,20 +683,8 @@ class Game {
   }
 
   /**
-   * Drive.
-   *
-   * The camera does not cut — except when it should. From the title screen the
-   * camera is left exactly where the title orbit had it and flown into the
-   * chase position over `TITLE.introTime` (see `camera.beginIntro`) while the
-   * overlay fades out underneath; the two overlap deliberately, so the
-   * transition reads as one move rather than as a menu closing and then a
-   * camera starting. That fly-in belongs to the title screen only.
-   *
-   * Restarting mid-run (`restart = true`, the game-over "Drive again" and the
-   * pause menu's "Restart run") is a respawn of the whole level instead: the
-   * car goes back to the start of the road and the camera cuts there, exactly
-   * like the respawn key, because the road is already on screen and there is
-   * nothing to fly into.
+   * Drive. From the title screen the camera flies into the chase position
+   * (see `camera.beginIntro`). Restarting mid-run is a respawn with a cut.
    */
   startRun(restart = false) {
     this.gameOverEl.classList.remove('show');
@@ -789,13 +699,10 @@ class Game {
     this.input.bindTouch(document);
     this.vehicle.setParked(false);
     if (restart) this.carS = START_S;
-    // BEFORE the fly-in. `respawn` snaps the camera (see there), and `update`
-    // tests `initialised` ahead of the fly-in — so a respawn afterwards would
-    // cut to the chase pose for one frame and then start the shot from it.
+    // Before the fly-in: a later respawn would eat the first frame of the shot.
     this.respawn(this.carS);
     if (!restart) this.cam.beginIntro();
-    // A previous run's rubber has nothing to do with this one, and respawn puts
-    // the car somewhere the old marks are not.
+    // Clear the previous run's marks; respawn is elsewhere.
     this.fx.reset();
     this.wind.start(this.powertrain.sim && this.powertrain.sim.ctx);
     if (this.traffic) this.traffic.setEnabled(this.mode === 'traffic');
@@ -822,17 +729,9 @@ class Game {
   // ---------------------------------------------------------------- pause --
 
   /**
-   * Pause.
-   *
-   * Freezing a fixed-step simulation is not a matter of multiplying `dt` by
-   * zero — the accumulator would keep filling from wall time and the world
-   * would fast-forward through everything it owed the moment play resumed,
-   * which is the same failure as returning to a backgrounded tab. So the loop
-   * returns BEFORE the accumulator is touched: no time is banked, and the frame
-   * still renders, so what is behind the menu is the road you stopped on.
-   *
-   * Audio is suspended rather than muted. The engine simulator runs on the
-   * AudioContext's own clock and would otherwise keep idling behind the menu.
+   * Pause. The loop returns before the accumulator is touched, so no time is
+   * banked while paused and the frame still renders. Audio is suspended rather
+   * than muted so the simulator does not idle behind the menu.
    */
   setPaused(on) {
     const want = !!on && !this.inGarage;
@@ -844,8 +743,7 @@ class Game {
       this._refreshPauseStats();
     } else {
       if (this.active) this.powertrain.resume();
-      // Wall time moved on while the menu was up; the next frame must not be
-      // handed the whole of it.
+      // Do not hand the next frame all the wall time the menu consumed.
       this.lastTime = performance.now();
       this.accumulator = 0;
     }
@@ -869,11 +767,7 @@ class Game {
 
   /**
    * Moves the settings panel to whichever host wants it now.
-   *
-   * See the note in `index.html`: there is one panel, and it is re-parented
-   * between the title screen's Settings drawer and the pause menu rather than
-   * built twice. `appendChild` on a node that already has a parent is a move,
-   * so this is the whole implementation.
+   * `appendChild` on a node with a parent is a move.
    */
   mountSettings(hostId) {
     const host = document.getElementById(hostId);
@@ -885,11 +779,7 @@ class Game {
   // ------------------------------------------------------- title readouts --
 
   /**
-   * Writes the one-line summary into each folded drawer's header.
-   *
-   * This is what a closed drawer is worth. Without it the title screen is four
-   * words and no state, and the player has to open every one of them to find
-   * out what they are about to drive.
+   * Writes a one-line summary into each folded drawer's header.
    */
   refreshSummaries() {
     const set = (id, text) => {
@@ -915,14 +805,8 @@ class Game {
 
   /**
    * Hands the title rig the slice of screen the interface is not using.
-   *
-   * Measured from the DOM rather than assumed. `#stage` is the hole in the
-   * title screen's grid — see the layout note in `index.html` — and its shape
-   * changes with the orientation, the safe area and whether a drawer is open. A
-   * camera tuned by hand against one of those puts the car behind a panel the
-   * moment another changes; that is bug #53 exactly. A layout query per frame
-   * would be indefensible in the driving loop and costs nothing on a menu that
-   * is not moving anything else.
+   * Measured from the DOM, because its shape changes with orientation, the
+   * safe area and open drawers.
    */
   _frameTitle() {
     if (!this._stageEl) this._stageEl = document.getElementById('stage');
@@ -946,9 +830,8 @@ class Game {
   }
 
   /**
-   * Starts the audio if it is not running yet and blips the throttle, so the
-   * garage is audible as well as visible. Safe to call repeatedly; safe to call
-   * before any model has loaded.
+   * Starts the audio if needed and blips the throttle. Safe to call repeatedly
+   * and before any model has loaded.
    */
   async previewEngine() {
     if (!this.vehicle) return;
@@ -971,19 +854,10 @@ class Game {
   // -------------------------------------------------------------- respawn --
 
   /**
-   * Puts the car back on the road, and CUTS the camera there.
+   * Puts the car back on the road and cuts the camera there. See `camera.snap`.
    *
-   * The cut is the point. A respawn moves the car by anything from twelve
-   * metres to half a kilometre in one frame, and the chase rig is a damper that
-   * reads the goal's own travel as a velocity to lead — so a teleport used to
-   * send it swooping across the world into place over the best part of a
-   * second. That move is the title screen's fly-in, and the fly-in belongs to
-   * one thing only: the Drive button. See `camera.snap`.
-   *
-   * `startRun` therefore respawns BEFORE it calls `beginIntro`, because
-   * `update` tests `initialised` before it tests the fly-in, and a snap
-   * requested afterwards would eat the first frame of the shot and then start
-   * it from the wrong place.
+   * `startRun` respawns BEFORE `beginIntro`; a snap after the fly-in starts
+   * would eat the first frame of the shot.
    */
   respawn(atS = this.carS) {
     // Never behind the start of the spline — there is no terrain back there.
@@ -1010,33 +884,17 @@ class Game {
     requestAnimationFrame(this.loop);
 
     /**
-     * Clamp: a long frame must not be simulated in one bite.
-     *
-     * The ceiling is DERIVED from the substep budget rather than written down
-     * again. A clamp looser than `maxSubSteps * fixedStep` cannot be honoured —
-     * the loop below runs out of substeps, the leftover is discarded, and the
-     * world quietly advances less than the frame it is part of. Everything
-     * downstream (the camera, traffic, the trip meter) is handed this same `dt`
-     * and has no way to know, so it acts on time the car never got. That
-     * disagreement is what a frame-rate hitch looked like: not a pause, but the
-     * car lurching backwards inside the frame.
-     *
-     * At this value the accumulator always drains, so `dt` is time the whole
-     * game agrees on. Beyond it the frame is genuinely too long and everything
-     * slows down together, which is a hitch and looks like one.
+     * Clamp a long frame to the substep budget. A looser clamp would run out
+     * of substeps, discard the leftover, and the world would advance less than
+     * the frame handed to it.
      */
     const maxFrame = WORLD.maxSubSteps * WORLD.fixedStep;
     const dt = Math.min((now - this.lastTime) / 1000, maxFrame);
     this.lastTime = now;
 
     /**
-     * Paused: draw the frame, bank no time.
-     *
-     * This returns before the accumulator is touched on purpose. Scaling `dt`
-     * to zero instead would leave the accumulator filling from wall time, and
-     * the world would then fast-forward through every second the menu was up —
-     * the same failure as returning to a tab that has been in the background,
-     * which the visibility handler below exists to avoid.
+     * Paused: draw the frame, bank no time. If `dt` were scaled to zero the
+     * accumulator would keep filling and the world would fast-forward.
      */
     if (this.paused) {
       this.gfx.render();
@@ -1050,20 +908,15 @@ class Game {
     const control = this.active ? this.input : IDLE_INPUT;
 
     // ---- powertrain ------------------------------------------------------
-    // One simulator step per frame. It sub-steps its driveline internally at
-    // 0.5 ms, so the coarser frame rate here costs nothing; the force it
-    // returns is then held constant across the physics substeps below.
+    // One simulator step per frame; it sub-steps internally at 0.5 ms, and
+    // the returned force is held constant across the physics substeps below.
     const reverse = this.vehicle.reverse;
     const pedals = reverse
       ? { throttle: control.brake, brake: control.throttle }
       : { throttle: control.throttle, brake: control.brake };
 
-    // On the title screen the car is parked, so the gearbox goes to neutral and
-    // the only throttle is whatever blip the garage asked for. In gear against a
-    // stopped driveline it would bog instead of revving.
-    // The title screen puts the gearbox in neutral so the engine revs freely
-    // for the preview. A finished run does NOT — the car is still on the road
-    // and should coast to a stop in gear like a car that has just crashed.
+    // On the title screen the gearbox is neutral so the engine revs freely.
+    // A finished run is not: the car should coast to a stop in gear.
     const garage = this.inGarage;
     if (garage) pedals.throttle = this.powertrain.blipThrottle(dt);
 
@@ -1073,7 +926,7 @@ class Game {
       this.vehicle.setSurface(smoothstep(ROAD.halfWidth * 0.9, ROAD.halfWidth + 2.2, lat));
     }
 
-    // Brake lights follow the pedal, not the gear — they come on in reverse too.
+    // Brake lights follow the pedal, so they come on in reverse too.
     this.vehicle.setBrakeLight(this.active ? control.brake : 0);
     this.flashing = this.active && this.input.flashHeld;
     this.vehicle.setHeadlights(this.headlights, this.flashing);
@@ -1099,12 +952,8 @@ class Game {
       this.accumulator -= h;
       steps++;
     }
-    // If we hit the substep ceiling we are behind. Clamp rather than zero the
-    // debt: zeroing throws away the sub-step remainder that the interpolator
-    // needs, which shows up as a hitch precisely when frames are already late.
-    // With `dt` capped at the substep budget this cannot fire — the loop always
-    // drains. Kept as a guard against the two ever drifting apart again, since
-    // the failure is silent.
+    // If we hit the substep ceiling we are behind. Clamp the debt rather than
+    // zero it: the interpolator needs the sub-step remainder.
     if (this.accumulator > h) this.accumulator = h * 0.999;
 
     // Draw where the car actually is *between* steps, not at the last one.
@@ -1112,15 +961,12 @@ class Game {
 
     // ---- world streaming -------------------------------------------------
     this.carS = this.path.projectPoint(this.vehicle.pos, this.carS);
-    // The wind runs on wall time, not simulation time: it is scenery, and
-    // nothing about the car depends on where a blade of grass is pointing.
+    // The wind runs on wall time, not simulation time; it is scenery.
     this.chunks.advanceTime(dt);
     this.chunks.update(this.carS);
 
-    // Tyre effects read the wheel state the substeps above just wrote, so they
-    // have to come after the loop and before anything renders. On the title
-    // screen they are inert rather than hidden — the car is parked and nothing
-    // is slipping — which matters now that the title screen is the world.
+    // Tyre effects read the wheel state just written by the substeps, so they
+    // come after the loop and before anything renders.
     this.fx.update(dt, this.vehicle);
     this.wind.update(dt, this.active ? this.vehicle.forwardSpeed : 0);
 
@@ -1143,20 +989,15 @@ class Game {
     this._checkRecovery(dt);
 
     // ---- presentation ----------------------------------------------------
-    // The title screen and the road are the same picture now, so there is one
-    // presentation path rather than two. All that differs is which rig is
-    // driving the camera and whether the speed effects have anything to say.
+    // The title screen and the road share one presentation path.
     if (this.inGarage) this._frameTitle();
 
-    // Camera first: follow() re-centres the sky dome on the camera, so it must
-    // see this frame's position, not last frame's.
+    // Camera first: follow() re-centres the sky dome on this frame's position.
     this.cam.update(dt, this.vehicle);
-    // The interpolated pose, not the raw physics one: the sun's shadow frustum
-    // is centred here, and stepping it in 8.3 ms jumps while the car moves
-    // smoothly crawls the shadows across everything at speed.
+    // Use the interpolated pose: the shadow frustum is centred here, and
+    // 8.3 ms steps would crawl the shadows across everything.
     this.gfx.follow(this.vehicle.renderPos, dt);
-    // Periphery streaks with speed; the centre of the screen, where the car is,
-    // stays sharp. Nothing at all on the title screen.
+    // The periphery streaks with speed; the centre stays sharp.
     this.gfx.setSpeedBlur(
       this.active
         ? smoothstep(6, ATMOSPHERE.speedBlurRef, Math.abs(this.vehicle.forwardSpeed))
@@ -1180,7 +1021,7 @@ class Game {
 
     this.gfx.render();
 
-    // Anything that did not consume its one-shot press this frame loses it.
+    // Any one-shot press not consumed this frame is lost.
     this.input.endFrame();
   }
 
@@ -1208,16 +1049,13 @@ class Game {
       else if (!this.powertrain.shiftUp()) this.hud.toast('already top gear');
     }
     if (this.input.consume('KeyQ')) {
-      // Asking for a lower gear implies wanting control of the gearbox.
+      // A lower gear request implies manual control.
       if (this.powertrain.autoShift) this.setAutoShift(false);
       else if (!this.powertrain.shiftDown()) this.hud.toast('would over-rev');
     }
     if (this.input.consume('KeyG')) this.setAutoShift(!this.powertrain.autoShift);
     if (this.input.consume('KeyT')) {
-      // Recentre: whatever attitude the phone is at right now is straight
-      // ahead. Nobody holds a phone at the angle they started at five minutes
-      // in, and without this the only cure for a drifting neutral is to turn
-      // tilt off and on again.
+      // Recentre: the phone's current attitude becomes straight ahead.
       if (this.input.tilt.on) {
         this.input.tilt.recentre();
         this.hud.toast('tilt centred');
@@ -1230,13 +1068,9 @@ class Game {
   }
 
   /**
-   * Turns tilt steering on or off, and remembers the choice.
-   *
-   * Called from the Settings button, which is the tap iOS needs — see
-   * `input.js:TiltSteering.enable`. Everything here has to survive the player
-   * saying no, the page not being on HTTPS, and the device having no sensor,
-   * because all three come back as the same "false" and none of them is an
-   * error worth a stack trace.
+   * Turns tilt steering on or off and remembers the choice.
+   * Called from the Settings button, the tap iOS needs; must survive denial,
+   * non-HTTPS, and a device with no sensor, which all come back as false.
    */
   async toggleTilt() {
     const tilt = this.input.tilt;
@@ -1268,8 +1102,8 @@ class Game {
   }
 
   /**
-   * Puts the player back on the road after a genuine failure: flipped and
-   * stuck, off the edge of the generated corridor, or fallen out of the world.
+   * Puts the player back on the road after a failure: flipped and stuck, off
+   * the corridor edge, or fallen out of the world.
    */
   _checkRecovery(dt) {
     if (!this.active) return;
@@ -1280,28 +1114,17 @@ class Game {
     const groundY = this.chunks.groundAt(this.carS, 0, this._tmp).y;
 
     /**
-     * Where the world ACTUALLY ends on this side, here.
-     *
-     * `CHUNK.recoverLateral` is a flat 300 m and the terrain sheet is not: the
-     * fold guard pulls its outer edge in wherever the road turns, to as little
-     * as 73 m on a bend. Recovering at the constant meant the car reached
-     * the edge, drove off it, and then had to fall ninety metres before
-     * anything noticed — bug #64, and it is the reason the ground appeared to
-     * have holes in it. Asking the road how wide its own corridor is here costs
-     * one frame lookup and catches the car on the right side of the edge.
-     *
-     * `RECOVER_MARGIN` is slack for the car's own length and for the fact that
-     * the corridor narrows as you drive into a bend: without it, a car running
-     * parallel to the edge crosses it before the check next reads a smaller
-     * number.
+     * Where the world ends on this side, here. `CHUNK.recoverLateral` is a
+     * flat 300 m, but the terrain edge pulls in on bends, so the road's own
+     * corridor width is used. `RECOVER_MARGIN` is slack for the car's length
+     * and for the corridor narrowing into a bend.
      */
     const reach = this.path.corridorAt(this.carS, this._reach);
     const edge = offset < 0 ? reach.left : reach.right;
     const bound = Math.min(CHUNK.recoverLateral, edge - RECOVER_MARGIN);
 
-    // Beached: full throttle, no progress. Happens when the car ends up on a
-    // cut face too steep to climb, where nothing else in this check fires — it
-    // is upright, on the ground, and well inside the corridor.
+    // Beached: full throttle, no progress — for example on a cut face too
+    // steep to climb.
     if (this.input.throttle > 0.5 && v.speed < 1.2 && v.groundedCount > 0) {
       this.stuckFor = (this.stuckFor || 0) + dt;
     } else {

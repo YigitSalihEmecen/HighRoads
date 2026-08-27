@@ -1,53 +1,9 @@
 /**
- * env/rocks.js — procedural stone, in three size classes.
+ * env/rocks.js — procedural stone in three size classes.
  *
- * Rocks are not scenery here. They are TEXTURE — the thing that stops a cut
- * face reading as a smooth green ramp and a verge reading as a mown edge. The
- * brief is deliberately modest: gravel and slabs along the shoulder, scree
- * spilling out of a cutting, the occasional boulder sitting in the grass. Not
- * fields of them, and nothing you would call a landmark.
- *
- * ── how one is built ────────────────────────────────────────────────────────
- *
- * A subdivided icosahedron, displaced per vertex, then squashed. Three things
- * do all the work:
- *
- *   1. **Multi-octave radial displacement.** Two octaves of value noise on the
- *      unit direction. The first gives the lump its overall irregularity; the
- *      second breaks the silhouette so it is not an egg.
- *   2. **Flattening.** Real stone is bedded and broken, not round. Each rock
- *      gets a random non-uniform scale with the vertical axis biased short, and
- *      slabs get an extreme one.
- *   3. **Planar faceting.** The displaced sphere is snapped toward a handful of
- *      random half-space planes — `r = min(r, plane)` for a few random
- *      normals — which is what a fracture is. Without it the result is a potato;
- *      with it, it has faces and edges that catch a light.
- *
- * Normals are FLAT and that is the whole look. A rock is a fractured solid, so
- * every face should have its own shade; smooth-shading one gives a soft blobby
- * thing that reads as clay.
- *
- * ── budget ──────────────────────────────────────────────────────────────────
- *
- * Icosahedron detail 1 is 80 triangles, detail 0 is 20. Scree uses detail 0 and
- * boulders detail 1, so the mean is around 44 per instance — against 1,700 to
- * 2,900 for one of the Quaternius canopies. A hundred rocks in view is 4,400
- * triangles, which is four percent of the terrain sheet.
- *
- * ── colour, and the one exception in `src/env/` ─────────────────────────────
- *
- * Vertex colours here are LUMINANCE, as everywhere: the hue is per instance.
- * But it is the ONE asset in this directory whose hue does not come from the
- * terrain under it — it comes from `ROCKS.palette`, a fixed set of mineral
- * greys and browns.
- *
- * That is a deliberate carve-out from rule 5 of `src/env/README.md`, and the
- * reason is that the rule is about things that GROW out of the ground. Grass
- * and foliage take the ground's colour because a green tuft on a grey scree
- * slope is wrong. A rock does not photosynthesise: sampling the verge gave
- * every chip along the shoulder the grass's green, which reads as algae rather
- * than as stone. The palette is in `config.js` and not in this file for the
- * same reason every other tunable is.
+ * Rocks break the clean surfaces: gravel and slabs along the shoulder, scree
+ * in a cutting, and the occasional boulder. A subdivided icosahedron is
+ * displaced per vertex and then squashed.
  */
 
 import * as THREE from 'three';
@@ -79,27 +35,15 @@ function makeLumpNoise(rand) {
   };
 }
 
-/**
- * One rock, as a `BufferGeometry` with position, normal and colour, its base
- * sitting on y = 0 and its longest horizontal half-extent normalised to 0.5.
- *
- * Normalising means the scatter can ask for "a 40 cm rock" and get one, whatever
- * shape came out — otherwise every size in the config would be a size the
- * generator merely influenced.
- */
+/** One rock on y = 0, longest horizontal half-extent normalised to 0.5, so scatter can ask for an exact size. */
 function buildRock(rand, noise, { detail, flatten, facets, roughness }) {
-  // Non-indexed, so every triangle owns its vertices and flat normals fall out
-  // of `computeVertexNormals` rather than needing a duplication pass.
-  // `IcosahedronGeometry` is already non-indexed; the guard is there because
-  // that is an implementation detail of three's polyhedron builder, not a
-  // promise.
+  // Non-indexed so flat normals fall out; the guard defends against three's builder.
   const geo = new THREE.IcosahedronGeometry(0.5, detail);
   const src = geo.index ? geo.toNonIndexed() : geo;
   if (src !== geo) geo.dispose();
   const pos = src.attributes.position.array;
 
-  // Fracture planes. `r = min(r, d/dot(n, dir))` clips the lump against a
-  // half-space through the origin at distance d, which is exactly a broken face.
+  // Fracture planes: `r = min(r, d/dot(n, dir))` clips the lump into broken faces.
   const planes = [];
   for (let i = 0; i < facets; i++) {
     const a = rand() * Math.PI * 2;
@@ -112,8 +56,7 @@ function buildRock(rand, noise, { detail, flatten, facets, roughness }) {
     });
   }
 
-  // A per-rock offset into the noise field, so two rocks built from the same
-  // lattice are still different rocks.
+  // Per-rock noise offset: same lattice, different rocks.
   const ox = rand() * 64, oy = rand() * 64, oz = rand() * 64;
   const sx = 1, sy = flatten, sz = 0.78 + rand() * 0.44;
 
@@ -141,9 +84,7 @@ function buildRock(rand, noise, { detail, flatten, facets, roughness }) {
     if (h > maxXZ) maxXZ = h;
   }
 
-  // Normalise the horizontal half-extent, then drop the whole thing so its
-  // lowest point is exactly on y = 0. A rock floating a centimetre over the
-  // grass is the single most obvious scatter bug there is.
+  // Normalise the half-extent, then drop to y = 0 — a floating rock is the most obvious scatter bug.
   const k = 0.5 / maxXZ;
   let minY = Infinity;
   for (let i = 0; i < pos.length; i += 3) {
@@ -154,10 +95,7 @@ function buildRock(rand, noise, { detail, flatten, facets, roughness }) {
 
   src.computeVertexNormals();
 
-  // Luminance only — the hue arrives per instance from the terrain. Faces
-  // pointing up are lighter (weathered, dusty); undersides are darker, which is
-  // ambient occlusion the lighting rig is too coarse to produce for something
-  // this small.
+  // Luminance only: up-faces lighter (weathered), under-faces darker — AO the rig cannot produce.
   const nrm = src.attributes.normal.array;
   const col = new Float32Array(pos.length);
   for (let i = 0; i < pos.length; i += 3) {
@@ -171,19 +109,8 @@ function buildRock(rand, noise, { detail, flatten, facets, roughness }) {
 }
 
 /**
- * The shared rock assets: a small library of variants per size class, and one
- * material for all of them.
- *
- * A library rather than one shape per class because an instanced scatter of a
- * single mesh is unmistakable the moment two of them land near each other —
- * the eye finds the repeat before it finds anything else in the frame. Six
- * variants at ~44 triangles each is 264 triangles of unique geometry for the
- * whole world, so the honest way to buy variety is simply to build more.
- *
- * Classes:
- *   `scree`   — 10–35 cm chips, for spilling down a cut face and along a verge
- *   `stone`   — 35 cm–1 m, the general-purpose one
- *   `boulder` — 1–2.5 m, sparse, something to sit in the grass
+ * A small library of variants per size class plus one shared material. Several
+ * shapes hide the repetition the eye finds instantly in a single-mesh scatter.
  */
 export function createRockAssets() {
   const rand = rng(0x51ed270b);
@@ -191,8 +118,7 @@ export function createRockAssets() {
 
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    // FLAT. See the header — a fractured solid whose faces all shade alike is
-    // not a rock, it is a pebble made of clay.
+    // Flat-shaded: a fractured solid whose faces all shade alike reads as clay.
     flatShading: true,
     roughness: 0.94,
     metalness: 0.0,
@@ -209,17 +135,14 @@ export function createRockAssets() {
         roughness: spec.roughness,
       }));
     }
-    // The scatter takes a WINDOW into `variants`, rotated per chunk, so the
-    // whole library gets used across the world while any one chunk only ever
-    // touches a couple of geometries — see `chunks.js:_buildRocks` and
-    // ROCKS.variantsPerChunk.
+    // The scatter takes a per-chunk window into `variants`, so one chunk only touches a couple of geometries.
     classes[name] = { variants, spec };
   }
 
   return {
     material,
     classes,
-    /** Every variant geometry, flattened — for a caller that wants to iterate. */
+    /** All variant geometries, flattened. */
     all() {
       return Object.values(classes).flatMap((c) => c.variants);
     },

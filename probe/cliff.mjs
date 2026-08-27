@@ -1,14 +1,7 @@
 /**
- * Longitudinal steps in the terrain sheet.
+ * cliff.mjs — measures longitudinal steps in the terrain sheet.
  *
- * A cliff is the ground height jumping between one 2.5 m row and the next,
- * right across the corridor — a seam the car can catch on and the eye reads as
- * a tear in the world. Measured as the height change per row, at every lateral
- * offset the mesh actually uses.
- *
- * This was written to chase an artefact around tunnel portals (bug #27, a 15 m
- * cliff at a tunnel exit). The tunnels are gone; the measurement is not, because
- * any change to the terrain or the road alignment can open the same seam.
+ * Reports the height change per terrain row across the corridor.
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';

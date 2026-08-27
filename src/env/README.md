@@ -63,8 +63,8 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 | `textures.js` | shared procedural canvas helpers — value noise, fBm, mottle | — |
 | `lowpoly.js` | faceted-solid primitives: warped lumps, tapering tubes, conifer skirts | — |
 | `grass.js` | crossed-card grass tufts, in a near and a far tier | 4 |
-| `trees.js` | faceted low-poly trees, near and far tiers from one builder | 93–334 / **39–72** |
-| `bushes.js` | four shrub forms, clusters of faceted lumps | 29–100 |
+| `trees.js` | faceted low-poly trees, near and far tiers from one builder | 150–376 / **66–270** |
+| `bushes.js` | four shrub forms, clusters of faceted lumps | 112–183 |
 | `rocks.js` | convex boulders, slabs and scree, three size classes | 44–120 |
 | `road.js` | the carriageway's asphalt mask and its material patch | — |
 | `ground.js` | the terrain's detail texture and its material patch | — |
@@ -76,15 +76,18 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 of warped lumps or a stack of jagged conical skirts, flat-shaded, per-face
 coloured, with no texture, no UVs and no alpha test anywhere in it.
 
-* both tiers come from **one builder** at different subdivisions: near 93–334
-  triangles, far 39–72, same envelope, same palette, same seed;
+* a tree is a two-generation **branch skeleton** with a crown lump on each
+  terminal tip — the branching decides where the foliage goes;
+* both tiers come from **one builder**: near 150–376 triangles, far 66–270
+  (87 per tree actually placed), same skeleton, same palette, same seed. The
+  far tier walks the skeleton without emitting it, so the tips agree;
 * `trees.js:matchWidth` squeezes the far tier sideways until its crown is the
   near tier's width to within 2%, so the cross-fade is a change of face count
   and nothing else;
 * the two cross-fade by scale, in the shader, exactly as the two grass tiers do.
 
-Measured: **419,000 triangles** of canopy and understorey alive at once against
-109,000 for the terrain sheet, for 180 near trees and ~200 far ones per chunk.
+Measured: **492,000 triangles** of canopy and understorey alive at once against
+109,000 for the terrain sheet, for 120 near trees and ~230 far ones per chunk.
 
 ### What this replaced, and why
 
@@ -98,19 +101,33 @@ place and shrinking as near ones grew.
 
 ### Load-bearing, and easy to undo by accident
 
-1. **Interior culling.** `lowpoly.js:blob` drops any face whose centroid is
-   inside another lump of the same crown. It is worth a third of the canopy. It
-   reads the occluder's own warp function, so the occluder records must be the
-   `{ c, r, warp }` plans the caller assembled — a shape mismatch here fails
+1. **Winding, and closure.** They are two questions and `side: FrontSide`
+   punishes both the same way — you see through the model into an undrawn
+   interior, which reads as foliage with transparent parts rather than as an
+   error. `tube` and `tier` were both inside out for months. Then, with the
+   winding right, there were still 1,668 open rims: unfloored conifer skirts,
+   uncapped forks, uncapped shrub stems, and culled faces with nothing behind
+   them. `probe/props.mjs` checks the signed volume of every proto AND welds it
+   to ray its rims — **`no proto has a see-through gap` is not implied by
+   `every proto is wound outward`**. Caps are off by default because most ends
+   are buried; any end that is not buried needs one.
+2. **Interior culling is one-way, biggest lump first, per-vertex, against the
+   facets** (`FACET[detail]`, the measured sag of an inscribed icosphere). Each
+   of the three obvious shortcuts — centroid, symmetric, smooth surface — opens
+   holes, and the symmetric one opens them by deleting the surface that was
+   covering the rim. It culls less than it used to; `TREES.nearCap` and
+   `BUSHES.cap` are where that was paid.
+   It reads the occluder's own warp function, so the occluder records must be
+   the `{ c, r, warp }` plans the caller assembled — a shape mismatch here fails
    *silently*, culls nothing, and only shows up in the triangle count.
-2. **Per-face, non-indexed, baked normals and colours.** `material.flatShading`
+3. **Per-face, non-indexed, baked normals and colours.** `material.flatShading`
    is deliberately NOT set: it would recompute normals the geometry already has
    while leaving the colour smooth, and per-face colour is half the look.
-3. **The near canopy has a SHORTER LIFETIME than its chunk.** A near tree is
+4. **The near canopy has a SHORTER LIFETIME than its chunk.** A near tree is
    resolvable to 420 m and its chunk reaches 720 m. The recipe is cached on the
    chunk by `chunks.js:_buildProps` and `_updateCanopy` turns it into meshes as
    the car arrives — the same split the ground cover uses.
-4. **Hue is BAKED, per variant, not per instance.** Rule 5 above still holds for
+5. **Hue is BAKED, per variant, not per instance.** Rule 5 above still holds for
    the ground cover; it does not hold here. A per-instance blend toward the
    ground colour desaturated every palette to the same olive. `chunks.js` now
    applies a near-1.0 modulation instead (`TREES.groundTint`, `instanceVary`).
