@@ -1,96 +1,51 @@
 /**
- * config.js — every tunable in one place.
+ * config.js — the single set of tunables.
  *
- * Units are SI throughout: metres, kilograms, seconds, newtons, radians.
- * The vehicle numbers are physically plausible but deliberately biased toward
- * "grippy and forgiving" — this is a cruiser, not a simulator.
+ * All units are SI. The vehicle values favour a forgiving cruiser over a hard
+ * simulator.
  */
 
 export const WORLD = {
   seed: 'highroads-01',
 
-  /** Slightly heavier than Earth: makes landings snappy and reduces float. */
+  /** Gravity, m/s². Slightly over Earth. */
   gravity: -16.0,
 
-  /** Physics runs on a fixed 120 Hz clock, decoupled from the render loop. */
+  /** Fixed 120 Hz physics clock, decoupled from the render loop. */
   fixedStep: 1 / 120,
-  /**
-   * Substeps one frame may run, and therefore the longest frame the simulation
-   * will follow in real time: `maxSubSteps * fixedStep` = 50 ms, or 20 fps.
-   *
-   * This is the spiral-of-death guard and it is also, deliberately, the ONLY
-   * place the frame-time ceiling is expressed — `main.js` clamps `dt` to
-   * exactly this product rather than to a separate magic number. When those two
-   * disagreed, they did so silently and expensively: the clamp was 50 ms while
-   * the budget covered only 41.7 ms, so every frame between those bounds ran
-   * the physics short and threw the remainder away. On a 90 ms hitch the world
-   * advanced 46% of what the rest of the frame assumed, which read as the car
-   * being yanked backwards. Keeping the ceiling derived means the accumulator
-   * always drains and no time is ever lost inside the clamp.
-   */
+  /** Frame-time ceiling: `maxSubSteps * fixedStep` = 50 ms. `main.js` clamps `dt` to this. */
   maxSubSteps: 6,
 };
 
 export const ROAD = {
-  /** Spacing between spline control points. Catmull-Rom interpolates between. */
+  /** Spacing between spline control points, metres. */
   ctrlSpacing: 46,
-  /** Arc-length sample spacing along the spline (the lookup-table resolution). */
+  /** Arc-length sample spacing, metres (lookup-table resolution). */
   sampleStep: 2.5,
 
-  /**
-   * Four lanes, two each way. 3.7 m is real motorway width, and it is sized off
-   * the widest thing in the roster rather than picked for looks: the Military
-   * Vehicle is 3.28 m across and the Monster Truck 2.95 m, so a 2.9 m lane did
-   * not physically contain either of them.
-   */
+  /** Lane width, metres — sized off the 3.28 m Military Vehicle. */
   laneWidth: 3.7,
   halfWidth: 7.4,
-  /** Paved shoulder beyond the lane markings before terrain blending starts. */
+  /** Paved shoulder beyond the lane markings, metres. */
   shoulder: 2.0,
 
-  /**
-   * Peak curvature, in radians per metre. 1/165 keeps the minimum radius above
-   * ~165 m, which matters for more than feel: the terrain grid is parameterised
-   * in road space, so a radius tighter than the corridor half-width would make
-   * the lateral rays self-intersect and fold the mesh.
-   */
+  /** Peak curvature, 1/m — keeps the minimum radius above ~165 m. */
   maxCurvature: 1 / 165,
-  /** How fast the curvature itself is allowed to change (noise frequency). */
+  /** How fast curvature itself may change (noise frequency). */
   curveFreq: 0.055,
 
-  /** Max road gradient (rise over run) — 9.5% is a steep-but-real mountain road. */
+  /** Max road gradient (rise over run) — 9.5%. */
   maxGrade: 0.095,
-  /**
-   * Limit on how fast the *gradient itself* may change, per control point.
-   * This is the vertical-curve constraint real alignments are designed to, and
-   * without it the grade can swing from +9.5% to -9.5% across one 46 m span:
-   * vertical acceleration is v^2 times the curvature, so at 160 km/h that
-   * throws the car clean off the road. 0.05 per span keeps it under ~2.5 m/s^2.
-   */
+  /** Max change in gradient per control point, keeps vertical acceleration bounded. */
   maxGradeChange: 0.05,
   /** Elevation smoothing applied to control points (0 = follow terrain exactly). */
   elevationSmoothing: 0.55,
 
-  /**
-   * Banking. bank = curvature * bankGain, clamped. Physically this is
-   * tan(θ) = v²/(R·g) with a design speed baked into the gain; 35 puts a
-   * typical 400 m sweeper at ~4% and only the tightest corners on the clamp.
-   */
+  /** Banking: bank = curvature * bankGain, clamped. */
   bankGain: 35,
   maxBank: 0.075,
 
-  /**
-   * Cut-and-fill, which is what a real alignment does and what replaced the old
-   * smoothstep blend. Ground height is simply clamped between two planes rising
-   * and falling from the road edge:
-   *
-   *     y = clamp(natural,  roadY - fillSlope*d,  roadY + cutSlope*d)
-   *
-   * Everything falls out of that one expression: both sides cut in a valley,
-   * one cut and one filled on a mountainside, both filled on a causeway, and a
-   * rock cutting where the road punches through a ridge. Steeper cut than fill,
-   * because rock stands where loose fill will not.
-   */
+  /** Cut-and-fill plane slopes (rise over run); cut steeper than fill. */
   cutSlope: 0.62,
   fillSlope: 0.5,
   /** Rounding radius where the cut/fill ramp leaves the verge, metres. */
@@ -104,323 +59,82 @@ export const ROAD = {
 };
 
 /**
- * Road routing — how the alignment chooses where to go.
- *
- * The old generator integrated a heading from two octaves of noise and then
- * chased a smoothed terrain elevation. It was completely BLIND to the shape of
- * the ground: it wandered by noise and bulldozed whatever it met, which is why
- * every drive felt the same and why the road spent so much of its life in a
- * cutting or on an embankment for no visible reason.
- *
- * This replaces it with the standard approach from the literature — Galin et
- * al., *Procedural Generation of Roads* (Computer Graphics Forum, 2010), where
- * the alignment is the minimum of a cost function over terrain slope, curvature
- * and obstacles — adapted to the one constraint that paper does not have: this
- * world is INFINITE and streams. There is no global heightmap to run A* over
- * and no destination to route to, so the global search becomes a GREEDY
- * LOOKAHEAD: at every control point, fan out a set of candidate headings, score
- * each one over the span it would create, and commit to the cheapest. O(1) per
- * control point, and the road can still be extended forever.
- *
- * The reason this produces "intentional" roads is worth stating plainly,
- * because it is not obvious that a cost function buys character. On a hillside,
- * a road running ALONG the contour needs almost no earthwork; one running
- * across it needs a deep cut on the uphill side and a tall fill on the
- * downhill. Minimising earthwork therefore makes the road contour around hills,
- * run along valley floors, and climb in traverses instead of straight up —
- * every one of which is a thing real surveyors do for the same reason. Nothing
- * here says "follow the hillside". It says "do not move earth", and following
- * the hillside is what that turns out to mean.
+ * Road routing — greedy lookahead over terrain slope, curvature and obstacles.
+ * Minimising earthwork contours the road around hills, along valley floors and
+ * in traverses, as real surveyors route.
  */
 export const ROUTE = {
-  /**
-   * Candidate headings fanned out per control point, across the full legal turn
-   * either way. Odd, so that "straight on" is always among them.
-   */
+  /** Candidate headings fanned out per control point. Odd, so "straight on" is always among them. */
   candidates: 13,
 
-  /**
-   * How far the corridor is sampled either side of the candidate centreline
-   * when estimating earthwork, and how many probes across it.
-   *
-   * This has to be WIDER than the carriageway, and by a lot. Earthwork is not
-   * about the road surface — that is flat by construction — it is about the cut
-   * and fill slopes running out from the verge, which is where the volume is
-   * and what the eye actually reads as a scar.
-   */
+  /** Corridor sampled either side of the centreline, metres — must be wider than the carriageway. */
   corridor: 38,
   probes: 5,
   /** Stations sampled along each candidate span. */
   stations: 3,
 
-  /**
-   * Detail level the router sees, as a `terrain.height` lateral argument.
-   *
-   * Deliberately coarser than the surface the mesh builds. The router is
-   * choosing a route through a LANDFORM; letting it see 7 m bumps makes it
-   * swerve around things that the cut-and-fill clamp will flatten anyway.
-   */
+  /** Detail level the router sees, as a `terrain.height` lateral argument. */
   lod: 90,
 
   /** Ride height of the finished carriageway over the natural surface. */
   rideHeight: 0.9,
 
   // ---- cost weights. Relative only; the winner is an argmin. -------------
-  /**
-   * Earthwork is a BUDGET, not an objective, and finding that out cost a
-   * rewrite.
-   *
-   * Minimising it outright works exactly as the literature says and produces
-   * the wrong road: measured against the old noise generator it cut mean
-   * earthwork 6.4 m → 4.9 m and simultaneously cut sidehill cross-sections
-   * 12% → 8%, because the cheapest place to put a road is a flat field. The
-   * router had found the boring routes, efficiently.
-   *
-   * So earthwork costs nothing at all up to `earthFree` and then bites hard.
-   * Below the threshold the router is indifferent between a level road and a
-   * shelf cut into a hillside, which lets the terms below — the ones that are
-   * actually about the drive — decide. Above it, no amount of view justifies
-   * a fifteen-metre cutting.
-   */
+  /** Earthwork is a budget, not an objective: free up to here, then it bites. */
   earthFree: 7.0,
-  /**
-   * Raised from 2.4 when the terrain's vertical scale roughly tripled (see
-   * `noise.js:continent` and `mountainH`). The budget is the same 7 m; what
-   * changed is that in country with 600 m of local relief the router now MEETS
-   * that budget everywhere, so the slope of the penalty past it is what decides
-   * whether it traverses a hillside or bulldozes across it. At 2.4 it bulldozed
-   * — mean earthwork 11.2 m over four seeds, which is a motorway cutting for
-   * most of the drive. Swept: 6.0 gives 8.9 m and takes the sidehill share from
-   * 48% to 58%, which is the same road being built by going round rather than
-   * through.
-   */
+  /** Slope of the penalty past `earthFree`. */
   wEarthwork: 6.0,
   /** Steepness, as a fraction of the legal maximum, squared. */
   wGrade: 14,
-  /**
-   * Turn taken, and the CHANGE in turn between spans.
-   *
-   * Both were three times this and the result was a road that barely turned at
-   * all — one seed measured a 95th-percentile curvature of 0.00 mrad/m, which
-   * is a straight line four kilometres long. A cost function will happily buy
-   * smoothness with every corner you have if you let it.
-   */
+  /** Turn taken, and the change in turn between spans. */
   wTurn: 2.5,
   wTurnChange: 12,
-  /**
-   * Deviation from the intended bearing.
-   *
-   * The one term that stops the road being clever to death. Pure earthwork
-   * minimisation on a hillside is a contour line, and a contour line around a
-   * hill is a CIRCLE — the road would spiral and never arrive anywhere. A
-   * slowly drifting compass bearing gives it somewhere to be going, and the
-   * terrain decides how it gets there. That is also what a real alignment is:
-   * two fixed points, and a survey party arguing about the middle.
-   */
+  /** Deviation from the intended bearing. */
   wBearing: 8,
-  // Swept over six seeds against shelf share, earthwork and net progress. 5
-  // bought a couple more points of shelf and took the worst seed's progress to
-  // 0.07 — a road going nowhere. 8 is the largest value that never spiralled.
-  /** How fast the intended bearing drifts, in radians per metre of road. */
+  /** How fast the intended bearing drifts, radians per metre of road. */
   bearingDrift: 0.0016,
 
   // ---- character. What makes one stretch of road unlike another. --------
-  /**
-   * Scale over which the route's personality changes, in metres.
-   *
-   * 2.2 km, so a drive has chapters rather than moods: long enough to settle
-   * into a valley and come out of it, short enough that a ten-minute run is not
-   * all one thing.
-   */
+  /** Scale over which the route's personality changes, metres. */
   characterScale: 2200,
-  /**
-   * How far the personality can push the earthwork weight down. At 1 the router
-   * ignores earthwork entirely on its most direct setting and drives straight
-   * through hills in cuttings, which is a real kind of road and a good contrast
-   * to the contour-hugging one.
-   */
+  /** How far the personality can push the earthwork weight down. */
   directness: 0.72,
-  /**
-   * Reward for seeking high ground or low ground, per metre of elevation
-   * difference from the neighbourhood. The sign comes from the character noise,
-   * so the road spends a while preferring ridgelines and a while preferring
-   * valley floors.
-   */
+  /** Reward for seeking high or low ground, per metre of elevation difference. */
   wSeek: 0.55,
-  /**
-   * Reward for a genuine SHELF: ground rising on one side of the road while it
-   * falls away on the other.
-   *
-   * This is the "driving along the side of a hill" term and it is the single
-   * most important number in the block. It is not the same as rewarding a big
-   * height difference across the corridor — a road on top of a ridge has that
-   * too, with both sides falling. This scores `min(rise, fall)`, which is zero
-   * unless one side really is up and the other really is down.
-   */
+  /** Reward for a shelf: ground rising one side while it falls away the other. */
   wShelf: 2.4,
-  /**
-   * Reward for being in interesting country at all: the vertical range of the
-   * ground across the corridor.
-   *
-   * Without it the router is content on a plain, because a plain satisfies
-   * every engineering term perfectly. This is what sends the road looking for
-   * hills to be on the side of.
-   */
+  /** Reward for vertical range across the corridor. */
   wRelief: 0.85,
 
-  /**
-   * SELF-AVOIDANCE. The road must not come back alongside itself.
-   *
-   * Not an aesthetic rule — a structural one, and the new router is what made
-   * it necessary. Every chunk carries terrain out to `CHUNK.halfExtent` (700 m)
-   * either side while being only `CHUNK.length` (120 m) long, so a chunk's
-   * sheet covers an enormous area. Where two stretches of road pass near each
-   * other, each one's sheet is carved for ITS road and is natural ground over
-   * the other's — so one carriageway ends up with a hillside lying across it.
-   *
-   * Measured: with the cost router turning consistently to follow a contour,
-   * chunk 0's carriageway was being covered by chunk 23's sheet, 2.8 km away
-   * along the road and doubled back to within a few hundred metres of it. The
-   * old noise generator wandered too incoherently to loop like that; a router
-   * that follows hillsides does it readily, because going round a hill is what
-   * following a contour means.
-   *
-   * So: candidates that come within `selfClear` of any part of the road between
-   * `selfNear` and `selfFar` behind are penalised, hard and smoothly. The band
-   * matters at both ends — closer than `selfNear` is simply the road you are
-   * on, and further than `selfFar` cannot be loaded at the same time.
-   */
+  /** SELF-AVOIDANCE — the road must not come back alongside itself. */
   selfNear: 260,
   selfFar: 1600,
   selfClear: 300,
   wSelf: 900,
 
-  /**
-   * Distance over which a candidate must beat the incumbent to be chosen, as a
-   * fraction of the incumbent's cost. Without a margin the argmin flickers
-   * between near-equal candidates from one span to the next, and the road gets
-   * a fine tremor that reads as noise rather than as decision.
-   */
+  /** Fraction a candidate must beat the incumbent by, against argmin flicker. */
   hysteresis: 0.04,
 
   /**
-   * How far a terrain vertex may travel toward the centre of its own turn,
-   * as a fraction. See `chunks.js:foldSafeOffset`.
-   *
-   * Rows are spaced `ds * (1 + v * kappa)` apart, so a vertex sitting exactly at
-   * the centre of rotation has zero longitudinal extent and everything past it
-   * is inside out. 0.7 keeps every quad at at least 30% of its nominal depth.
-   *
-   * It lives here rather than as a literal in `chunks.js` because
-   * `path.corridorAt` inverts it — the terrain sheet's own outer edge is
-   * `foldMargin / kappa`, and the recovery check needs that number — and two
-   * places holding the same threshold under different names is trap #7.
+   * How far a terrain vertex may travel into its own turn, as a fraction.
+   * Cross-file with `chunks.js:foldSafeOffset` and `path.corridorAt`.
    */
   foldMargin: 0.7,
 
-  /**
-   * The turn rate the fold guard is built from, averaged over this many road
-   * samples either side before the running maximum is taken.
-   *
-   * ZERO WOULD BE THE OBVIOUS VALUE and it is what this used to do, implicitly:
-   * one frame-to-frame difference, which is a second derivative of a spline
-   * through 46 m control points sampled every 2.5 m. That estimate reached
-   * 1/81 rad/m against a road whose design limit is `ROAD.maxCurvature` = 1/165
-   * — twice as tight as the alignment can physically be — and since the guard
-   * turns curvature straight into a lateral limit, the terrain sheet was ending
-   * as little as 57 metres from the centreline. Measured: 16-19% of ray probes
-   * within 290 m of the road hit nothing at all, and the car drove off the edge
-   * of the world and fell. That is bug #64, and `probe/offroad.mjs` is its
-   * regression test.
-   *
-   * The average is EXACT for a circular arc at any width — the sum of the
-   * chord-to-chord angles across a window is the total turn across it, by
-   * construction — so widening costs no peak curvature, only the sharpness of
-   * the transition into one. What it removes is the spline's own roughness,
-   * which is not curvature, and which the running maximum would otherwise smear
-   * across fifty metres of road.
-   *
-   * SIX, and the number is measured rather than reasoned. Both directions cost
-   * something, and they are not the same something. Per seed, worst corridor
-   * width against folded cells (`probe/offroad.mjs`, five seeds, 20 chunks):
-   *
-   *   | window | worst corridor | folded cells |
-   *   |--------|----------------|--------------|
-   *   | 0      | 56.6 - 79.5 m  | 239 - 580    |
-   *   | 4      | 64.0 - 87.0 m  | 206 - 468    |
-   *   | 6      | 73.0 - 94.4 m  | 204 - 459    |
-   *   | 10     | 93.6 - 102.6 m | 75 - 568     |
-   *   | 16     | 98.9 - 105.6 m | 200 - 1080   |
-   *
-   * Six is the largest window that is better than the old behaviour on BOTH
-   * counts for every seed. Past it the estimate starts genuinely under-reading
-   * real corners and the sheet folds through itself again, which is the far
-   * worse bug (#58, #59) and the entire reason the guard exists.
-   *
-   * A HARD FLOOR ON THE RESULT WAS TRIED AND REJECTED. Capping the turn rate at
-   * `foldMargin / 112` guarantees a 112 m corridor and takes one seed from 580
-   * folded cells to 1,217: where a Catmull-Rom overshoots between control
-   * points the road really does turn tighter than it was designed to, and a cap
-   * clamps that away and inverts the mesh exactly there. The corridor is
-   * whatever the geometry allows, and `main.js:_checkRecovery` asks the road how
-   * wide it is rather than assuming — see `path.corridorAt`.
-   */
+  /** Turn rate the fold guard is built from, averaged over this many samples. */
   foldSmooth: 6,
 
-  /**
-   * Length of road, metres, that the RELAXED heading is averaged over.
-   *
-   * This is the handle that stopped the world having holes in it, and it is
-   * worth being precise about what it does, because `foldSmooth` above looks
-   * like the same idea and is not.
-   *
-   * `foldSmooth` cleans up the ESTIMATE of the road's curvature. It made the
-   * guard honest — the corridor went from 57 m to 94 m — and then stopped,
-   * because past that point the curvature it was reporting was real. A road
-   * with a 134 m radius has a turning circle 134 m across, and no amount of
-   * smoothing puts terrain outside it while the terrain is laid out square to
-   * the road. Measured after that fix: 12.4% of the ground within 300 m of the
-   * centreline still did not exist, in a ring beginning around 100 m out.
-   *
-   * This is a different lever. `chunks.js:lateralAt` rotates the direction the
-   * sheet is laid along, from the road's own `right` near the carriageway
-   * toward a heading averaged over this distance far from it — so the effective
-   * curvature falls with lateral offset, and the sheet reaches
-   * `foldMargin / relaxK` instead of `foldMargin / kappa`. Nothing about the
-   * fold invariant changes; it is given one more degree of freedom to satisfy
-   * it with.
-   *
-   * Measured on the default seed, worst relaxed radius against the reach it
-   * buys, and the void left inside 300 m:
-   *
-   *     window      R_min     reach      void
-   *      (none)      134 m      94 m     12.4%
-   *      400 m       309 m     216 m      4.1%
-   *      800 m       573 m     401 m      0.6%
-   *     1200 m       762 m     533 m      0.2%
-   *
-   * 800 puts the reach past anything a car gets to before the recovery bound,
-   * and past the 300 m the probe sweeps. Wider still costs accuracy where it
-   * matters: the far sheet is laid along a heading that ignores the road, so
-   * the terrain's own features stop lining up with the corridor, and at 1200 m
-   * the relaxed heading is already 38 degrees off the road's at its worst.
-   */
+  /** Length of road, metres, the relaxed heading is averaged over. */
   relaxWindow: 800,
 };
 
 export const CHUNK = {
-  /** Length of one chunk along the road, in metres. */
+  /** Length of one chunk along the road, metres. */
   length: 120,
   /** Longitudinal subdivisions per chunk (120 / 48 = 2.5 m quads). */
   segmentsU: 48,
 
-  /**
-   * Chunks kept behind / ahead. Keyed to the far grass tier, which is the
-   * shallowest thing in the world: the ground has to reach the grass's 630 m
-   * fade-out before a blade of it can exist that far. That buys two chunk
-   * rows' worth of geometry back over the fog-wall experiment, which is the
-   * price of grass (and of the world) being readable ~50% further out.
-   */
+  /** Chunks kept behind / ahead — keyed to the far grass tier's fade-out. */
   behind: 2,
   ahead: 6,
 
@@ -429,157 +143,45 @@ export const CHUNK = {
   /** Built synchronously before the first frame so the whole active window exists. */
   preload: 9,
 
-  /**
-   * Drainage ditch depth just off the shoulder. Kept shallow and wide: this
-   * sits exactly where a car leaves the road, and a deep narrow one is a hit
-   * rather than a feature.
-   */
+  /** Drainage ditch depth just off the shoulder, metres. */
   ditchDepth: 0.3,
   ditchWidth: 9,
   /** Distance past the verge over which the road's cross-slope dies away. */
   bankRunout: 22,
 
-  /**
-   * Lateral sampling stays this fine out to `nearBand`, then grows
-   * geometrically. The band has to cover everywhere the car can plausibly
-   * drive: beyond it the columns were reaching 12–16 m apart against 2.5 m
-   * rows, and those sliver triangles are what the car catches on off-road.
-   */
+  /** Lateral sampling stays this fine out to `nearBand`, then grows geometrically. */
   nearStep: 2.4,
   nearBand: 78,
 
-  /**
-   * Offsets over which the sheet's lateral direction is rotated from the road's
-   * own `right` toward the relaxed heading. See `chunks.js:lateralAt`.
-   *
-   * Starts at `nearBand`, because inside it the cut and fill have to be square
-   * to the carriageway and the whole point of road space is that they are.
-   * Past 260 m the direction is fully relaxed and the sheet reaches
-   * `foldMargin / relaxK` — around 400 m — rather than stopping at the road's
-   * own turning circle.
-   *
-   * The ramp must be a function of the OFFSET only. Solving per station for the
-   * least relaxation that station needs is the tempting version and it folds
-   * the mesh in 10,895 cells; `lateralAt` explains why.
-   */
+  /** Offsets over which the sheet's lateral direction rotates toward the relaxed heading. */
   relaxBand: [78, 260],
 
-  /**
-   * Lateral extent of generated terrain. This has to be matched against
-   * ATMOSPHERE.fogDensity: at 170 m the exponential fog still leaves ~80% of
-   * the terrain colour showing, so the edge of the world was plainly visible
-   * off to the sides. The columns out here are tens of metres apart, so buying
-   * the extra distance costs almost nothing.
-   */
+  /** Lateral extent of generated terrain — matched against ATMOSPHERE.fogDensity. */
   halfExtent: 700,
   /**
-   * How close to the centreline anything may be planted, metres.
-   *
-   * `EDGE` in `chunks.js` is the paved edge at 9.4 m; this is a little wider,
-   * because a tree standing exactly on the verge is a tree the player clips
-   * through at 160 km/h and a bush there is a bush that hides the road. Read by
-   * `foliage.js:vegetation`, which fades every density to zero across it rather
-   * than cutting, so nothing ever appears to sprout out of the tarmac.
+   * How close to the centreline anything may be planted, metres. Read by
+   * `foliage.js:vegetation`; wider than `chunks.js:EDGE`.
    */
   plantClear: 11,
 
-  /**
-   * The outermost band tilts gently away below the eyeline so the corridor ends
-   * by sloping out of sight rather than at a clean cut edge.
-   *
-   * Kept shallow, and this is measured rather than taste. Out here the fold
-   * guard already skews cells — it maps lateral offsets through a curvature
-   * that changes from row to row, so a quad 600 m out is a parallelogram — and
-   * every terrain cell in the corridor whose faces meet at more than 60 degrees
-   * is on the inside of a bend for that reason. Adding a steep drop on top
-   * takes those from 3 to 8 and the worst from 72 to 87 degrees, which reads as
-   * a jagged dark band along the horizon. At 520 m the fog has taken half the
-   * colour and at 700 m nearly all of it, so a 30 m drop hides the edge
-   * perfectly well and costs none of that.
-   */
+  /** The outermost band tilts gently away below the eyeline. */
   horizonFalloff: 520,
   horizonDrop: 30,
 
   /**
-   * How far BELOW another pass of the road a chunk's far sheet is pushed where
-   * the two overlap, metres. See `chunks.js:sampleGround`.
-   *
-   * The problem this solves is bug #55 and it is structural: a chunk carries
-   * terrain to `halfExtent` (700 m) either side while being `length` (120 m)
-   * long, so wherever the route doubles back within 700 m — which a router that
-   * follows contours does readily — one chunk's sheet covers another chunk's
-   * road. That sheet is natural ground over there, and the road under it is in
-   * a cutting, so what the player meets is a hillside standing on the
-   * carriageway. Measured on the default seed: a 2.6 m step across the road at
-   * s = 2827, put there by a chunk 720 m further along.
-   *
-   * `ROUTE.selfClear` cannot fix it. It keeps the two carriageways 300 m apart;
-   * the sheets are 700 m wide.
-   *
-   * So the far sheet is cut down to the foreign road's own plane, by the same
-   * cut ramp the road's own earthwork uses — and then this much further, so the
-   * two surfaces never fight for the same depth. The finer, correctly carved
-   * sheet that belongs to that road is drawn on top and hides the whole thing;
-   * what is left underneath is invisible geometry rather than a wall. Lowering
-   * only, never lifting: a clamp that can raise ground is a clamp that can bury
-   * a road, which is the bug.
+   * How far a chunk's far sheet is pushed below another pass of the road,
+   * metres. Cross-file with `chunks.js:sampleGround`.
    */
   foreignSink: 4.0,
-  /**
-   * Gradient of that cut, rise over run.
-   *
-   * MUCH shallower than `ROAD.cutSlope`, and the reason is the resolution of
-   * the sheet doing the cutting, not anything about earthwork. Out where a
-   * foreign road turns up, the lateral columns are 55 m apart; the clamp is a
-   * V and the mesh draws the CHORD across it, which sits above the true bottom
-   * by roughly slope x spacing / 2. At the road's own 62% that is 17 m of
-   * terrain standing over the carriageway — measured, and it is why the first
-   * version of this fix removed nothing at all. At 10% the chord error is 2.8 m
-   * against a 4 m sink, so the surface stays under the road however the columns
-   * happen to fall relative to it.
-   *
-   * The shallow gradient also makes the depression a few columns wide instead
-   * of one, which is what stops it reading as a crease if it is ever caught
-   * uncovered at the edge of the fog.
-   */
+  /** Gradient of that cut, rise over run — shallower than `ROAD.cutSlope`. */
   foreignSlope: 0.10,
 
-  /**
-   * The apron — the world-space ground beneath the road-space sheets. See
-   * `chunks.js:_updateApron` for why a second surface exists.
-   *
-   * `apronHalf` is half the side of the square it covers, and it is matched to
-   * the fog rather than to anything the car does: at ATMOSPHERE.fogDensity
-   * there is almost no colour left at 900 m, so the apron's own edge is never
-   * the thing a player sees. `apronStep` sets the cost — (2*900/22 + 1)^2 is
-   * about 6,800 vertices and 13,300 triangles, against the 109,000 the nine
-   * live sheets carry, so it is under an eighth of the terrain budget.
-   *
-   * `apronDetail` is the LOD argument handed to `terrain.height`, in the same
-   * units as a lateral offset. It has to be coarse: the apron samples every
-   * 22 m and octaves finer than that alias into it as a shimmer that moves when
-   * the grid does.
-   *
-   * `apronSink` covers the chord error between a 22 m grid and the sheets' 2.4 m
-   * one, so a sheet always wins where both exist. It is NOT hiding a
-   * disagreement — both surfaces are the same `terrain.height` — and it is kept
-   * small because it is also the height of the ledge at a sheet's outer edge.
-   *
-   * `apronMove` is the hysteresis: how far the car must travel before the grid
-   * re-centres. Rebuilding is the one expensive thing here, and the centre is
-   * snapped to the sample lattice so a rebuild returns identical heights.
-   */
+  /** The apron — the world-space ground beneath the road-space sheets. */
   apronHalf: 900,
   apronStep: 22,
   apronDetail: 40,
   apronSink: 1.2,
-  /**
-   * How far below the carriageway the apron is cut where it passes under it.
-   * Deeper than `foreignSink` because the ramp is shallower relative to the
-   * apron's 22 m grid, and because nothing is ever meant to see this: the
-   * sheets are 150 m wide at their narrowest and the clamp dies out well
-   * inside that.
-   */
+  /** How far below the carriageway the apron is cut where it passes under it. */
   apronRoadSink: 7.0,
   apronMove: 180,
 
@@ -589,277 +191,82 @@ export const CHUNK = {
 
 /**
  * The canopy — see `src/env/trees.js`, `src/env/lowpoly.js` and `src/foliage.js`.
- *
- * Trees used to be OFF, and the note that switched them off is the
- * specification this block still satisfies: 468 instances of the Quaternius
- * pack measured **1,030,000 triangles**, 90% of the geometry on screen against
- * 109,000 for the whole terrain sheet, and bought 10.3 trees per hectare where
- * real woodland carries 200 to 1,000.
- *
- * The budget now: a near tree is a faceted solid of 110-330 triangles and a far
- * one is the SAME BUILDER at a lower subdivision, 25-45. Both tiers are opaque,
- * untextured and single-sided; there is no atlas and no billboard left in the
- * canopy at all.
+ * Both tiers are opaque, untextured, faceted solids; no atlas, no billboard.
  */
 export const TREES = {
   enabled: true,
 
-  /**
-   * Geometries built per species at boot, and species drawn per chunk.
-   *
-   * BOTH ARE DRAW-CALL DECISIONS, not look ones. An InstancedMesh exists per
-   * (chunk, geometry), so `picks * 2` (near plus far) is the batch count a
-   * chunk costs before a single tree is shaded. Six species from a table of
-   * eight, one variant of each, chosen from the chunk's own index: neighbouring
-   * chunks draw different things, a chunk unloaded and reloaded comes back
-   * identical, and the world at large still shows everything. The picks are
-   * kept high enough that the coloured species (birch, maple, aspen) are
-   * present in almost every chunk — the whole problem with a smaller number
-   * was that a white birch stand simply failed to spawn for long stretches.
-   */
+  /** Geometries built per species at boot, and species drawn per chunk. */
   variants: 3,
   picks: 6,
 
-  /**
-   * How far a single face's colour may stray from its palette, +/-.
-   *
-   * The whole low-poly read is that neighbouring facets of one lump are not
-   * quite the same colour. Zero here and a crown is a smooth object with hard
-   * creases drawn on it; much over 0.1 and it is television static.
-   */
+  /** How far a single face's colour may stray from its palette, +/-. */
   faceJitter: 0.075,
 
-  /**
-   * How much bigger a far tree's lumps are, as an exponent on the count ratio.
-   *
-   * A far crown has two lumps where a near one has five or six, and if they are
-   * the same size the far tree is a SMALLER tree — which is exactly the "they
-   * scale down as I get close" complaint the whole rewrite exists to answer.
-   * Under a half because the lumps overlap, so covered volume grows faster than
-   * the count: 0.42 matches the two silhouettes to within a few per cent.
-   */
+  /** How much bigger a far tree's lumps are, as an exponent on the count ratio. */
   lodGrow: 0.42,
 
-  /**
-   * Where the near tier hands over to the far one, metres of camera distance.
-   *
-   * The near tier shrinks out over EXACTLY the same window the far tier grows
-   * in over, and that is deliberate: `1 - smoothstep(a,b)` and `smoothstep(a,b)`
-   * are complementary, so a tree's total scale never changes as it crosses the
-   * band — it is one full tree the whole way through. When the two windows
-   * differed (near 55-95, far 45-80) a tree swelled by ~40% where both tiers
-   * were present, then shrank back — a de-grow/regrow right beside the player.
-   *
-   * Since both tiers are now the same builder at different subdivisions, and
-   * `env/trees.js:matchWidth` makes their crowns the same width to within 2%,
-   * the handover is a change of face count and nothing else.
-   */
+  /** Where the near tier hands over to the far one, metres of camera distance. */
   lodFade: [260, 420],
   farFadeIn: [260, 420],
-  /**
-   * And where the far tier stops.
-   *
-   * It lives and dies with its chunk out to `CHUNK.ahead`, and that edge is
-   * folded into the fog: far trees shrink back out over 620-720 m — a band the
-   * fog has already rendered to under a tenth of its colour by the far end — so
-   * what kills a tree is the haze, never a pop when its chunk leaves the
-   * window.
-   */
+  /** Where the far tier stops. */
   farFade: [620, 720],
 
-  /**
-   * Fade-in for a far tree that has NO near mesh behind it, metres.
-   *
-   * `nearCap` and `farCap` are not the same number and cannot be: a near tree
-   * is 217 triangles and a far one is 51, so a chunk affords 180 of the first
-   * and 760 of the second. That is a four-to-one density difference between
-   * what the distance shows and what arrives, and with one fade window for
-   * both, the surplus shrank into the ground as the player drove at it — the
-   * wood visibly thinning from the inside out, which reads as the LOD being
-   * broken, and was.
-   *
-   * The surplus can only be honest about being a distance effect: it appears
-   * where a 20 m tree is a few per cent of the screen and nobody can see it
-   * arrive, and the paired far trees — the ones with somewhere to hand over
-   * to — pick the tree up in the `farFadeIn` window instead. Density falling
-   * off with distance is standard and invisible; density falling off at
-   * forty-five metres is neither.
-   */
+  /** Fade-in for a far tree with NO near mesh behind it, metres. */
   loneFadeIn: [480, 660],
 
-  /**
-   * Scatter attempts per chunk, and the caps on what survives.
-   *
-   * `samples` is an ASK. Most attempts are rejected — by slope, by the tree
-   * line, by the stand mask, by the species' own habitat, and now by crown
-   * spacing — so the surviving count is always well under it and depends on the
-   * terrain, exactly as `GRASS.density` does. The caps are the triangle budget
-   * and they are what actually binds: `nearCap` x ~217 triangles is the
-   * per-chunk canopy cost.
-   *
-   * `nearCap` went 130 -> 180 with the switch to faceted solids, which took a
-   * near tree from 563 triangles to 217. Denser is also more necessary than it
-   * was: a solid crown occludes what is behind it, so a stand that read as full
-   * when it was made of alpha cards reads as sparse when it is made of lumps.
-   */
+  /** Scatter attempts per chunk, and the caps on what survives. */
   samples: 2000,
-  nearCap: 180,
+  nearCap: 120,
   farCap: 760,
 
-  /**
-   * Chunks either side of the car that carry the NEAR canopy.
-   *
-   * The far tier lives as long as its chunk, out to 480 m ahead; the near mesh
-   * lives only as long as it can be resolved, which `lodFade` puts at 420 m.
-   * Building the near mesh with the chunk would submit every chunk's tree
-   * geometry at once — most of it scaled to nothing by the shader and still
-   * costing a vertex each — so the near window is kept to exactly the handover
-   * it needs.
-   *
-   * `ahead` covers the handover's outer edge (4 chunks = 480 m) and `behind` a
-   * margin behind the car, so a tree passed at speed is still a near tree while
-   * it recedes.
-   */
+  /** Chunks either side of the car that carry the NEAR canopy. */
   behind: 2,
   ahead: 4,
 
-  /**
-   * Vegetation is placed around a handful of cluster seeds rather than
-   * independently.
-   *
-   * Independent draws give a statistically even field — which is precisely the
-   * "scattered around to fill space" look — and this is the single biggest
-   * lever on whether a wood reads as a wood. Clumping produces thickets, copses
-   * and real clearings between them.
-   *
-   * `clusterSpecies` is the part that was missing before, and it matters more
-   * than the clumping does: a cluster commits to ONE species and draws 80% of
-   * its members from it. Real stands are monocultures at the scale of a copse —
-   * a birch wood is birches — and a clump of six different trees is just a
-   * clump, not a stand.
-   */
+  /** Vegetation is placed around cluster seeds rather than independently. */
   clusterCount: 9,
   clusterShare: 0.72,
   clusterSpecies: 0.8,
 
-  /**
-   * What weight a GUILD-MATE keeps inside another species' stand. Anything from
-   * a different guild is excluded outright — see `chunks.js:_buildProps`.
-   *
-   * The rule this replaces left any off-species tree at 0.32 of its weight, so
-   * about one tree in six of a bright birch copse came out a dark conifer,
-   * which is the single most obviously wrong thing the old woods did. A birch
-   * wood does carry the odd aspen; it does not carry a spruce.
-   */
+  /** What weight a guild-mate keeps inside another species' stand. */
   clusterMix: 0.22,
 
-  /**
-   * Stand radius, metres, drawn on a POWER LAW rather than uniformly.
-   *
-   * `r = lo * (hi/lo)^(u^2)`, so most stands come out near the bottom of the
-   * range and a few reach the top. A uniform draw over a narrow range gave nine
-   * copses all much the same size, which reads as a texture; a landscape has
-   * mostly thickets with the occasional real wood among them.
-   */
+  /** Stand radius, metres, on a power law. */
   clusterRadius: [11, 78],
 
-  /**
-   * How hard a stand thins toward its rim. Acceptance is `1 - (d/r)^falloff`.
-   *
-   * Below 1 the stand has a wall round it. Above about 2 it is a smear with no
-   * edge at all. 1.6 leaves a stand with a definite outline and a fringe.
-   */
+  /** How hard a stand thins toward its rim. */
   clusterFalloff: 1.6,
 
-  /**
-   * Crown spacing: two crowns may overlap by this much of their combined radii
-   * before the second is rejected. Grid cell must exceed the widest pair.
-   *
-   * This exists because of the switch to solid geometry. Two interpenetrating
-   * alpha cards were invisible; two interpenetrating faceted crowns are the
-   * most obvious artefact in the scene. 0.5 is roughly what a closed canopy
-   * does — the crowns touch and merge, they do not occupy each other.
-   */
+  /** Crown spacing: two crowns may overlap by this much of their radii. */
   crownGap: 0.5,
   spacingCell: 14,
 
-  /**
-   * Age structure inside a stand, and it is worth two numbers because a wood
-   * whose trees are all one size reads as planted no matter how it is placed.
-   *
-   * `vigour` is the fraction of full height a tree loses at the rim of its
-   * stand — the middle is oldest because it grew first. `saplings` is the share
-   * of the whole draw taken down to a third height wherever it lands, which is
-   * the regeneration underneath.
-   */
+  /** Age structure inside a stand. */
   vigour: 0.42,
   saplings: 0.18,
 
-  /**
-   * Chance a placed tree gets a second (and sometimes third) stem from the same
-   * stool, touching, same species, shorter.
-   *
-   * Every reference image of a low-poly wood has them. They skip the spacing
-   * check on purpose: touching is the whole idea.
-   */
+  /** Chance a placed tree gets a second stem from the same stool, touching. */
   coppice: 0.14,
 
   /**
-   * How much of the ground's own colour a tree takes, and how much one tree
-   * differs from the next. Both apply to a per-instance modulation near 1.0.
-   *
-   * The hue is in the GEOMETRY now — one palette per variant, see
-   * `foliage.js:TREE_FORMS` — so this is no longer where a tree gets its
-   * colour. Taking the ground colour raw, which is what it used to do, flattens
-   * the palettes back into mud.
+   * Ground colour taken and per-tree variance. The hue is in the GEOMETRY —
+   * see `foliage.js:TREE_FORMS`.
    */
   groundTint: 0.16,
   instanceVary: 0.14,
-  /** Sharpens stand edges — the density is squared, then scaled by this. */
+  /** Sharpens stand edges — density squared, then scaled by this. */
   standBias: 2.7,
 
-  /**
-   * The tree line, as relief above the LOCAL continental surface, metres.
-   *
-   * Relief and not altitude: 400 m is a summit in one part of the map and a
-   * valley floor two hundred kilometres away, and a treeline keyed to the
-   * absolute number paints bare rock across a lowland field. Canopy density
-   * falls from 1 at the first figure to 0 at the second, and slope and dryness
-   * multiply into it — so a sheltered gully carries woodland further up than
-   * the open ridge beside it, which is what makes a treeline follow the ground
-   * instead of contouring round it like a tidemark.
-   */
+  /** The tree line, as relief above the local continental surface, metres. */
   treeLine: [190, 430],
 
-  /**
-   * What is left of the ground cover under a closed canopy, 0..1.
-   *
-   * NOT zero, and the reason is worth stating: a hard zero draws the stand's
-   * own outline on the ground in bare earth, and from a moving car that reads
-   * as a texture bug rather than as shade. A dark wood has litter and moss in
-   * it; a quarter of the open-ground density is what that looks like.
-   */
+  /** What is left of the ground cover under a closed canopy, 0..1. */
   shadeFloor: 0.25,
 
   /**
-   * The window over which the fine patchiness field takes grass away entirely.
-   *
-   * Below the first figure the ground is bare, above the second it is fully
-   * grassed, and the field is `terrain.mask` at 0.0135 — features about
-   * seventy metres across. This is the knob for "how much of the verge is
-   * actually earth", and it is the single most effective thing in the file
-   * against the carpet look: real grassland is mottled at a scale you can see
-   * from a car, and a uniform sward is the giveaway that nobody modelled it.
-   *
-   * THE NUMBERS ARE AGAINST THE FIELD'S MEASURED RANGE, not against 0..1, and
-   * the first attempt at this got it wrong in a way worth recording. `mask` is
-   * two octaves of fBm mapped to 0..1, and two octaves do not reach the ends:
-   * measured over twenty thousand samples it spans 0.25 to 0.76 with half of
-   * everything between 0.44 and 0.56. A window of [0.30, 0.43] therefore left
-   * one per cent of the ground bare and merely scaled the rest down — a
-   * uniformly thinner carpet, which is the opposite of the intent. [0.42, 0.50]
-   * puts about a sixth of the ground genuinely bare and leaves half of it at
-   * full density.
+   * Window over which the fine patchiness field takes grass away entirely —
+   * against the field's measured range, not 0..1.
    */
   barePatch: [0.42, 0.50],
 
@@ -871,9 +278,7 @@ export const TREES = {
 
 /**
  * The understorey — see `src/env/bushes.js`.
- *
- * Small, numerous, and placed on the woodland EDGE rather than inside it or
- * outside it. See `foliage.js:vegetation`.
+ * Small, numerous, placed on the woodland EDGE rather than inside or outside it.
  */
 export const BUSHES = {
   enabled: true,
@@ -881,37 +286,14 @@ export const BUSHES = {
   variants: 3,
   picks: 2,
 
-  /**
-   * Camera distance over which a shrub shrinks away, metres.
-   *
-   * Much shorter than the canopy's, and there is no second tier: a bush is
-   * already about forty triangles, and a cheap stand-in for that is not a
-   * saving. Past 105 m the ground detail texture and the far grass tier carry
-   * the middle distance.
-   */
+  /** Camera distance over which a shrub shrinks away, metres. */
   fade: [70, 105],
 
-  /**
-   * Attempts per chunk and the cap on survivors.
-   *
-   * The cap came down twice with the switch from cards to faceted lumps: a
-   * shrub went from a mean of 12 triangles to 45 as crystals and then to 87 as
-   * rounded domes, which is what it takes to read as foliage rather than as
-   * broken rock (see `env/bushes.js`). The per-chunk cost is roughly where it
-   * started. The coverage is not: a solid lump reads at three times the
-   * distance a card does, so fewer of them is not fewer of them.
-   */
+  /** Attempts per chunk and the cap on survivors. */
   samples: 900,
-  cap: 150,
+  cap: 78,
 
-  /**
-   * Thicket seeds per chunk, the share of shrubs drawn near one, and their
-   * radius in metres.
-   *
-   * The EDGE signal in `foliage.js` already puts scrub where woodland thins,
-   * but it puts it there EVENLY, and an even scatter along a wood's fringe is a
-   * hedge. Real scrub goes in patches with bare ground between them.
-   */
+  /** Thicket seeds per chunk, the share drawn near one, and their radius. */
   clusterCount: 5,
   clusterShare: 0.62,
   clusterRadius: [7, 30],
@@ -921,87 +303,25 @@ export const BUSHES = {
 };
 
 /**
- * Ground cover.
- *
- * The single biggest lever on whether the world reads as flat, and the numbers
- * below are a triangle budget as much as a look. A tuft is four triangles
- * carrying seven painted blades (see grass.js), so the counts here are large in
- * a way the rest of the project's scatter numbers are not: `TREES.samples`
- * is 420 attempts for at most 52 trees, and this places tens of thousands.
- *
- * Only the chunks either side of the car carry any, because grass is invisible
- * long before a chunk streams out — building it for all nine would be six
- * chunks of geometry nobody can resolve.
+ * Ground cover. A tuft is four triangles carrying seven painted blades.
+ * Only chunks either side of the car carry any, because grass is invisible
+ * long before a chunk streams out.
  */
 export const GRASS = {
   enabled: true,
 
-  /**
-   * Tufts per square metre at the verge. Each is seven blades, so 2.9 here is
-   * roughly 20 blades/m^2 — well under a real sward, and enough that crossed
-   * cards close up into a continuous field rather than reading as objects.
-   *
-   * This is an ASK, not a count, and it is now a long way from one. Samples on
-   * ground too steep for grass are dropped, and — since the ground cover was
-   * put on the same vegetation field as the canopy — every cell's share is
-   * scaled by `foliage.js:vegetation`'s `ground` density, which averages 0.47
-   * with about a sixth of the world at zero. So the ask was raised from 2.9 to
-   * hold the density in a full meadow while the shaded ground under a wood and
-   * the bare patches in a dry field lose theirs. Measured: 1.3 tufts/m^2
-   * placed against 3.6 asked, 16,000 tufts a chunk.
-   *
-   * It is deliberately NOT raised the whole way. Matching the old carpet in a
-   * meadow would need about 5.8, and the scatter's cost tracks the surviving
-   * count: the verge no longer has to carry the frame on its own now that there
-   * are trees and scrub standing in it.
-   *
-   * How much less also depends on the terrain, which is why this number moved
-   * when the landforms did. At 3.6 against the old, gentler ground a third of the samples were
-   * being rejected and about 30,000 tufts a chunk survived; against terrain
-   * with more flat shelf in it only a tenth are, and the same 3.6 delivered
-   * 41,000. The budget is the surviving count, so the ask has to follow it.
-   */
+  /** Tufts per square metre at the verge, before rejections. An ask, not a count. */
   density: 3.6,
   /** Lateral band: from the paved edge out to here, metres. */
   halfExtent: 62,
-  /**
-   * Full density out to here, then tapering to nothing at `halfExtent`.
-   *
-   * The taper is what hides the SIDEWAYS edge of the field — the density
-   * reaches zero exactly at the band edge, so there is nothing to see stopping.
-   * The distance fade below cannot do that job: a tuft directly beside the car
-   * at the band edge is only as far away as the band is wide, so a fade tuned
-   * to hide it would take the grass up the road with it.
-   */
+  /** Full density out to here, then tapering to nothing at `halfExtent`. */
   denseTo: 34,
 
-  /**
-   * Camera distance over which a tuft shrinks away, metres.
-   *
-   * Deliberately LONGER than the lateral band: most of the grass a driver sees
-   * is up the road ahead, not out to the side, and cutting it at the band width
-   * would empty the verge fifty metres in front of the car. The sideways edge
-   * is hidden by `denseTo`'s taper instead. Gradual either way — a card popping
-   * out at a threshold is visible precisely because the player is driving
-   * toward it.
-   */
-  fadeStart: 62,
-  fadeEnd: 95,
+  /** Camera distance over which a tuft shrinks away, metres. */
+  fadeStart: 140,
+  fadeEnd: 240,
 
-  /**
-   * How much larger a tuft grows at the edge of the band than at the verge.
-   *
-   * This is the whole reason the field can reach the middle distance at all.
-   * Rendered, grass at a constant size looked like a ribbon hugging the tarmac
-   * with bare ground beyond it — not because nothing was placed out there, but
-   * because a low camera compresses forty metres of verge into a few dozen
-   * pixels, and individual cards at that scale are gaps with grass between them
-   * rather than the other way round.
-   *
-   * Bigger cards cover more ground for the same instance, and detail nobody can
-   * resolve is detail nobody needs: the count per unit area is divided by the
-   * square of this, so coverage extends while the triangle budget does not.
-   */
+  /** How much larger a tuft grows at the edge of the band than at the verge. */
   farScale: 1.0,
 
   /** Chunks either side of the car that carry grass. 1 = three chunks, 360 m. */
@@ -1009,25 +329,12 @@ export const GRASS = {
   /** Grass chunks built per frame. Scattering one is thousands of samples. */
   buildPerFrame: 1,
 
-  /**
-   * Tuft height, metres. Taller than a lawn on purpose: this is roadside rough,
-   * and the first render showed why it matters — at 0.4 m the cards read as
-   * scattered spikes standing on the ground rather than as a surface, because
-   * you see the gap between them before you see them.
-   */
+  /** Tuft height, metres. */
   height: [0.55, 1.25],
-  /**
-   * Width as a fraction of height. A square-ish card is what makes neighbours
-   * overlap into a continuous field; taller-than-wide leaves visible gaps at
-   * any density a browser can afford.
-   */
+  /** Width as a fraction of height. A square-ish card overlaps into a field. */
   widthRatio: 0.95,
 
-  /**
-   * Steepest ground grass grows on. Higher than the trees' limits on purpose:
-   * grass holds a bank that a tree cannot, and a bare cut face beside a verge
-   * full of grass is exactly the seam this is meant to remove.
-   */
+  /** Steepest ground grass grows on. */
   maxSlope: 1.6,
 
   /** Wind direction (world XZ), strength in metres of tip travel, and rate. */
@@ -1039,24 +346,7 @@ export const GRASS = {
   bladesPerCard: 7,
   textureSize: 256,
 
-  /**
-   * The THIRD tier: the woodland floor.
-   *
-   * What grows under a canopy is not roadside rough at a bigger scale — it is a
-   * different plant. Tall, sparse, floppy, dark, and it only exists where there
-   * is a canopy over it, which is why it hangs off `vegetation()`'s `floor`
-   * signal rather than off `ground`. `ground` is thinned BY shade and is the
-   * meadow; `floor` is what replaces the meadow once the shade closes over.
-   *
-   * Without it a wood is trees standing on a lawn, and the lawn is the giveaway:
-   * `TREES.shadeFloor` keeps a quarter of the meadow sward under a closed canopy
-   * so the stand does not draw its own outline in bare earth, and a quarter of a
-   * mown-looking sward still looks mown.
-   *
-   * Near-field only. At 2 m it is taller than the roadside grass, so it needs
-   * the shorter window rather than the longer one — a 2 m card at 150 m is
-   * still only three pixels, and there are trees in front of it.
-   */
+  /** The THIRD tier: the woodland floor. Near-field only. */
   wood: {
     enabled: true,
     behind: 1,
@@ -1065,77 +355,48 @@ export const GRASS = {
     halfExtent: 120,
     /** Tufts per square metre asked, before `floor` scales it down. */
     density: 1.35,
-    /** Height range, metres. Waist to chest — this is what a wood floor has. */
+    /** Height range, metres. */
     height: [1.1, 2.4],
-    /**
-     * Nearly square, like the roadside card. 0.62 was tried first, on the
-     * reasoning that long grass hangs — and a tall narrow card with sparse
-     * blades on it is a bristle, not a plant. What makes cards read as a
-     * surface is that neighbours OVERLAP, and that is a width decision.
-     */
+    /** Nearly square, so neighbours overlap into a surface. */
     widthRatio: 0.82,
-    /**
-     * Still brighter than the ground it stands on, as all ground cover is.
-     * Lower than the meadow's 1.20-1.55 because a wood floor is not lit like a
-     * field — but not below 1, which was the first attempt and came out black:
-     * the shade is ALREADY in the ground colour this multiplies. Bug #52.
-     */
+    /** Still brighter than the ground it stands on. */
     lift: [1.02, 1.28],
-    /** As many blades as the roadside card; they are just longer and floppier. */
+    /** As many blades as the roadside card. */
     bladesPerCard: 7,
-    /** Shrinks out here. Short, because trees occlude it and it is not cheap. */
+    /** Shrinks out here. */
     fadeOut: [78, 118],
     maxSlope: 1.2,
   },
 
-  /**
-   * The SECOND tier: the middle distance.
-   */
+  /** The SECOND tier: the middle distance. */
   far: {
     enabled: true,
     behind: 1,
     ahead: 6,
     /** Lateral band, metres. Past this the terrain's detail texture takes over. */
     halfExtent: 185,
-    /**
-     * Card size: exactly 1.0x so distant grass blades match foreground grass.
-     */
+    /** Card size: 1.0x so distant grass blades match foreground ones. */
     widthScale: 1.0,
     heightScale: 1.0,
     /** Density, as a fraction of what would preserve ground cover at that scale. */
     coverage: 0.05,
     /** Grows in over this camera-distance window, behind the near tier's fade. */
-    fadeIn: [55, 110],
+    fadeIn: [190, 260],
     /** And shrinks out again here — the grass's own far edge, up against the fog. */
     fadeOut: [420, 630],
-    /** Steepest ground it will stand on. Looser than the near tier: at this
-     *  distance a card on a 60-degree face reads as scrub, not as a mistake. */
+    /** Steepest ground it will stand on, looser than the near tier. */
     maxSlope: 2.2,
   },
 };
 
 /**
  * The carriageway surface — see `env/road.js`.
- *
- * The road used to be a flat colour at `roughness: 0.68`, which reads as wet
- * plastic under a low sun. These are the numbers that make it asphalt.
  */
 export const ROAD_SURFACE = {
   /** One mask, three channels: aggregate, wear, cracks. */
   textureSize: 512,
 
-  /**
-   * Metres per tile, near and far.
-   *
-   * The near tile is the AGGREGATE and its scale is a physical fact rather than
-   * a taste decision: road stone is 6-14 mm, and at 512 px across 2.4 m that is
-   * about three pixels a chip, which is the smallest that survives mipping.
-   * The far tile is patches and repairs, which are a road-length phenomenon.
-   *
-   * The ratio is deliberately not a round number — 2.4 and 17 share no small
-   * factor — so the two beat against each other instead of lining up into a
-   * grid the eye can find.
-   */
+  /** Metres per tile, near and far — deliberately not a round ratio. */
   tileNear: 2.4,
   tileFar: 17,
 
@@ -1143,22 +404,12 @@ export const ROAD_SURFACE = {
   contrastNear: 1.10,
   contrastFar: 0.62,
 
-  /**
-   * Where the aggregate stops, metres. Past this there is less than a pixel per
-   * chip and the grain becomes a shimmer that moves with the camera — the
-   * classic detail-texture failure, and the reason the far tile exists.
-   */
+  /** Where the aggregate stops, metres. */
   nearFade: [26, 90],
 
   /** Dry asphalt. Real values are 0.92-0.98; wet would be under 0.4. */
   roughness: 0.95,
-  /**
-   * How far the wear channel may polish the surface back down.
-   *
-   * The wheel paths of a real road are burnished by traffic and genuinely are
-   * shinier than the rest of it. Having somewhere legitimately glossy is what
-   * makes everything around it read as properly matte.
-   */
+  /** How far the wear channel may polish the surface back down. */
   polish: 0.22,
 
   /** Ridged noise above this becomes a crack, and this much darker. */
@@ -1168,69 +419,45 @@ export const ROAD_SURFACE = {
 
 /**
  * The terrain's own surface detail — see `env/ground.js`.
- *
- * This is the other half of the answer to "the ground is flat green". The
- * palette in `TERRAIN_COLORS` decides the hue; this decides whether there is
- * anything to see between one vertex and the next, which past the verge is tens
- * of metres of perfectly smooth interpolation.
  */
 export const GROUND = {
   enabled: true,
   /** Detail map resolution. Three channels of luminance; see env/ground.js. */
   textureSize: 512,
 
-  /**
-   * Metres of world per tile, near and far.
-   */
+  /** Metres of world per tile, near and far. */
   tileNear: 5.5,
   tileFar: 28,
 
-  /**
-   * How hard each scale modulates the ground colour, 0..1.
-   */
+  /** How hard each scale modulates the ground colour, 0..1. */
   contrastNear: 0.34,
   contrastFar: 0.30,
 
-  /**
-   * Distance over which the near tile fades out, metres.
-   */
+  /** Distance over which the near tile fades out, metres. */
   nearFade: [45, 130],
 };
 
 /**
- * Procedural stone — see `env/rocks.js`.
- *
- * The brief is texture: chips and stones concentrated along the road shoulder-to-grass
- * transition verge, and talus spilling from cuttings.
+ * Procedural stone — see `env/rocks.js`. Chips on the shoulder-to-grass verge,
+ * talus spilling from cuttings.
  */
 export const ROCKS = {
   enabled: true,
 
-  /**
-   * Chunks either side of the car that carry stone.
-   */
+  /** Chunks either side of the car that carry stone. */
   behind: 1,
   ahead: 4,
 
   /** Scatter attempts per chunk. Concentrated on the road-to-grass verge. */
   samples: 4000,
 
-  /**
-   * How many of each class's variants any ONE chunk may use.
-   */
+  /** How many of each class's variants any ONE chunk may use. */
   variantsPerChunk: 2,
 
-  /**
-   * Where stone is allowed, in metres of lateral offset from the centreline.
-   * Tightened strictly to the road shoulder / grass transition strip.
-   */
+  /** Where stone is allowed, in metres of lateral offset from the centreline. */
   band: [9.8, 16.0],
 
-  /**
-   * Cut faces. Where the terrain is steeper than this, stone is far more likely
-   * — this is the "scree out of a cutting" rule, and it is the single thing
-   * that stops an excavated hillside reading as a smooth green ramp.
-   */
+  /** Cut faces: where the terrain is steeper than this, stone is far more likely. */
   screeSlope: 0.62,
 
   /** Relative weight of each class on ordinary ground, and on a cut face. */
@@ -1238,17 +465,8 @@ export const ROCKS = {
   screeMix: { scree: 0.86, stone: 0.13, boulder: 0.01 },
 
   /**
-   * Stone hues, one drawn per instance and multiplied by a brightness jitter.
-   *
-   * STONE DOES NOT TAKE THE GROUND'S COLOUR, and it is the one thing in
-   * `src/env/` that does not — rule 5 of `src/env/README.md` has a carve-out
-   * for it. Grass and foliage are the ground's own colour because they grow out
-   * of it and a green tuft on a grey scree slope is wrong; a rock is mineral,
-   * it does not photosynthesise, and taking the verge's green gave the whole
-   * shoulder a mossy tint that read as algae.
-   *
-   * The luminance still lives in the geometry (`env/rocks.js` builds grey
-   * vertex colours), so this is a hue and the shading is not baked into it.
+   * Stone hues, one drawn per instance. Stone does not take the ground's
+   * colour — rule 5 of `src/env/README.md`; the luminance is in the geometry.
    */
   palette: [
     [0.55, 0.55, 0.55],  // medium granite grey
@@ -1262,23 +480,12 @@ export const ROCKS = {
   /** Per-instance brightness jitter around the palette entry. */
   shade: [0.85, 1.15],
 
-  /**
-   * Size classes. `detail` is the icosahedron subdivision — 0 is 20 triangles,
-   * 1 is 80 — and it is the whole triangle budget for this module.
-   *
-   * `flatten` is the vertical squash range. Stone is bedded and broken, so the
-   * default is well under 1; a value near 0.3 is a slab.
-   *
-   * `facets` is how many random half-space planes the lump is clipped against.
-   * That is what a fracture is, and without it the result is a potato.
-   */
+  /** Size classes: detail = icosahedron subdivision; flatten = vertical squash. */
   classes: {
     scree: {
       variants: 5, detail: 0, size: [0.10, 0.34],
       flatten: [0.34, 0.66], facets: 4, roughness: 0.42,
-      // The sun's cascade is 78 m across 2048 px — 4 cm a texel. A 15 cm chip
-      // is three texels, so its shadow is noise, and there are more chips than
-      // everything else put together.
+      // A 15 cm chip is three texels, so its shadow is noise.
       shadow: false,
     },
     stone: {
@@ -1293,11 +500,8 @@ export const ROCKS = {
 };
 
 /**
- * Wind noise — see `wind.js`.
- *
- * The one sound the engine simulator cannot make, and the cheapest immersion in
- * the project. Every number here was chosen by listening; the notes say what
- * each one is for so that stays true after the next change.
+ * Wind noise — see `wind.js`. The one sound the engine simulator cannot make;
+ * every number here was chosen by listening.
  */
 export const WIND = {
   /** Master level for the whole layer, 0..1. Exposed in the settings drawer. */
@@ -1306,24 +510,11 @@ export const WIND = {
   /** Seconds of noise generated at boot. Long enough that the loop is inaudible. */
   bufferSeconds: 10,
 
-  /**
-   * Speed at which it starts, and where it reaches full, m/s.
-   *
-   * 8 m/s is about 29 km/h — below that a car is quiet and the sound would just
-   * be a floor of hiss under the idle. 72 m/s is 259 km/h, past everything in
-   * the roster, so nothing ever sits pinned at the top of the curve.
-   */
+  /** Speed at which it starts, and where it reaches full, m/s. */
   startSpeed: 8,
   fullSpeed: 72,
 
-  /**
-   * Shape of the rise.
-   *
-   * Aeroacoustic POWER goes as roughly the sixth power of velocity, which is
-   * true and useless: it puts everything under 150 km/h at silence and
-   * everything over it at one level. This is an AMPLITUDE curve with a tilt —
-   * just over squared — so the whole speed range is expressive.
-   */
+  /** Shape of the rise. Just over squared, so the whole speed range is expressive. */
   exponent: 2.2,
 
   /** Seconds of one-pole smoothing on the speed the filters follow. */
@@ -1335,13 +526,7 @@ export const WIND = {
   rushLevel: 0.85,
   rushCutoff: [260, 1500],
 
-  /**
-   * Edge whistle: level, band, and how far up the speed range it waits.
-   *
-   * It arrives at 45% of the range and climbs quadratically from there. That
-   * lateness is the whole effect — it is what makes 200 km/h sound different
-   * from 120 km/h rather than simply louder.
-   */
+  /** Edge whistle: level, band, and how far up the speed range it waits. */
   whistleLevel: 0.30,
   whistleFreq: [900, 2600],
   whistleFrom: 0.45,
@@ -1349,61 +534,30 @@ export const WIND = {
 };
 
 /**
- * Tyre effects — smoke and marks. See `fx.js`.
- *
- * Both are driven by the SAME quantity the skid audio already uses, `wheel
- * .slipAmount`, which is how far past its peak the tyre is. Nothing here
- * introduces a second opinion about whether a tyre is sliding.
+ * Tyre effects — smoke and marks. See `fx.js`. Both are driven by the same
+ * quantity the skid audio uses, `wheel.slipAmount`.
  */
 export const FX = {
   smoke: {
     enabled: true,
-    /**
-     * Particle pool. Fixed: the mesh is allocated once and particles are
-     * recycled oldest-first, so a long burnout costs exactly what a short one
-     * does and there is no allocation in the frame loop.
-     */
+    /** Particle pool. Fixed: mesh allotted at boot, particles recycled oldest-first. */
     max: 260,
     /** Puffs per second per wheel at full slip. */
     rate: 55,
     /** Seconds a puff lives. */
     life: 1.5,
-    /** Radius at birth and at death, metres. Smoke expands as it entrains air. */
+    /** Radius at birth and at death, metres. */
     size: [0.30, 2.1],
     /** Rise rate and how fast a puff sheds the wheel's velocity, m/s and 1/s. */
     rise: 1.25,
     drag: 1.9,
-    /** Peak opacity. Reached early in the life, then decays to nothing. */
+    /** Peak opacity. Reached early in the life, then decays. */
     opacity: 0.34,
 
-    /**
-     * Below this much slip nothing is emitted at all.
-     *
-     * Deliberately well above zero. A tyre carrying a little slip is a tyre
-     * working, not a tyre burning, and smoke off every corner turns the whole
-     * game into a drift video.
-     *
-     * But not much above it either, and this is worth knowing before tuning it
-     * up again: the tyre model resolves an over-driven wheel by CLAMPING the
-     * combined impulse to the friction circle, and `slipAmount` is how much it
-     * had to take away. A full-throttle standing start in the Sport measures
-     * 0.39 to 0.46 on the driven wheels — that is a car lighting up its rear
-     * tyres, and it is nowhere near 1. A threshold set by imagining what "full
-     * slip" ought to mean lands above everything the model ever produces.
-     */
+    /** Below this much slip nothing is emitted at all. */
     minSlip: 0.22,
 
-    /**
-     * The "wheelspin, not speed" gate, m/s.
-     *
-     * Tyre smoke is rubber being erased, and that happens when the CONTACT
-     * PATCH is moving relative to the road — a standing burnout, a bad launch,
-     * a lit-up second gear. At 200 km/h a sliding tyre is doing the same thing
-     * per second but it is also leaving the smoke a hundred metres behind, so
-     * there is never a cloud to see. Emission therefore fades out across this
-     * range, which is also exactly the behaviour asked for: smoke when the
-     * revs are up and the car is not.
-     */
+    /** The "wheelspin, not speed" gate, m/s. Emission fades out across this range. */
     speedFade: [14, 34],
 
     /** Where a puff is born relative to the contact patch: back and up, metres. */
@@ -1412,34 +566,15 @@ export const FX = {
 
   marks: {
     enabled: true,
-    /**
-     * Ring buffer of quads, shared across all four wheels.
-     *
-     * A ring rather than a growing trail: an infinite road would otherwise
-     * accumulate an infinite mesh, and the oldest marks are behind the camera
-     * by the time they are overwritten. 3,000 quads at a 0.35 m step is roughly
-     * 260 m of continuous mark per wheel, which no drift lasts.
-     */
+    /** Ring buffer of quads, shared across all four wheels. */
     maxQuads: 3000,
-    /**
-     * Minimum distance the wheel must travel before another quad is laid, m.
-     *
-     * Short, because a mark has to start early: the most interesting moment is
-     * a standing start, where the car covers very little ground while the tyres
-     * are doing the most. At 0.35 m the first quad did not appear until the car
-     * was already moving and the wheelspin was over.
-     */
+    /** Minimum distance the wheel must travel before another quad is laid, m. */
     step: 0.20,
     /** Seconds a mark takes to fade out completely. */
     life: 16,
     /** Darkest a mark gets. */
     opacity: 0.5,
-    /**
-     * Above this much slip a mark is laid. LOWER than the smoke's threshold:
-     * rubber is left on the road long before there is enough of it in the air
-     * to see, which is why a racetrack has black lines through every corner and
-     * not just where the cars smoke.
-     */
+    /** Above this much slip a mark is laid. */
     minSlip: 0.18,
     /** Lift above the contact patch, metres. Enough to clear the terrain mesh. */
     lift: 0.035,
@@ -1450,11 +585,7 @@ export const FX = {
 
 export const VEHICLE = {
   mass: 1250,
-  /**
-   * Ceiling on chassis speed, m/s (~360 km/h). Above every car's real top
-   * speed, so it never touches normal driving — it exists purely to stop a
-   * bad contact resolve from turning into an unrecoverable flight.
-   */
+  /** Ceiling on chassis speed, m/s (~360 km/h). Stops a bad contact resolve becoming flight. */
   maxChassisSpeed: 100,
   /** Centre of mass offset from the body origin — low CoM resists rolling. */
   comOffset: { x: 0, y: -0.20, z: 0.05 },
@@ -1472,19 +603,16 @@ export const VEHICLE = {
   // ---------------------------------------------------------- suspension --
   /** Maximum suspension travel (also the ray length beyond the wheel radius). */
   restLength: 0.42,
-  /** Hooke spring rate, N/m. ~42 kN/m puts static sag at ~40% of travel. */
+  /** Hooke spring rate, N/m. */
   springK: 42000,
   /** Damping coefficients, N/(m/s). Rebound > bump is the usual road-car tune. */
   damperBump: 3300,
   damperRebound: 4400,
   /** Hard ceiling so a big compression can't launch the car. */
   maxSpringForce: 60000,
-  /** Anti-roll bar rate, N per unit of normalised travel difference. */
   /**
-   * A stiffer bar shifts lateral load transfer onto its own axle, and tyre grip
-   * is sub-linear in load — so the stiff end loses grip first. Front-stiff
-   * therefore means understeer. Rear-biased here, which frees the front to bite
-   * and lets the car rotate, and soft enough overall to allow visible body roll.
+   * Anti-roll bar rate, N per unit of normalised travel difference.
+   * Rear-biased: front-stiff would shift load and lose grip — understeer.
    */
   antiRollFront: 2500,
   antiRollRear: 4200,
@@ -1493,153 +621,61 @@ export const VEHICLE = {
   /** Coulomb friction ceiling — bounds the whole friction circle. */
   tyreFriction: 1.25,
 
+  /** Slip-angle tyre model (a stripped-down Pacejka Magic Formula). */
   /**
-   * Slip-angle tyre model (a stripped-down Pacejka Magic Formula):
-   *
-   *     Fy = D · sin( C · atan( B · α ) )
-   *
-   * Lateral force builds with slip angle, peaks, then eases off. That falloff
-   * is the whole point: it is what you feel through the car as the front axle
-   * "goes light". A tyre that simply cancels lateral velocity has no such cue —
-   * it grips perfectly right up until it doesn't.
-   */
-  /**
-   * C — the shape factor, and the single biggest lever on whether a slide is
-   * holdable. It sets how much grip survives past the peak:
-   * `sin(C·π/2)` of it, once the slip angle is large. At 1.45 that is 76%, so
-   * the tyre falls off a cliff the moment it lets go and the car is gone. At
-   * 1.25 it keeps 92%, which is what makes a slide something you steer rather
-   * than something that happens to you. 1.32 sits between the two: enough
-   * falloff that the limit is still something you can feel arriving, enough
-   * grip past it that the car does not simply leave.
-   *
-   * Now 1.15, which keeps 97%, from 1.22 (94%) and 1.32 (89%) before it.
-   *
-   * This is the number that decides whether a slide is a thing you STEER or a
-   * thing that happens to you, and the brief was continuous, controllable
-   * drifting. Vehicle Physics Pro's forgiving default keeps 0.8 of peak past
-   * the break and its competition tune keeps 0.55; the difference between them
-   * is exactly the difference between a car you can hold sideways and one that
-   * demands precision to stay pointed straight. Measured here, going from 1.22
-   * to 1.15 also caught a provoked spin FASTER — 0.92 s against 0.96 — because
-   * the front axle is past its peak in a slide too, and a front tyre that has
-   * kept its grip is what the countersteer is acting through.
+   * C — the shape factor, the biggest lever on whether a slide is holdable;
+   * sets how much grip survives past the peak.
    */
   tyreShape: 1.15,
   corneringStiffnessFront: 15,  // B — peak near 7.1 deg: crisp turn-in
-  /**
-   * The rear used to be much softer than the front (11.5 against 14), which
-   * reads as a rear axle that takes its time deciding — the car rotates well
-   * past where the driver aimed it before the back tyres have built the force
-   * to stop it. Closing the gap makes the rear answer nearer the front's
-   * timing, so the car settles into a corner instead of continuing to swing.
-   */
+  /** Rear peak grip against front. Above 1 the front washes out first. */
   corneringStiffnessRear: 13.0,
   /**
-   * Rear peak grip against front. Above 1 the front washes out first, which is
-   * safe understeer; below 1 the car rotates on its own terms.
-   *
-   * Neutral, from 1.07. The old value's reasoning was that "oversteer at
-   * 200 km/h" is a mistake with no way back — which was TRUE and was a
-   * statement about `_updateSteering`, not about the tyres: there were 4.3
-   * degrees of lock at that speed and no countersteer worth the name. With the
-   * countersteer allowance below, the way back exists, and the deterrent can
-   * come off. Measured across the sweep, dropping the bias is the single
-   * biggest lever on holding a drift: 1.31 s of the probe's three-second window
-   * at 1.07, 1.52 s at 0.97, with mean slip going 0.32 -> 0.41 and eight km/h
-   * more speed carried out of it. 1.00 takes most of that without making the
-   * rear axle the loose end of the car on a motorway straight.
+   * Rear peak grip against front. Above 1 the front washes out first (safe
+   * understeer); below 1 the car rotates on its own terms.
    */
   rearGripBias: 1.00,
   /** Below this speed band, slip angle is meaningless; blend to velocity-cancelling. */
   slipBlendSpeed: [0.6, 3.5],
-  /**
-   * Traction control: how far drive torque may exceed the friction left over
-   * after cornering. 1.0 would be a perfect nanny; 1.4 still allows wheelspin
-   * and power-on rotation but stops a stab of throttle ending in a spin.
-   *
-   * 2.0 rather than 2.4. A stab of throttle mid-corner was still enough to
-   * break the rear axle away in one step, which is the single most common way
-   * the car was being lost. The margin is still well clear of 1.0, so wheelspin
-   * and power-on rotation both survive — they just have to be asked for.
-   */
+  /** Traction control: how far drive torque may exceed the friction left after cornering. */
   tractionControl: 2.0,
 
   /** Effective mass per tyre for the low-speed velocity-cancelling fallback. */
   lateralGripMass: 0.30,
   /** Handbrake kills most of the rear lateral grip => predictable drifts. */
   handbrakeGripMul: 0.28,
-  /**
-   * Tyre forces are applied this far above the contact patch. Real weight
-   * transfer stays, but the roll moment shrinks enough to stop silly flips.
-   */
+  /** Tyre forces applied this far above the contact patch, cutting roll moment. */
   frictionAnchorLift: 0.24,
   rollingResistance: 320,
-  /**
-   * Surface drag off the asphalt. Grass and gravel both rob rolling resistance
-   * and grip, which is what stops the verge being a free shortcut.
-   */
+  /** Surface drag off the asphalt, so the verge is not a free shortcut. */
   offRoadDrag: 3.2,
   offRoadGrip: 0.72,
 
   // -------------------------------------------------------------- driving --
   /**
-   * Torque split [FL, FR, RL, RR]. Strongly rear-biased: the front tyres are
-   * then almost entirely free to steer rather than spending their friction
-   * budget putting power down, which is most of what "connected to the front
-   * wheels" actually means.
-   *
-   * These are fractions of the TOTAL drive force and must sum to 1. Each entry
-   * scales the whole engine output, so a set summing to 2 silently doubles the
-   * car's acceleration.
+   * Torque split [FL, FR, RL, RR], rear-biased so the front tyres steer.
+   * Fractions of total drive force; must sum to 1.
    */
   driveBias: [0.09, 0.09, 0.41, 0.41],
   /** Per wheel. Sums past the tyre limit so the brakes can actually lock up. */
   brakeForce: [7500, 7500, 5000, 5000],
   handbrakeForce: 9000,
 
-  /**
-   * Steering. The usable angle is not a taste curve — it is derived from grip:
-   * in a steady turn v²/R = a_max and R = L/tan(δ), so δ_max = atan(L·a_max/v²).
-   * Beyond that the front tyres are simply asked for more than they have, and
-   * the car plows on regardless of the wheel. `maxSteer` is the parking-speed
-   * lock, `minSteer` the floor at any speed, and the margin is how far past the
-   * grip limit you are allowed to ask (so a slide is still provokable).
-   */
+  /** Steering: usable angle derived from grip — `δ_max = atan(L·a_max/v²)`. */
   maxSteer: 0.58,
   /**
    * Floor on the usable angle, and the margin past the grip limit.
-   *
-   * The derivation `δ_max = atan(L·a_max/v²)` is right, and taken literally it
-   * makes a fast car feel welded straight ahead: measured, 1.72 deg of lock at
-   * 200 km/h with only 1.85x the angle the tightest corner on the road needs.
-   * There is nothing to drive with, and nothing left to catch a slide with
-   * either. The margin is how far past the tyres' honest limit the driver may
-   * ask — understeer is the penalty, which is a fair trade for having a car
-   * that responds — and `minSteer` guarantees a usable angle at any speed.
    */
   minSteer: 0.095,
   steerGripMargin: 1.6,
-  /**
-   * Slew rates toward full lock and back to centre, rad/s.
-   *
-   * Down from 6.2 / 8.0. These are most of what "weight" means for a car you
-   * steer with a key or a thumb: a digital input snapped to full lock in
-   * 94 ms gives a car that darts, and darting is indistinguishable from
-   * twitchiness at speed. 5.0 puts full lock 200 ms away, which is about how
-   * long a real driver's hands take, and the lock still opens on the same curve
-   * so nothing about catching a slide changes.
-   */
+  /** Slew rates toward full lock and back to centre, rad/s. */
   steerRate: 5.0,          // rad/s toward full lock
   steerReturnRate: 6.6,    // rad/s back to centre when input released
 
   // ----------------------------------------------------------- powertrain --
   /**
-   * Fallbacks only. Every roster entry supplies its own, and engine_sim owns
-   * the torque curve, the clutch and the shift logic — so there is deliberately
-   * no torque or shift-point tuning here. The keys that used to describe the
-   * old built-in engine model (idle/peak torque/shift rpm, driveline
-   * efficiency) are gone; they had been dead since the simulator took over.
+   * Fallbacks only. Every roster entry supplies its own; `engine_sim` owns the
+   * torque curve, clutch and shift logic.
    */
   maxRpm: 7400,
   finalDrive: 3.7,
@@ -1648,101 +684,31 @@ export const VEHICLE = {
 
   // ------------------------------------------------------------ aero/misc --
   dragCoefficient: 0.55,   // 0.5 * rho * Cd * A, lumped
-  /**
-   * N per (m/s)^2. At a 70 m/s top speed this adds ~11 kN — a bit over half the
-   * car's weight again, which keeps fast sweepers planted. Much beyond this and
-   * the car stops feeling like it has any weight at all.
-   */
+  /** N per (m/s)^2. At 70 m/s this adds ~11 kN, keeping fast sweepers planted. */
   downforce: 2.2,
-  /**
-   * Zero: Rapier's linear damping applies a force of damping·m·v, which at
-   * 190 km/h was ~1300 N — comparable to the entire aero drag term and enough
-   * to make `dragCoefficient` meaningless. All longitudinal resistance is
-   * modelled explicitly (aero drag + rolling resistance) so top speed is a
-   * property of the car, not of a solver setting.
-   */
+  /** Zero: Rapier's linear damping would otherwise overwhelm the aero term. */
   linearDamping: 0.0,
-  /**
-   * Angular damping, 1/s. Raised from 0.30: it is a first-order resistance to
-   * being rotated at all, so it reads directly as mass in the body rather than
-   * as a correction — the car stops pivoting the instant the steering asks and
-   * starts taking a moment to come round. It is small enough that a deliberate
-   * slide still happens; it is the flick that it takes the edge off.
-   */
+  /** Angular damping, 1/s. Means the car stops pivoting the instant steering asks. */
   angularDamping: 0.45,
   /** Self-righting torque so a bad landing doesn't end the run. */
   uprightTorque: 5.5,
   /** Pitch/yaw authority while airborne. */
   airControl: 2.6,
 
-  /**
-   * Slide containment — where a drift stops being a drift and becomes a spin.
-   *
-   * Measured on the old tune: a handbrake turn left the car yawing at
-   * 3.29 rad/s, countersteer took 3.96 s to arrest it, and it went right round.
-   * That is not a difficulty curve, it is a car the driver has been locked out
-   * of: past a certain angle every tyre is so far beyond its peak that the
-   * steering has almost no authority left, so no input recovers it.
-   *
-   * A yaw damper fades in between these two chassis slip angles and is fully
-   * engaged past the second. Below `driftAngle` it does literally nothing.
-   *
-   * DELIBERATELY LATE AND GENTLE. At 23 deg and a strength of 3.0 it caught a
-   * spin in 0.68 s, which is excellent and also completely obvious: 23 deg is
-   * an ordinary slide, so the car was being straightened out from under the
-   * driver every time they provoked one. That is the "weird correction". The
-   * band now starts past the angle a car reaches under any normal provocation
-   * and the strength is less than half, so it is a net that catches a genuine
-   * spin rather than a hand on the wheel.
-   */
-  /**
-   * Now 29 deg / 60 deg at strength 1.9, from 36 / 72 at 1.3.
-   *
-   * Bug #38 pulled this band deliberately late because at 23 deg and strength
-   * 3.0 the assist was straightening the car out from under the driver. That
-   * was right, and it went one stop too far: at 36 deg the net only catches a
-   * car that is already most of the way round, so everything between an
-   * ordinary slide and a spin was unassisted and a mistake there was
-   * unrecoverable. Measured, a provoked spin took 2.54 s and 167 deg to arrest.
-   * 29 deg is still past anything ordinary cornering reaches — the tyres peak
-   * around 7 deg of slip — so a held drift is untouched, but the net is now
-   * under the part of the range where the car was actually being lost.
-   */
+  /** Slide containment — where a drift stops being a drift and becomes a spin. */
   driftAngle: 0.50,        // ~29 deg — past any ordinary slide
   spinAngle: 1.05,         // ~60 deg — past here the car is going round
   spinRecovery: 1.9,       // damper strength, N·m·s per rad/s per kg
 
-  /**
-   * Chassis slip angles over which the steering lock opens beyond the
-   * grip-derived limit. See `_updateSteering`: the steady-state derivation does
-   * not hold in a slide, and applying it there leaves no countersteer at all.
-   *
-   * The opening is PROPORTIONAL, not a jump to full lock. Going straight to
-   * 33 deg the moment the car moved around read as the steering ratio changing
-   * underneath you. A fixed multiple of whatever the limit already was keeps
-   * the response continuous — the wheel means the same thing throughout, there
-   * is simply more of it available.
-   */
+  /** Chassis slip angles over which steering lock opens beyond the grip limit. */
   slideOpenFrom: 0.14,     // ~8 deg — the car is starting to move around
   slideOpenTo: 0.55,       // ~32 deg — fully opened
   slideLockGain: 4.0,      // how many times the steady-state limit, at most
 
   /**
-   * Countersteer authority: the chassis slip angles over which steering that
-   * OPPOSES the slide is allowed off the cornering limit, and how much of the
-   * parking lock it may reach. See `vehicle.js:_updateSteering`.
-   *
-   * Deliberately much earlier than `slideOpenFrom` — two degrees rather than
-   * eight. Eight degrees is already a slide in progress; catching one starts
-   * before that, and a driver who has to wait for the car to be properly
-   * sideways before the wheel does anything has been locked out of the part of
-   * the range where the save was still easy.
-   *
-   * 0.62 of `maxSteer` is 20.6 degrees of opposite lock, against the 4.3 that
-   * was available at any speed over 150 km/h. Real opposite lock is 20 to 40,
-   * and there is no reason to cap it lower: the front tyres are not being asked
-   * to generate cornering force here, they are being pointed down the velocity
-   * vector.
+   * Countersteer authority: chassis slip angles over which opposing steering
+   * is allowed off the cornering limit, and how much of the parking lock it
+   * may reach. See `vehicle.js:_updateSteering`.
    */
   counterFrom: 0.035,      // ~2 deg — the car has begun to move around
   counterTo: 0.16,         // ~9 deg — full countersteer authority
@@ -1753,16 +719,7 @@ export const TRAFFIC = {
   /** Cars kept alive around the player. */
   count: 9,
 
-  /**
-   * The band of road that is populated, and where inside it a car may appear.
-   *
-   * `spawnMin` is the important one: cars appear where the haze still hides the
-   * moment they switch on. At 0.0022 fog that sits around 430 m — the
-   * exponential fog has taken about two thirds of the contrast out of a car by
-   * then, so what arrives is a shape resolving out of the mist rather than an
-   * object switching on. Nothing beyond the readable world is populated at
-   * all, which is also fewer simulated cars to pay for.
-   */
+  /** Populated band, and where inside it a car may appear — cars spawn in the haze. */
   spawnMin: 430,
   ahead: 620,
   behind: 240,
@@ -1792,15 +749,7 @@ export const TRAFFIC = {
   // ------------------------------------------------------------- impacts --
   /** Bounciness of a car-to-car hit. Sheet metal is not a squash ball. */
   restitution: 0.15,
-  /**
-   * Ceiling on the speed change one impact may hand the player, m/s.
-   *
-   * Not a fudge factor. The impulse itself is the honest closed-form exchange,
-   * but a glancing blow evaluated at 300 km/h against a 2.6 t military truck
-   * produces a Δv that removes the player from the world, and no amount of
-   * correctness makes that the right outcome in a driving game. 11 m/s is a
-   * hard shunt you can recover from.
-   */
+  /** Ceiling on the speed change one impact may hand the player, m/s. */
   maxImpactDv: 11,
   /** Seconds a struck car spends spinning out before it is taken away. */
   spinTime: 4.5,
@@ -1811,37 +760,18 @@ export const TRAFFIC = {
 export const CAMERA = {
   fov: 62,
   near: 0.4,
+  /** `far` pulled in to match the fog wall for depth precision; nothing exists past ~700 m. */
   far: 1500,
   /**
-   * `far` is pulled in from 2600 to match the fog wall: no chunk, tree, grass
-   * card or road row exists past ~700 m, so the far plane is only there to give
-   * the depth buffer room. Tightening it stops rasterising anything a stray
-   * far sheet still reaches and improves depth precision in the band that
-   * actually matters.
-   */
-  /**
-   * Chase rig: distance / height / look-ahead, in metres. Deliberately tight —
-   * the camera sits just off the bootlid at rest, which is what makes low speed
-   * feel like driving rather than like watching a model from across the room.
-   *
-   * The resting distances are ~20% shorter than they used to be so the whole
-   * car stays inside the frame without the dark rear trim reaching the bottom
-   * edge — the frame is what it is before the speed pull-back even starts.
-   *
-   * `zoom` scales how much the rig OPEN OUT with speed — both the positional
-   * pull-back (distGain/heightGain) and the FOV widening (fovSpeedGain). The
-   * close camera runs at half: the other modes pull back to reveal distance,
-   * the close one is for immersion and stays put.
+   * Chase rig: distance / height / look-ahead, metres. `zoom` scales how much
+   * the rig opens out with speed; the close camera stays put.
    */
   chase: { dist: 4.8, height: 2.30, ahead: 6.0, zoom: 1.0 },
   close: { dist: 4.2, height: 1.80, ahead: 4.8, zoom: 0.5 },
   /** Height of the point the camera aims at, above the contact plane. */
   aimHeight: 0.95,
   /**
-   * The rig scales with the vehicle: a 2.9 m monster truck needs the camera
-   * further up and back than a 1.37 m sports car, or it sits at roof height.
-   * Referenced against a typical car body, and clamped so the extremes stay
-   * recognisably the same camera.
+   * The rig scales with the vehicle's body size, clamped to the extremes.
    */
   bodyRef: 1.45,
   heightScaleMax: 1.75,
@@ -1849,20 +779,7 @@ export const CAMERA = {
   /** Positional and rotational smoothing rates (higher = stiffer). */
   posDamp: 9.5,
   aimDamp: 12.0,
-  /**
-   * How the rig opens out with speed. `speedRef` is the speed at which the
-   * pull-back is essentially complete — set high so the change is gradual
-   * across the whole range rather than all of it happening by 60 km/h. `speedLag` is
-   * how fast the rig is allowed to *react* to a speed change, which is what
-   * stops the camera lunging on every throttle stab.
-   */
-  /**
-   * `speedRef` was 165 m/s — 594 km/h, far beyond anything in the roster — so
-   * the speed factor never rose above about 0.4 and none of the terms below did
-   * much of anything. At 68 m/s the rig reaches full effect at a speed a car can
-   * actually see, and the field of view now opens by a useful amount rather than
-   * by a degree and a half.
-   */
+  /** How the rig opens out with speed — pull-back complete at `speedRef`. */
   speedRef: 68,
   speedLag: 0.5,
   /** How far the rig backs off and lifts at full speed, metres. Kept small. */
@@ -1870,39 +787,12 @@ export const CAMERA = {
   heightGain: 0.08,
   /** Degrees of extra field of view at full speed — most of the speed cue. */
   fovSpeedGain: 12,
-
-  /**
-   * The title screen's orbit lives in TITLE below, not here.
-   *
-   * It used to be a `garage` block in CAMERA — a distance, a height and a hand-picked
-   * negative aim that lifted the car out from behind whatever the dock happened
-   * to be that week. That number was re-tuned every time a row was added to the
-   * menu, which is the tell: it was standing in for a measurement nobody was
-   * taking. The rig now solves for the free rectangle instead, so there is
-   * nothing left to tune.
-   */
 };
 
 /**
- * The title screen's camera.
- *
- * There used to be a SHOWROOM block here, and a `showroom.js` to go with it: a
- * cyclorama, three fixed lights and a turntable, rendered as a scene of its
- * own. The argument for it was that a road is an uncontrolled backdrop — the
- * same seed that looks bright from the chase camera can put the title screen in
- * near-darkness because the orbit happens to face away from the sun — and that
- * argument was true.
- *
- * It was also answering the wrong question. What a title screen is selling is
- * not the car, it is the drive; and a studio shot of a car says nothing about
- * the landscape the whole game is made of. So the car is back on the road,
- * parked at the spawn point of the world you are about to be dropped into,
- * which means the title screen is a photograph of the actual thing rather than
- * an advert for it — and pressing Drive is a camera move rather than a scene
- * change.
- *
- * What survives from the studio is the FRAMING MATHS, which was the part that
- * was doing real work. See `camera.js:_updateTitle`.
+ * The title screen's camera — the car parked on the road, rendered as a camera
+ * move rather than a scene change. Only the framing maths survives; see
+ * `camera.js:_updateTitle`.
  */
 export const TITLE = {
   /** Narrower than the driving field of view: this is a portrait, not a road. */
@@ -1911,77 +801,27 @@ export const TITLE = {
   /** Turntable rate, radians per second. A full turn takes about forty seconds. */
   spin: 0.15,
 
-  /**
-   * The four angles that make a good car shot, in radians of orbit phase.
-   *
-   * Phase is measured from directly IN FRONT of the car, so 0 is a head-on
-   * shot, pi is the tail. These four are the front and rear three-quarters on
-   * either side — the angles a car is actually photographed from, because they
-   * are the ones that show two faces of it at once.
-   *
-   * The rig starts on whichever of them faces the sun; see
-   * `camera.js:_seedOrbit`. That is what replaces the studio's control of the
-   * light — instead of building somewhere the light is always right, the
-   * camera stands somewhere the light already is.
-   */
+  /** The four angles that make a good car shot, in radians of orbit phase. */
   angles: [0.85, -0.85, 2.35, -2.35],
 
-  /**
-   * Fraction of the free rectangle the car is allowed to fill. Under one, so
-   * there is air around it — a subject that touches the edges of its frame
-   * reads as cropped rather than as placed.
-   */
+  /** Fraction of the free rectangle the car is allowed to fill — under one. */
   fill: 0.62,
   /** Never closer than this, whatever the arithmetic says, metres. */
   minDistance: 6.0,
-  /**
-   * The orbit's horizontal radius and its height, both as multiples of the
-   * solved distance. They are a direction, not a distance: the fit above sets
-   * how far away the camera is, and these two decide where on the sphere.
-   */
+  /** Orbit radius and height as multiples of the solved distance — a direction. */
   orbitRadius: 0.94,
   eyeLift: 0.30,
-  /**
-   * Where the rig looks, as a fraction of body height above the contact plane.
-   *
-   * Below the middle of the car on purpose. The framing solve centres the AIM
-   * POINT in the free rectangle, and the rig looks slightly down, so a car
-   * whose bulk sits below the aim projects below the centre of the frame.
-   * Dropping the aim lifts the car back into the middle of its own space.
-   */
+  /** Where the rig looks, as a fraction of body height above the contact plane. */
   aimHeight: 0.34,
 
-  /**
-   * Seconds for the fly-in from the orbit to the chase position.
-   *
-   * Long enough to read as a move and short enough that nobody presses Drive
-   * twice. The overlay fades over 0.55 s, so the interface is gone by the
-   * halfway point and the second half is pure camera.
-   */
+  /** Seconds for the fly-in from the orbit to the chase position. */
   introTime: 1.35,
 };
 
 export const ATMOSPHERE = {
-  /**
-   * Overcast-bright rather than golden hour. The previous rig sat the sun almost
-   * on the horizon with a heavily saturated warm key, which raked every surface
-   * and blew the highlights. Here the sun is well up, close to white, and the
-   * hemisphere fill is strong — that combination flattens the shading ratio and
-   * lets the vertex colours read as pastel instead of being stained orange.
-   */
+  /** Overcast-bright: sun well up, close to white, strong hemisphere fill. */
   fogColor: 0xd6dbdb,
-  /**
-   * Reduced now that depth of field carries the distance cue. Fog this thick
-   * was doing the separating on its own, which meant washing the whole
-   * landscape to one flat colour before you could see any of it.
-   *
-   * Thicker than the original hazy overcast but not as dense as the fog-wall
-   * experiment (0.0030 erased everything past ~500 m — which made the grass
-   * read as ending very close). At 0.0022 the world is clearly readable to
-   * ~150 m, half-lost by ~380 m, and the chunk window's edge sits at ~15%
-   * visibility — the haze still owns the horizon, and the grass can actually
-   * be seen out to the far tier's 630 m.
-   */
+  /** Haze, not a fog wall: world readable to ~150 m, half-lost by ~380 m. */
   fogDensity: 0.0022,
 
   skyTop: 0x7ba4ce,
@@ -2006,12 +846,9 @@ export const ATMOSPHERE = {
   bloomThreshold: 0.95,
   vignette: 0.13,
   /**
-   * Radial speed blur. `speedBlur` is the smear at full speed, as a fraction of
-   * the distance from screen centre; `speedBlurInner` is the radius that stays
-   * perfectly sharp. Set speedBlur to 0 to drop the pass entirely.
-   *
-   * This replaced depth of field, which focused at a single distance and
-   * therefore blurred the car itself — see scene.js.
+   * Radial speed blur: smear at full speed as a fraction of distance from the
+   * screen centre; `speedBlurInner` stays perfectly sharp. Replaced depth of
+   * field, which blurred the car itself.
    */
   speedBlur: 0.055,
   speedBlurInner: 0.17,
@@ -2023,13 +860,8 @@ export const ATMOSPHERE = {
 };
 
 /**
- * Near-miss scoring, used by Traffic mode.
- *
- * The shape is the familiar one: a pass close to another car scores, closer
- * scores more, and consecutive passes build a multiplier that decays unless it
- * is refreshed. What is specific here is that ONCOMING traffic is worth much
- * more — it arrives at the sum of both speeds, so the same lateral gap is a
- * fraction of the time to react to and ought to pay accordingly.
+ * Near-miss scoring, used by Traffic mode. Closer and consecutive passes score
+ * more; oncoming traffic is worth much more.
  */
 export const SCORE = {
   /** Lateral clearance, metres, within which a pass scores at all. */
@@ -2053,29 +885,9 @@ export const SCORE = {
 };
 
 /**
- * The ground palette. Lighter and less saturated than natural, to sit with the
- * flatter lighting.
- *
- * Nine entries where there were five, and the four new ones are all doing the
- * same job: the world was one green. `grassLow` to `grassHigh` is a hue ramp of
- * about fifteen degrees, which over a hillside is not a variation, it is a
- * gradient — and a gradient across smoothly interpolated vertices metres apart
- * is exactly the flat wash this is meant to break up.
- *
- * What actually makes ground look like ground is DIFFERENT MATERIALS next to
- * each other, not one material shading. So:
- *
- * - `grassDeep` — the damp green of a hollow or a north face
- * - `grassDry`  — sun-bleached straw, on a shoulder or a south-facing bank
- * - `scrub`     — the olive of heather and low bush, which is what covers
- *                 ground too steep or too high for grass
- * - `snow`      — above the tree line. Worth having now that a peak reaches a
- *                 kilometre over the valley it stands in
- *
- * `chunks.js:_groundColor` mixes between them by altitude ABOVE THE LOCAL BASE
- * — see `noise.js:continent` — rather than by absolute height, which stopped
- * meaning anything the moment the whole map started rising and falling by
- * hundreds of metres under the landforms.
+ * The ground palette — lighter and less saturated than natural, to sit with the
+ * flatter lighting. Mixed by altitude above the local base (see
+ * `chunks.js:_groundColor`, `noise.js:continent`), not by absolute height.
  */
 export const TERRAIN_COLORS = {
   grassLow: 0x74915c,
@@ -2093,40 +905,20 @@ export const TERRAIN_COLORS = {
 
 /**
  * The three levels of graphical fidelity, chosen from the title screen or the
- * settings panel.
- *
- * The override below REWRITES parts of the config objects above before anyone
- * has built a geometry or a shader, which is the only honest way to change what
- * the world is made of: materials bake their fade windows and the asset
- * libraries bake their densities at boot, so a mid-run tweak would be half
- * applied. Changing the level therefore saves it and reloads the page; the
- * fresh boot comes up configured. `probe/props.mjs` runs at High, because Node
- * has no storage.
+ * settings panel. The override below REWRITES parts of the config objects
+ * before assets build, so changing level saves and reloads the page.
  *
  *   HIGH    the current defaults — dense woods, long draw distance.
  *   MEDIUM  half the draw distance, and about half of everything in it.
- *   LOW     the FAR TIER ONLY — no near canopy, no grass, no shrubs, no stone —
- *           at the shortest draw distance.
- *
- * ── what Low means now ─────────────────────────────────────────────────────
- *
- * It used to mean "trees as their blobby silhouette cards only", because the
- * far tier was a painted billboard. There are no billboards left: both tiers
- * are faceted solids from the same builder, and the far one is a fifth of the
- * triangles at the same silhouette. So Low is no longer a different-looking
- * world with the detail removed — it is the same world drawn at the
- * subdivision the distance tier already uses, all the way to the bonnet. That
- * is a much better Low than the old one and it is the rewrite that paid for it.
+ *   LOW     the FAR TIER ONLY — no near canopy, no grass, no shrubs, no stone.
  */
 export const GRAPHICS_LEVELS = ['high', 'medium', 'low'];
 
 const GRAPHICS_KEY = 'highroads.graphics';
 
 export function graphicsLevel() {
-  // Wrapped, not guarded on `typeof`: Node exposes a `localStorage` global that
-  // THROWS unless the process was started with a store, so a `typeof` check
-  // passes and the call still takes the probes down. A private browser window
-  // does the same thing by a different route.
+  // Wrapped, not `typeof`-guarded: Node's `localStorage` global throws unless
+  // started with a store, so a `typeof` check passes and the call still fails.
   try {
     const v = localStorage.getItem(GRAPHICS_KEY);
     return GRAPHICS_LEVELS.includes(v) ? v : 'high';
@@ -2151,12 +943,10 @@ function applyGraphics() {
     ATMOSPHERE.fogDensity = 0.0034;
     CAMERA.far = 1000;
 
-    // A thinner wood all round: fewer trees of either tier, fewer species.
-    // `farCap` falls further than `nearCap` does, because a far tree is no
-    // longer four triangles — it is fifty, and there are five of them for every
-    // near one over two more chunks.
+    // A thinner wood: `farCap` falls further than `nearCap` (a far tree is
+    // fifty triangles to a near one's five, over two more chunks).
     TREES.samples = 1200;
-    TREES.nearCap = 95;
+    TREES.nearCap = 76;
     TREES.farCap = 380;
     TREES.picks = 4;
     TREES.ahead = 3;
@@ -2168,7 +958,7 @@ function applyGraphics() {
     GRASS.far.ahead = 4;
     GRASS.far.fadeOut = [300, 460];
     BUSHES.samples = 600;
-    BUSHES.cap = 110;
+    BUSHES.cap = 72;
     ROCKS.samples = 2200;
   } else if (level === 'low') {
     // The shortest draw distance, and a fog that ends it invisibly.
@@ -2181,10 +971,7 @@ function applyGraphics() {
     BUSHES.enabled = false;
     ROCKS.enabled = false;
 
-    // The far tier, all the way in. `nearCap` at 0 switches the grown-canopy
-    // window off entirely — no near meshes are ever built, so `behind`/`ahead`
-    // stop meaning anything — and the fade windows bring the cheap tier right
-    // up to the roadside so there is no missing tier to notice.
+    // The far tier, all the way in. `nearCap` = 0 builds no near meshes at all.
     TREES.samples = 900;
     TREES.nearCap = 0;
     TREES.farCap = 300;

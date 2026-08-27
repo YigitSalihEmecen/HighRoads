@@ -1,19 +1,9 @@
 /**
  * path.js — the infinite road spline.
  *
- * The road is a chain of control points laid down by a noise-driven heading
- * integrator, interpolated with THREE.CatmullRomCurve3 (centripetal
- * parameterisation, which is what stops overshoot on tight control polygons).
- *
- * Because Catmull-Rom is *local* — a segment depends only on the four points
- * around it — the curve can be extended forever without ever rebuilding what
- * came before. We build a 4-point curve per segment and sample only its middle
- * third, which is exactly the piece bounded by the correct neighbours.
- *
- * On top of the raw samples we bake an arc-length table with a full Frenet-like
- * frame (tangent / right / up) plus a banking angle derived from curvature.
- * Everything downstream — terrain, road ribbon, props, respawn — addresses the
- * world as (s, v): distance along the road, offset across it.
+ * Control points come from a noise-driven heading integrator, interpolated
+ * by Catmull-Rom. Catmull-Rom is local, so the spline extends forever without
+ * a rebuild. An arc-length table carries a Frenet-style frame and banking.
  */
 
 import * as THREE from 'three';
@@ -22,53 +12,18 @@ import { clamp, lerp } from './util.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
-/** How many samples per control-point segment. ~2.5 m each at 46 m spacing. */
+/** Samples per control-point segment. ~2.5 m each at 46 m spacing. */
 const SAMPLES_PER_SEGMENT = Math.max(2, Math.round(ROAD.ctrlSpacing / ROAD.sampleStep));
 
-/**
- * Half-widths, in samples, of the two symmetric windows the frames are built
- * from. At ROAD.sampleStep = 2.5 m these are +/-10 m and +/-25 m.
- *
- * ORIENTATION and CURVATURE want the tightest honest estimate: the ribbon's
- * lateral direction is measured against `tan`, and smoothing that skews the
- * carriageway on a bend; banking is `curv * bankGain`, and a banking that lags
- * the corner is worse than no banking at all — measured, widening this window
- * alone took one seed's worst lane error from 5.8 m to 16.8 m, because through
- * an S-bend the smoothed curvature still says "left" while the road has already
- * gone right, and the cross-slope then throws the car off the outside.
- *
- * THE FOLD WINDOW is the exception, and it is a different question. The terrain
- * fold guard does not care where the corner is, only how tight the tightest
- * thing nearby is — see `chunks.js:foldSafeOffset`. A short-window curvature
- * estimate is a second derivative of a spline through 46 m control points, so
- * it carries the spline's own roughness: measured, it swung 38% in a single
- * 2.5 m step, the road going from a 963 m radius to a 697 m one and back, which
- * is not a thing that happens to a road. The guard turns that into tens of
- * metres of lateral shear between adjacent rows 700 m out, which is a torn
- * sheet. Fifty metres of window removes it, and a guard lagging a corner by
- * 25 m costs nothing at all.
- *
- * The estimate stays exact for a circular arc at any width — the angle between
- * two successive chord directions IS the total turn across them — so widening
- * costs no peak curvature, only the sharpness of the transitions.
- */
+// CURV wants the tightest honest estimate; FOLD wants the longest: the fold
+// guard only cares how tight the best nearby corner is.
 const CURV_WINDOW = 4;
 const FOLD_WINDOW = 10;
 
-/**
- * Half-width of the average taken BEFORE the running maximum, in road samples.
- * See `ROUTE.foldSmooth` for why it exists, what it is worth, and why it is not
- * larger (bug #64).
- */
+/** Half-width of the average before the running maximum, in road samples. */
 const FOLD_SMOOTH = ROUTE.foldSmooth;
 
-/**
- * Half-width, in road samples, of the average that builds the RELAXED heading.
- *
- * The relaxed heading is what lets the terrain sheet reach past the turning
- * circle of its own road. See `ROUTE.relaxWindow`, and `chunks.js:lateralAt`
- * for what is done with it.
- */
+/** Half-width, in road samples, of the average that builds the relaxed heading. */
 const RELAX_SMOOTH = Math.max(1, Math.round(ROUTE.relaxWindow / (2 * ROAD.sampleStep)));
 
 export class RoadPath {
@@ -88,9 +43,7 @@ export class RoadPath {
     this.heading = 0;
     /** The slowly drifting compass the router is trying to follow. */
     this.bearing = 0;
-    /** Turn taken on the last span, for the turn-change cost. */
     this.lastTurn = 0;
-    /** Largest turn one span may take, from the curvature limit. */
     this.maxTurn = ROAD.maxCurvature * ROAD.ctrlSpacing;
     /** Next control-point segment to sample (segment i spans ctrl[i]..ctrl[i+1]). */
     this.nextSegment = 1;
@@ -107,21 +60,12 @@ export class RoadPath {
 
   // ------------------------------------------------------------- building --
 
-  /**
-   * The route's personality at a point, blended from two slow noise fields.
-   *
-   * Returns the weights the cost function should use here, not a mode name.
-   * Blending weights rather than switching between named modes is deliberate:
-   * a discrete mode change lands as a kink in the alignment at the exact
-   * station it happens, and there is no natural place to put one on an infinite
-   * road. Weights that drift produce a road that is *becoming* a valley road
-   * for a kilometre before it is one.
-   */
+  /** Route personality at a point, blended from two slow noise fields. */
   _character(s) {
     const t = this.terrain;
     const f = ROUTE.characterScale;
-    // Two independent fields: one says how hard to avoid moving earth, the
-    // other whether to prefer height or depth.
+    // One field says how hard to avoid moving earth, the other whether to
+    // prefer height or depth.
     const direct = t.nA(s / f, 41.7);        // -1..1
     const seek = t.nB(s / f + 5.3, 88.1);    // -1..1
 
@@ -130,26 +74,17 @@ export class RoadPath {
       earth: ROUTE.wEarthwork * (1 - ROUTE.directness * Math.max(0, direct)),
       // > 0 seeks high ground, < 0 seeks low ground.
       seek: ROUTE.wSeek * seek,
-      // Always some appetite for a hillside, more on half the cycle. Never
-      // zero: a stretch of road with no shelf at all is the flat default this
-      // whole block exists to get away from.
+      // Always some appetite for a hillside, more on half the cycle.
       shelf: ROUTE.wShelf * (0.55 + 0.45 * Math.max(0, -direct)),
     };
   }
 
-  /**
-   * How badly a candidate at (x, z) doubles back on the road already laid.
-   *
-   * 0 when clear, rising to 1 at zero separation. See ROUTE.selfClear — this is
-   * a structural constraint, not a stylistic one: two stretches of road within
-   * a few hundred metres of each other have terrain sheets that disagree about
-   * which of them the ground belongs to.
-   */
+  /** Doubles-back penalty at (x, z): 0 when clear, 1 at zero separation. */
   _selfProximity(x, z) {
     const spacing = ROAD.ctrlSpacing;
     const n = this.ctrl.length;
-    // Control points are evenly spaced in ARC LENGTH, so the band converts to a
-    // simple index range and no distances have to be accumulated.
+    // Control points are evenly spaced in ARC LENGTH, so the band is an index
+    // range and no distances have to be accumulated.
     const lo = Math.max(0, n - Math.ceil(ROUTE.selfFar / spacing));
     const hi = n - Math.ceil(ROUTE.selfNear / spacing);
     let worst = 0;
@@ -166,40 +101,15 @@ export class RoadPath {
   }
 
   /**
-   * Road SEGMENTS belonging to a different pass of the road than station `s`,
-   * within `range` of (x, z). Consecutive control-point pairs are appended to
-   * `out` as [a, b, a, b, ...]; the return value is the number of pairs.
-   *
-   * This is the query behind the terrain's foreign-road clamp (see
-   * `chunks.js:sampleGround`). Control points are evenly spaced in ARC LENGTH,
-   * so "a different pass of the road" is an index band and no distances have to
-   * be accumulated to find it — the same trick `_selfProximity` uses.
-   *
-   * SEGMENTS, not points, and the difference is the whole thing working. The
-   * control points are 46 m apart, so a place standing directly on the foreign
-   * carriageway can still be 23 m from the nearest of them — and the cut ramp
-   * the clamp uses rises at 62%, so 23 m of error is 2.7 m of terrain left
-   * standing over the road. Measured: exactly the 2.6 m step this was written
-   * to remove. Distance to the polyline is the quantity that was always meant.
-   *
-   * The exclusion band is deliberately WIDER than `ROUTE.selfNear`. The index
-   * is only an estimate of arc length (the spline is a little longer than the
-   * chord through its control points), and the failure mode of excluding too
-   * much is that a genuinely separate carriageway 300 m along the road does not
-   * get carved for — invisible. The failure mode of excluding too little is
-   * cutting a trench across the road you are driving on.
+   * Road segments of a DIFFERENT pass of the road than station `s`, within
+   * `range` of (x, z). Pairs are appended to `out` as [a, b, a, b, ...]; the
+   * return value is the count of pairs.
    */
   /**
-   * Distance from (x, z) to the nearest carriageway, and the road's height
-   * there. Writes `{dist, y}` into `out`; `dist` is Infinity if nothing is in
-   * range.
-   *
-   * ANY pass of the road, unlike `foreignSegments` — the apron has no idea
-   * which pass it is under and must duck beneath all of them. Distance is to
-   * the POLYLINE and not to the control points, for the reason spelled out
-   * below: at 46 m spacing a point standing on the carriageway can be 23 m from
-   * the nearest control point, which is several metres of height error on a
-   * gradient.
+   * Distance from (x, z) to the nearest carriageway of ANY pass, and the road's
+   * height there. Writes `{dist, y}` into `out`; `dist` is Infinity when out of
+   * range. Distance is to the POLYLINE, not the control points — at 46 m
+   * spacing a point on the carriageway can be 23 m from the nearest of them.
    */
   roadNear(x, z, sHint, range, out = { dist: Infinity, y: 0 }) {
     const spacing = ROAD.ctrlSpacing;
@@ -238,8 +148,7 @@ export class RoadPath {
     for (let i = lo; i <= hi; i++) {
       // Both ends have to be foreign, or a segment straddling the band edge
       // would reach back onto the road being driven.
-      if (Math.abs(i - iSelf) < near || Math.abs(i + 1 - iSelf) < near) continue;
-      const a = this.ctrl[i];
+      if (Math.abs(i - iSelf) < near || Math.abs(i + 1 - iSelf) < near) continue;      const a = this.ctrl[i];
       const b = this.ctrl[i + 1];
       const dax = a.x - x, daz = a.z - z;
       const dbx = b.x - x, dbz = b.z - z;
@@ -251,25 +160,17 @@ export class RoadPath {
     return n;
   }
 
-  /** Natural ground the router routes over. Coarser than the mesh — see ROUTE.lod. */
+  /** Natural ground the router routes over. Coarser than the mesh. */
   _ground(x, z) {
     return this.terrain.height(x, z, ROUTE.lod);
   }
 
-  /**
-   * Cost of running a span from `prev` to (x, y, z) on the given heading.
-   *
-   * Lower is better and the units are metres-ish: the earthwork term is a real
-   * mean vertical error over the corridor, and every other term is scaled
-   * against it. Nothing here is normalised globally, because only the ORDER of
-   * the candidates matters — this is an argmin, not a measurement.
-   */
+  /** Cost of a span: lower is better, metres-ish. Only the ORDER matters here. */
   _spanCost(prev, x, y, z, heading, turn, grade, ch) {
     const spacing = ROAD.ctrlSpacing;
 
     // ---- earthwork ------------------------------------------------------
-    // Mean |natural − road| over a grid of stations along the span and probes
-    // across the corridor. This is the term that makes the road contour.
+    // Mean |natural − road| over stations and probes. Contours the road.
     let earth = 0;
     let n = 0;
     const right = { x: Math.cos(heading), z: Math.sin(heading) };
@@ -290,8 +191,8 @@ export class RoadPath {
     earth /= Math.max(1, n);
 
     // ---- the view -------------------------------------------------------
-    // Ground either side at the end of the span. Read at two distances: a shelf
-    // is a local thing and a valley is not, and one probe cannot see both.
+    // Ground either side at the end of the span, at two distances: a shelf is
+    // local, a valley is not, and one probe cannot see both.
     const D = ROUTE.corridor;
     const gl = this._ground(x - right.x * D, z - right.z * D) - y;
     const gr = this._ground(x + right.x * D, z + right.z * D) - y;
@@ -303,18 +204,15 @@ export class RoadPath {
     const stand = -(fl + fr) * 0.5;
 
     /**
-     * A genuine shelf: one side up AND the other down. `min(rise, fall)` is
-     * zero for a ridge top (both fall) and zero for a valley floor (both rise),
-     * and only positive where the road is cut into a slope — which is the
-     * cross-section being asked for.
+     * A genuine shelf: one side up AND the other down. Zero for a ridge top
+     * (both fall) and for a valley floor (both rise).
      */
     const shelf = Math.max(
       Math.min(Math.max(0, gl), Math.max(0, -gr)),
       Math.min(Math.max(0, gr), Math.max(0, -gl))
     );
 
-    // How much vertical range there is out here at all. A plain scores zero and
-    // the router goes looking for somewhere with a shape to it.
+    // How much vertical range there is out here at all. A plain scores zero.
     const relief = Math.max(gl, gr, fl, fr, 0) - Math.min(gl, gr, fl, fr, 0);
 
     // ---- the engineering ------------------------------------------------
@@ -322,17 +220,15 @@ export class RoadPath {
     const turnN = Math.abs(turn) / this.maxTurn;
     const turnDelta = Math.abs(turn - this.lastTurn) / this.maxTurn;
 
-    // Deviation from the intended bearing. `1 - cos` rather than the raw angle
-    // so it is flat near zero (small corrections are free) and grows hard past
-    // a right angle.
+    // Deviation from the intended bearing. `1 - cos` so small corrections are
+    // free and it grows hard past a right angle.
     const off = 1 - Math.cos(heading - this.bearing);
 
     // Coming back alongside road already laid. Squared, so the penalty is
     // negligible at the edge of the exclusion and overwhelming inside it.
     const self = this._selfProximity(x, z);
 
-    // Earthwork is free up to the budget and quadratic past it — see
-    // ROUTE.earthFree for why minimising it outright is the wrong objective.
+    // Earthwork is free up to the budget and quadratic past it.
     const over = Math.max(0, earth - ROUTE.earthFree);
 
     return (
@@ -350,12 +246,9 @@ export class RoadPath {
 
   /**
    * Lays down the next control point by choosing, rather than by wandering.
-   *
-   * Every candidate is legal by construction — the turn is bounded by
-   * `maxCurvature` and the elevation is clamped to `maxGrade` and
-   * `maxGradeChange` before it is ever scored — so the router only ever picks
-   * among roads that could be built. It cannot produce an alignment the rest of
-   * the project has to defend against.
+   * Every candidate is legal by construction — turn bounded by `maxCurvature`,
+   * elevation clamped to `maxGrade` / `maxGradeChange` before scoring — so the
+   * router only ever picks among roads that could be built.
    */
   _addControlPoint() {
     const i = this.ctrl.length;
@@ -375,7 +268,7 @@ export class RoadPath {
     const s = i * spacing;
 
     // The compass. Drifts slowly and blindly; the terrain decides how the road
-    // gets there. See ROUTE.wBearing for why this has to exist at all.
+    // gets there.
     this.bearing += t.nA(s * ROUTE.bearingDrift, 19.4) * ROAD.maxCurvature * spacing;
 
     const ch = this._character(s);
@@ -389,10 +282,7 @@ export class RoadPath {
       const z = prev.z - Math.cos(heading) * spacing;
 
       // Elevation is an OUTPUT, not an input. Aim at the natural surface here
-      // — which on a hillside is the balanced cut-and-fill line — then clamp to
-      // a legal profile. The old generator chased a neighbourhood average,
-      // which oversmooths: it floats the road over dips and buries it in rises,
-      // and both of those are earthwork the router is trying to avoid.
+      // — the balanced cut-and-fill line — then clamp to a legal profile.
       const want = this._ground(x, z) + ROUTE.rideHeight;
       let grade = (want - prev.y) / spacing;
       grade = clamp(grade, this.grade - ROAD.maxGradeChange, this.grade + ROAD.maxGradeChange);
@@ -401,8 +291,7 @@ export class RoadPath {
 
       const cost = this._spanCost(prev, x, y, z, heading, turn, grade, ch);
       // Straight on is the incumbent and has to be beaten by a margin, or the
-      // argmin flickers between near-equal candidates and the road develops a
-      // tremor. See ROUTE.hysteresis.
+      // argmin flickers and the road develops a tremor.
       const bias = c === (ROUTE.candidates - 1) / 2 ? 1 - ROUTE.hysteresis : 1;
       if (!best || cost * bias < best.score) {
         best = { score: cost * bias, x, y, z, heading, turn, grade };
@@ -429,8 +318,7 @@ export class RoadPath {
 
     // With four points the curve spans three segments; [1/3, 2/3] is the middle
     // one — the only stretch with correct neighbours on both sides.
-    const first = this.pts.length === 0;
-    for (let k = first ? 0 : 1; k <= SAMPLES_PER_SEGMENT; k++) {
+    const first = this.pts.length === 0;    for (let k = first ? 0 : 1; k <= SAMPLES_PER_SEGMENT; k++) {
       const t = 1 / 3 + (k / SAMPLES_PER_SEGMENT) / 3;
       const p = curve.getPoint(t, new THREE.Vector3());
       const prev = this.pts[this.pts.length - 1];
@@ -443,7 +331,7 @@ export class RoadPath {
 
   /**
    * Builds orientation frames for every sample that now has FOLD_WINDOW
-   * neighbours on both sides, so curvature can be measured symmetrically.
+   * neighbours on both sides.
    */
   _buildFrames() {
     const last = this.pts.length - 1 - FOLD_WINDOW;
@@ -469,19 +357,19 @@ export class RoadPath {
       const tan = new THREE.Vector3().subVectors(c.p, a.p).normalize();
       const curv = curvatureAt(i, CURV_WINDOW);
 
-      // right = tangent x up  (with forward = -Z, that resolves to +X).
-      const right = new THREE.Vector3().crossVectors(tan, WORLD_UP).normalize();
+    // right = tangent x up  (with forward = -Z, that resolves to +X).
+    const right = new THREE.Vector3().crossVectors(tan, WORLD_UP).normalize();
 
-      // Bank into the corner: rotating `right` by -bank about the tangent lifts
-      // the outside edge of the turn.
-      const bank = clamp(curv * ROAD.bankGain, -ROAD.maxBank, ROAD.maxBank);
-      right.applyAxisAngle(tan, -bank).normalize();
+    // Bank into the corner: rotating `right` by -bank about the tangent lifts
+    // the outside edge of the turn.
+    const bank = clamp(curv * ROAD.bankGain, -ROAD.maxBank, ROAD.maxBank);
+    right.applyAxisAngle(tan, -bank).normalize();
 
-      const up = new THREE.Vector3().crossVectors(right, tan).normalize();
+    const up = new THREE.Vector3().crossVectors(right, tan).normalize();
 
-      // How much ground sits over the centreline here. Positive means the
-      // alignment is below the natural surface — a cutting.
-      const here = this.pts[i];
+    // How much ground sits over the centreline here. Positive means the
+    // alignment is below the natural surface — a cutting.
+    const here = this.pts[i];
       const cover = this.terrain.base(here.p.x, here.p.z) - here.p.y;
 
       this.frames[i] = {
@@ -520,50 +408,14 @@ export class RoadPath {
   /**
    * Per-frame curvature limits for the terrain's fold guard, one per side.
    *
-   * ── why this is not just `curv` ────────────────────────────────────────────
+   * Built from the ACTUAL frame-to-frame rotation, not `curv`: `curv` is a
+   * smoothed +/-10 m average, smaller than the pointwise rate the fold guard
+   * enforces, so feeding it relaxes the very limit it exists to enforce. The
+   * guard's 0.7 margin then means a quad can lose at most 70% of its depth.
    *
-   * The guard in `chunks.js:foldSafeOffset` exists to stop the terrain sheet
-   * turning inside out. Rows of vertices fan out perpendicular to the road, so
-   * the longitudinal spacing at lateral offset `v` is `ds * (1 + v * kappa)` and
-   * the mesh folds when that reaches zero. `kappa` in that expression is the
-   * rate at which THIS ROW'S FRAME rotates into the NEXT ROW'S — nothing else.
-   *
-   * `curv` is not that number. It is the turn measured over +/-10 m, which is
-   * the right estimate for banking and for a corner-speed model and is a
-   * SMOOTHED one: where the spline turns sharply over a few metres, the average
-   * over twenty is smaller. Feeding it to the guard therefore relaxes exactly
-   * the limit the guard exists to enforce, and measured across five seeds the
-   * far corridor was folding through itself in 1,240 to 4,353 cells per seed —
-   * with the worst row spacing at MINUS 54% of nominal, which is a sheet turned
-   * inside out, drawn back-to-front, with garbage normals. It has been doing
-   * that since the guard was written.
-   *
-   * So the limit is built from the actual frame-to-frame rotation, and the
-   * guard's 0.7 margin then means what it says: no vertex can pass 70% of the
-   * way to the centre of rotation, so no quad can lose more than 70% of its
-   * depth, so nothing folds. By construction rather than by estimate.
-   *
-   * ── why a window, and why two of them ──────────────────────────────────────
-   *
-   * The frame-to-frame rate is the NOISIEST estimate there is — a second
-   * difference of a spline through 46 m control points — and the guard's output
-   * is a lateral position hundreds of metres out, so noise in it becomes tens of
-   * metres of shear between adjacent rows. A tear, instead of a fold.
-   *
-   * A running MAXIMUM over a window fixes both at once. It is conservative, so
-   * every row in the window is protected against the tightest turn near it; and
-   * the maximum of a continuous function over a sliding window is itself
-   * continuous, and holds its value across the window's width, so the spikes
-   * that caused the shear become plateaux.
-   *
-   * Two of them because the guard is ONE-SIDED and must stay that way. Only the
-   * inside of a bend folds; the outside spreads out. Compressing both sides
-   * would mean the world visibly ending 115 m away on the outside of a hairpin.
-   * Splitting the running maximum by sign — left turns bound the left side,
-   * right turns the right — keeps each side protected against every turn in the
-   * window while leaving a straight, or the outside of a bend, completely
-   * alone. A stretch that reverses within the window has both limits set, which
-   * is correct: within that window, both sides really do fold.
+   * A running MAXIMUM over a window, split by sign — only the inside of a bend
+   * folds, the outside spreads — so each side is protected against the tightest
+   * nearby turn while a straight, or the outside of a bend, is left alone.
    */
   _buildFoldLimits() {
     const frames = this.frames;
@@ -573,9 +425,7 @@ export class RoadPath {
 
     // Turn ANGLE across each step, signed, and the arc length it took. Positive
     // turns left, which compresses negative `v` — the same convention `curv`
-    // uses. Kept as an angle rather than as a rate so the smoothing below can
-    // sum them: the total turn across a window is the sum of its steps' turns,
-    // exactly, for any shape.
+    // uses. Kept as an angle so the smoothing below can just sum them.
     if (!this._rowTurn) { this._rowTurn = []; this._rowDs = []; }
     const turn = this._rowTurn;
     const step = this._rowDs;
@@ -605,11 +455,8 @@ export class RoadPath {
 
     /**
      * Turn rate at step `i`, averaged over `ROUTE.foldSmooth` steps either side.
-     *
-     * The single-step difference this replaces was reaching twice the design
-     * curvature on roughness alone, and the guard turned that straight into a
-     * terrain sheet that stopped 57 m from the road — bug #64. See
-     * `ROUTE.foldSmooth`.
+     * The single-step difference it replaces reached twice the design curvature
+     * on roughness alone.
      */
     const rateAt = (i) => {
       const lo = Math.max(0, i - FOLD_SMOOTH);
@@ -642,42 +489,16 @@ export class RoadPath {
   /**
    * The RELAXED heading field, and the curvature limits that go with it.
    *
-   * ── the problem this exists to solve ───────────────────────────────────────
+   * The fold guard bounds `v * kappa` and only ever had `v` to squeeze, so hard
+   * corners ended the sheet ~94 m out. `kappa` is not fixed: it is the rate the
+   * LATERAL direction turns, and that direction is a choice. Near the road it
+   * stays `right` (earthwork must be square to it); far out it rotates toward a
+   * heading that turns slowly, so the effective curvature falls.
    *
-   * The fold guard bounds `v * kappa`, and the only handle it had was `v`. So
-   * where the road turns hard the sheet was simply cut short — measured on the
-   * default seed, the world ended 94 m from the centreline at s = 898, and
-   * 12.4% of the ground within 300 m of the road did not exist at all. Widening
-   * the guard is not available: `v * kappa <= foldMargin` is what keeps rows
-   * from crossing, and violating it inverts the mesh (bugs #58, #59).
-   *
-   * But `kappa` is not a constant of the problem either. It is the rate the
-   * LATERAL DIRECTION turns with `s`, and that direction is a choice. Road
-   * space uses `right(s)` because near the carriageway the earthwork has to be
-   * cut square to the road — 700 m out, nothing does. So the direction is
-   * rotated toward a heading that turns slowly, and the effective curvature
-   * falls with it. Same invariant, one more degree of freedom.
-   *
-   * ── the field ──────────────────────────────────────────────────────────────
-   *
-   * `relaxDev` is `theta~ - theta`: an ANGLE, not a vector, because the guard's
-   * guarantee depends on it. Interpolating two directions as vectors makes the
-   * blend rotate at a rate that is not the blend of the two rates, and the
-   * whole point of this is that the effective curvature is exactly
-   * `(1-b)*kappa + b*kappa~`. Rotating by `b * relaxDev` gives that identity;
-   * a `lerpVectors` only approximates it.
-   *
-   * `theta~` is the road heading averaged over `ROUTE.relaxWindow` metres. An
-   * average of a heading is exact for the thing that matters here — total turn
-   * across a window is the sum of its steps, for any shape — and `turnSum2`, a
-   * prefix sum of the prefix sum, makes each one two subtractions rather than a
-   * loop. It is a function of `s` ALONE, shared by every chunk, so neighbouring
-   * sheets agree at their shared boundary exactly as they do today.
-   *
-   * `relaxL` / `relaxR` are its turn rate under the same signed running maximum
-   * the fold limits use, and they are what bounds how far the relaxed direction
-   * can carry the sheet: `foldMargin / relaxK`. At 800 m of window that is
-   * around 400 m, against the 94 m the road's own heading was delivering.
+   * `relaxDev` is an ANGLE (`theta~ - theta`), not a vector: rotating by
+   * `b * relaxDev` makes the effective curvature exactly
+   * `(1-b)*kappa + b*kappa~`, which a vector lerp only approximates.
+   * `relaxL`/`relaxR` bound how far that direction carries the sheet.
    */
   _buildRelaxed(from, last) {
     const frames = this.frames;
@@ -704,16 +525,10 @@ export class RoadPath {
     for (let i = lo0; i <= last; i++) dev[i] = devAt(i);
     dev.length = last + 1;
 
-    // NEGATED on the way out, and this is not a fudge.
-    //
-    // `turn[i]` is `asin(cross(tan_i, tan_{i+1}).y)`, which with forward = -Z
-    // works out to `theta_i - theta_{i+1}` — so `turnSum` accumulates MINUS the
-    // heading. That is the convention the fold limits want (positive turns
-    // left, and a left turn compresses negative v), and `dev` inherits it, so
-    // the rate below is computed in it too. What `chunks.js:lateralAt` needs is
-    // an angle to advance a heading BY, which is the other sign. Leaving it
-    // rotated the sheet the wrong way — doubling the deviation from the relaxed
-    // heading instead of removing it — and folded the mesh in 13,872 cells.
+    // NEGATED on the way out: `turn[i]` is `asin(cross(tan_i, tan_{i+1}).y)`,
+    // which with forward = -Z is `theta_i - theta_{i+1}`, so `turnSum`
+    // accumulates MINUS the heading. lateralAt needs the other sign to advance
+    // a heading BY.
     for (let i = lo0; i <= last; i++) {
       if (frames[i]) frames[i].relaxDev = -dev[i];
     }
@@ -738,24 +553,15 @@ export class RoadPath {
 
   /**
    * How far the terrain sheet reaches either side at arc length `s`, metres.
-   *
-   * The inverse of the fold guard, and the honest answer to "where does the
-   * world end here" — which is a question with a different answer every few
-   * metres, and one that nothing used to ask. `CHUNK.recoverLateral` assumed a
-   * flat 300 m; measured across five seeds the sheet delivers anything from
-   * 73 m to `CHUNK.halfExtent`, depending on how hard the road is turning.
+   * The inverse of the fold guard.
    *
    * @returns {{left: number, right: number}} distances from the centreline
    */
   corridorAt(s, out = { left: 0, right: 0 }) {
     const f = this.frameAt(s, _reachFrame);
-    // The RELAXED limits, not the road's own. `chunks.js:lateralAt` turns the
-    // sheet's lateral direction toward the relaxed heading as the offset grows,
-    // so what bounds the sheet out here is how hard THAT turns — which is the
-    // whole reason the corridor is now hundreds of metres wide where it used to
-    // be ninety. Reading `foldL` here would report the old, much smaller number
-    // and `_checkRecovery` would turn the car back in the middle of ground that
-    // exists.
+    // The RELAXED limits, not the road's own: `lateralAt` turns the lateral
+    // direction toward the relaxed heading as the offset grows, so what bounds
+    // the sheet is how hard THAT turns.
     out.left = f.relaxL > 1e-7 ? ROUTE.foldMargin / f.relaxL : Infinity;
     out.right = f.relaxR > 1e-7 ? ROUTE.foldMargin / f.relaxR : Infinity;
     return out;
@@ -830,9 +636,9 @@ export class RoadPath {
   }
 
   /**
-   * Projects a world position onto the spline, returning arc length.
-   * Searches a window around `sHint`, so this stays O(window) no matter how
-   * long the road gets.
+   * Projects a world position onto the spline, returning arc length. Searches
+   * a window around `sHint`, so this stays O(window) no matter how long the
+   * road gets.
    */
   projectPoint(pos, sHint, back = 70, forward = 120) {
     const lo = this._indexAt(Math.max(0, sHint - back));
@@ -876,8 +682,7 @@ export class RoadPath {
  * 1-D binary dilation / erosion over a window of +-r samples, via a prefix sum
  * so the cost is independent of the radius.
  */
-function window1d(src, r, wantAll) {
-  const n = src.length;
+function window1d(src, r, wantAll) {  const n = src.length;
   const sum = new Int32Array(n + 1);
   for (let i = 0; i < n; i++) sum[i + 1] = sum[i] + src[i];
   const out = new Uint8Array(n);

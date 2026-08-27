@@ -1,8 +1,8 @@
 /**
- * util.js — tiny math helpers and deterministic PRNGs.
+ * util.js — small math helpers and deterministic PRNGs.
  *
- * Everything here is dependency-free and allocation-free so it can be called
- * from the physics substep loop without producing garbage.
+ * Dependency-free and allocation-free, so the physics substep loop can call
+ * them without making garbage.
  */
 
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
@@ -22,57 +22,26 @@ export function damp(current, target, rate, dt) {
   return lerp(current, target, 1 - Math.exp(-rate * dt));
 }
 
-/**
- * Exponential smoothing that tracks a MOVING goal without a frame-rate
- * dependent lag.
- *
- * `damp()` above is the standard frame-rate-independent smoother, and for a
- * goal that sits still it is exactly right. For a goal that is MOVING it is
- * not, and the error is not small. Stepping `x += (g - x)·(1 - e^(-k·dt))` once
- * per frame toward the goal's *end-of-frame* position settles at a lag of
- *
- *     L = v·dt·e^(-k·dt) / (1 - e^(-k·dt))
- *
- * which contains `dt`. So a chase camera following a car at 64 m/s sits 3.98 m
- * behind at 60 fps and 3.51 m behind at 30 fps — and on a frame-time spike it
- * moves between the two. That is the camera springing toward the car and back,
- * and because the car itself is interpolated perfectly smoothly, what the
- * player sees is the CAR lurching inside the frame.
- *
- * The fix is to integrate the goal's motion instead of ignoring it. Over one
- * frame the goal is a ramp, g(t) = g0 + v·t, and ẋ = k·(g − x) has a closed
- * form on that interval:
- *
- *     x1 = g1 − v/k + (x0 − g0 + v/k)·e^(-k·dt)
- *
- * whose steady-state lag is exactly v/k — a function of speed and stiffness
- * only, with `dt` gone from the answer. Same cost, one exponential.
- *
- * @param {number} current  filter state
- * @param {number} goalPrev goal at the START of this frame
- * @param {number} goal     goal at the END of this frame
- * @param {number} rate     stiffness k, 1/s
- * @param {number} dt       seconds
- */
+// Exponential smoothing toward a MOVING goal. `damp()` to the goal's
+// end-of-frame position settles at lag L = v·dt·e^(−k·dt)/(1 − e^(−k·dt)) —
+// frame-rate dependent, so a chase camera sways with frame time. Integrating
+// the goal's ramp over the frame (x1 = g1 − v/k + (x0 − g0 + v/k)·e^(−k·dt))
+// leaves steady-state lag exactly v/k, with dt gone. One exponent, same cost.
 export function dampTrack(current, goalPrev, goal, rate, dt) {
   if (!(dt > 0) || !(rate > 0)) return current;
   const e = Math.exp(-rate * dt);
-  // Goal velocity over this frame, and the lag it sustains.
   const lag = (goal - goalPrev) / dt / rate;
   return goal - lag + (current - goalPrev + lag) * e;
 }
 
-/** Moves `current` toward `target` by at most `maxDelta`. */
 export function moveTowards(current, target, maxDelta) {
   const d = target - current;
   if (Math.abs(d) <= maxDelta) return target;
   return current + sign(d) * maxDelta;
 }
 
-/**
- * Alea — small, fast, seedable PRNG. Seeds the gradient-noise permutation
- * tables, which is what makes a given world reproducible from its seed string.
- */
+// Alea — small, fast, seedable; seeds the noise permutation tables, which is
+// what makes a world reproducible from its seed string.
 export function alea(seed) {
   let n = 0xefc8249d;
   const mash = (data) => {
@@ -126,14 +95,9 @@ export function hashInt(i) {
   return (h ^ (h >>> 16)) >>> 0;
 }
 
-/**
- * Polynomial smooth minimum (Quilez). Blends the two values over a window `k`
- * instead of meeting them at a corner.
- *
- * A hard min/max is what puts a crease in a surface: the derivative jumps in
- * one step. On terrain that crease is a curvature spike, and a car crossing it
- * at speed is thrown as if it hit a wall — even though nothing is standing up.
- */
+// Polynomial smooth minimum (Quilez): blends over a window `k`. A hard
+// min/max leaves a derivative crease — a curvature spike a car at speed hits
+// as if it struck a wall.
 export function smin(a, b, k) {
   if (k <= 0) return Math.min(a, b);
   const h = clamp(0.5 + (0.5 * (b - a)) / k, 0, 1);

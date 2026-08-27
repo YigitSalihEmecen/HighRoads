@@ -1,27 +1,7 @@
 /**
- * What the interface actually looks like, at real device sizes.
+ * uishot.mjs — screenshots the interface at device sizes.
  *
- * This is the only thing in the project that can SEE the layout, and it exists
- * because nothing else could: `probe/ui.mjs` proves every id resolves and every
- * toggled class is styled, which is necessary and says nothing at all about
- * whether two controls sit on top of each other. Four bugs that shipped past
- * every other check were found the first time this ran — the handbrake through
- * the middle of the tachometer, the score squeezed against the auxiliary
- * buttons, garage rows squashed below their content so the text drew through
- * the swatches underneath, and the wordmark running under the panel on a
- * landscape phone.
- *
- * It drives a headless Chrome over the DevTools protocol rather than shelling
- * out to `--screenshot`, for one reason: `--window-size` is clamped to a 500 px
- * minimum, so a plain headless screenshot of a 375 px phone silently lays the
- * page out at 500 and crops it. `Emulation.setDeviceMetricsOverride` gives the
- * real viewport. Node's built-in WebSocket does the rest; no dependencies.
- *
- *   node probe/uishot.mjs            # screenshot every viewport, report overflow
- *   node probe/uishot.mjs --build    # regenerate uiview.html from index.html
- *
- * Images land in probe/shots/. Chrome is expected at the macOS path below;
- * override with CHROME=/path/to/chrome.
+ * The only check that can see the layout at real widths and heights.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -37,12 +17,8 @@ const OUT = path.join(HERE, 'shots');
 
 /* ----------------------------------------------------------------- build -- */
 
-/**
- * Splices the live shell together with the harness body. Kept as a build step
- * rather than a copy so the stylesheet under test is always the real one —
- * a forked copy of index.html would drift within a day and then be worse than
- * nothing, because it would still render.
- */
+// Splices the live shell together with the harness body, so the stylesheet
+// under test is always the real one — a forked copy would drift within a day.
 function build() {
   const shell = fs.readFileSync(path.join(HERE, '..', 'index.html'), 'utf8')
     .replace(/<script type="importmap">[\s\S]*?<\/script>/, '')

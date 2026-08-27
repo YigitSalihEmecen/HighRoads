@@ -1,8 +1,8 @@
 /**
- * Traffic soak. Drives a synthetic player down the road for several minutes of
- * simulated time and watches for the things that were actually wrong: cars
- * appearing in plain sight, cars stopping dead, cars occupying the same metre
- * of road, and impacts that hand the player an absurd velocity.
+ * traffic.mjs — traffic soak.
+ *
+ * Drives a synthetic player for minutes and watches for spawn, overlap, dead
+ * stops and absurd impacts.
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
@@ -21,8 +21,6 @@ const chunks = new ChunkManager({
   scene: new THREE.Scene(), world: null, RAPIER: null, path, terrain, foliage: new Map(),
 });
 
-// Stand-in models: the real ones come from FBX, but traffic only ever reads
-// `metrics` and clones the meshes.
 const mk = (id, mass, len, wid) => [id, {
   body: new THREE.Group(),
   wheels: { FL: new THREE.Group(), FR: new THREE.Group(), BL: new THREE.Group(), BR: new THREE.Group() },
@@ -38,7 +36,6 @@ const roster = [
   { id: 'sport', mass: 1180 }, { id: 'van', mass: 1820 }, { id: 'pickup', mass: 1950 },
 ];
 
-// A player body that records what traffic does to it.
 let impulses = [];
 const PLAYER_MASS = 1250;
 const vehicle = {
@@ -94,8 +91,7 @@ for (let i = 0; i < steps; i++) {
         stallSince.set(c.id, t0);
         longestStall = Math.max(longestStall, (i - t0) * dt);
       } else stallSince.delete(c.id);
-      // Only settled cars: a lane change deliberately eases across a full
-      // lane width, so sampling mid-transition measures the feature, not an error.
+      // Only settled cars: a lane change eases across a lane mid-transition.
       if (c.changeCooldown <= 0) {
         laneErrWorst = Math.max(laneErrWorst, Math.abs(c.v - c.dir * traffic.lanes[c.lane]));
       }
@@ -107,7 +103,6 @@ for (let i = 0; i < steps; i++) {
     closest = Math.min(closest, p.gap);
   }
 
-  // Same-lane overlap.
   for (let a = 0; a < traffic.cars.length; a++) {
     for (let b = a + 1; b < traffic.cars.length; b++) {
       const A = traffic.cars[a], B = traffic.cars[b];

@@ -1,31 +1,11 @@
 /**
  * env/textures.js — shared procedural texture plumbing.
  *
- * Every map in this project is drawn into a 2D canvas at boot rather than
- * loaded, so this file holds the parts every generator would otherwise
- * reimplement: a canvas that fails softly, a seeded PRNG, and tileable value
- * noise.
- *
- * ── why the noise here is not the noise in `noise.js` ───────────────────────
- *
- * `noise.js` generates terrain: it needs analytic derivatives, quintic
- * interpolation and an infinite domain, and it costs accordingly. A texture
- * needs none of that and needs one thing that terrain never does — it has to
- * TILE. A map that does not tile is a map with a seam every time it repeats,
- * and a ground texture repeats a few hundred times across one hillside.
- *
- * So the lattice here wraps: `hash(i mod P, j mod P)`. Everything built on it
- * tiles at period P by construction, at any octave, with no blending trick.
+ * Every map is drawn into a 2D canvas at boot. This file holds the shared
+ * parts: a soft-failing canvas, a seeded PRNG, and tileable value noise.
  */
 
-/**
- * A 2D canvas and its context, or null where there is neither.
- *
- * The headless probes stub `document.createElement` to return an object whose
- * `getContext` gives back null, so they can run the real placement code without
- * ever needing pixels. Returning null rather than throwing is what lets every
- * caller treat "no texture" as a rendering detail instead of an error.
- */
+/** A 2D canvas and context, or null: headless probes then treat "no texture" as a detail, not an error. */
 export function makeCanvas(size) {
   let canvas;
   try {
@@ -60,8 +40,7 @@ function latticeHash(ix, iy, period, salt) {
 export function tileNoise(x, y, period, salt = 0) {
   const ix = Math.floor(x), iy = Math.floor(y);
   const fx = x - ix, fy = y - iy;
-  // Smoothstep, not linear: value noise on a linear ramp shows the lattice as
-  // a diamond grid, which at texture scale reads as woven fabric.
+  // Smoothstep, not linear: linear value noise shows the lattice as a diamond grid.
   const u = fx * fx * (3 - 2 * fx);
   const v = fy * fy * (3 - 2 * fy);
   const a = latticeHash(ix, iy, period, salt);
@@ -71,13 +50,7 @@ export function tileNoise(x, y, period, salt = 0) {
   return (a + (b - a) * u) + ((c + (d - c) * u) - (a + (b - a) * u)) * v;
 }
 
-/**
- * Tileable fBm in [0, 1].
- *
- * `cells` is the base frequency in lattice cells across the whole texture; each
- * octave doubles it, and the period doubles with it, so every octave tiles at
- * the same texture size.
- */
+/** Tileable fBm in [0, 1]; each octave doubles its period so it still tiles. */
 export function tileFbm(u, v, cells, octaves = 4, gain = 0.5, salt = 0) {
   let a = 0, amp = 1, norm = 0, f = cells;
   for (let i = 0; i < octaves; i++) {
@@ -89,12 +62,7 @@ export function tileFbm(u, v, cells, octaves = 4, gain = 0.5, salt = 0) {
   return a / norm;
 }
 
-/**
- * Tileable ridged fBm in [0, 1] — folded about 0.5 so crests sharpen.
- *
- * This is what makes a rock face read as rock rather than as static: erosion
- * leaves creases and channels, which are ridge lines, and a plain fBm has none.
- */
+/** Tileable ridged fBm — folded about 0.5 so crests sharpen into lines. */
 export function tileRidged(u, v, cells, octaves = 4, gain = 0.5, salt = 0) {
   let a = 0, amp = 1, norm = 0, f = cells;
   for (let i = 0; i < octaves; i++) {
@@ -107,14 +75,7 @@ export function tileRidged(u, v, cells, octaves = 4, gain = 0.5, salt = 0) {
   return a / norm;
 }
 
-/**
- * Writes a full-canvas image from a per-pixel function.
- *
- * `shade(u, v)` is handed texture coordinates in [0, 1) and returns
- * `[r, g, b]` or `[r, g, b, a]`, each in [0, 1]. One `putImageData` for the
- * whole map — a per-pixel `fillRect` is roughly two orders of magnitude slower
- * and this runs at boot, where the loading bar is already the long pole.
- */
+/** Paints the whole map from a per-pixel `shade(u, v)` returning RGB[A] in [0, 1]. One putImageData, not per-pixel fillRects. */
 export function paint(target, shade) {
   const { ctx, size } = target;
   const img = ctx.createImageData(size, size);

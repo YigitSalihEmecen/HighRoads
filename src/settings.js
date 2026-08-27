@@ -1,24 +1,9 @@
 /**
  * settings.js — the settings panel.
  *
- * The parts of the engine simulator worth touching: master level, the six voice
- * buses it mixes independently, the two tone controls, the wind, plus the
- * gearbox and camera modes — driving settings rather than audio ones, but they
- * belong with the other toggles.
- *
- * IT IS A NODE, NOT A PLACE. There used to be a tab clinging to the left edge
- * of the screen that slid this out over the road, and the panel knew where it
- * lived: it owned `#settings`, `#settings-toggle` and an `open` flag. The same
- * controls are now wanted folded into the title screen's Settings drawer AND
- * inside the pause menu, and the honest way to be in two places is to be moved
- * between them — see `Game.mountSettings`. So this module builds the panel and
- * nothing else; whoever wants it appends it.
- *
- * One non-obvious constraint shapes the rest of the file: **the game reads the
- * keyboard from `window`**. A focused range input also responds to arrow keys,
- * so a slider left focused would steer the car every time the player nudged it.
- * Every control therefore blurs itself as soon as it is released, and the panel
- * swallows key events that reach it.
+ * The panel is a node, not a fixed location. The game mounts it into the
+ * title screen drawer or into the pause menu. It builds the controls for the
+ * engine simulator, the wind, the gearbox and the camera.
  */
 
 import { TiltSteering } from './input.js';
@@ -26,11 +11,7 @@ import { CAM_MODES } from './camera.js';
 import { GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel } from './config.js';
 
 /**
- * One line per level, and they have to stay true to `config.js:applyGraphics`.
- *
- * The old Low said "silhouette cards only", which stopped being true when the
- * canopy became faceted solids: there are no cards left, and Low is now the
- * same trees drawn at the subdivision the distance already uses.
+ * One line per level; keep them true to config.js:applyGraphics.
  */
 const GFX_NOTES = {
   high: 'Dense woods, grass, shrubs and stone. Longest draw distance.',
@@ -39,12 +20,8 @@ const GFX_NOTES = {
 };
 
 /**
- * The buses worth a slider.
- *
- * `mechanical` is not one of them. It is band-passed pink noise standing in for
- * valvetrain clatter and block resonance, and at driving volume it reads as
- * hiss rather than as detail, so it is mixed to zero in powertrain.js. A slider
- * whose only useful position is the one it already sits at is clutter.
+ * The buses worth a slider. `mechanical` is not one: it is mixed to zero in
+ * powertrain.js, so a slider for it would be clutter.
  */
 const BUSES = [
   ['exhaust', 'Exhaust', 'the pipe — combustion pulses through the waveguides'],
@@ -63,8 +40,7 @@ export class Settings {
     /** Where new controls go. Set to the audio fold's body while it builds. */
     this._host = this.body;
 
-    // The panel is a keyboard trap by design — nothing typed into it should
-    // reach the driving controls.
+    // Nothing typed into the panel reaches the driving controls.
     this.body.addEventListener('keydown', (e) => e.stopPropagation());
     this.body.addEventListener('keyup', (e) => e.stopPropagation());
 
@@ -80,8 +56,7 @@ export class Settings {
 
   /**
    * A collapsible group — the audio block. Returns the body to build into;
-   * the whole tree of audio controls hangs off it and starts folded, so the
-   * panel opens to two short blocks and one line instead of a wall of sliders.
+   * it starts folded, so the panel opens short instead of a wall of sliders.
    */
   collapse(title, { open = false } = {}) {
     const root = document.createElement('div');
@@ -137,7 +112,7 @@ export class Settings {
       onInput(parseFloat(input.value));
       show(input.value);
     });
-    // Release focus the moment the player lets go, or the arrow keys steer.
+    // Release focus on release, or the arrow keys steer.
     input.addEventListener('change', () => input.blur());
     input.addEventListener('pointerup', () => input.blur());
 
@@ -161,12 +136,10 @@ export class Settings {
     const pt = this.game.powertrain;
 
     this._section('Graphics');
-    /**
-     * Three levels of fidelity, laid out exactly like the mode selector below
-     * Drive — a three-state segmented switch with a sliding fill. Each level
-     * is its own segment: you pick the one you want in one tap, and only an
-     * actual change needs the world rebuilt (see config.js) — picking the
-     * level you are already on does nothing.
+/**
+     * A three-state switch, one segment per level. Only an actual change
+     * rebuilds the world (see config.js). Picking the current level does
+     * nothing.
      */
     this.gfxBtns = [];
     const seg = document.createElement('div');
@@ -192,10 +165,7 @@ export class Settings {
     });
     this.body.appendChild(seg);
 
-    // What the level actually does, in one line, updated by `refresh`. The
-    // segmented switch says High/Medium/Low and nothing else, and "Low" alone
-    // does not tell a player whether they are giving up draw distance, density
-    // or detail. All three, but in different proportions — see `config.js`.
+    // One line saying what the level actually does; see config.js.
     this.gfxNote = document.createElement('div');
     this.gfxNote.className = 'row-hint';
     this.body.appendChild(this.gfxNote);
@@ -208,32 +178,24 @@ export class Settings {
       this.camBtn.textContent = 'Camera: ' + this.game.cam.cycle();
     });
     /**
-     * Tilt steering, and this button is the PERMISSION GESTURE.
-     *
-     * iOS Safari will only hand over the orientation sensor from inside a tap
-     * (see `input.js:TiltSteering`), which is the same rule the audio lives
-     * under. Doing it here rather than on the Drive button is deliberate: a
-     * first-time player should not meet an operating-system permission dialog
-     * on their way into the game, and a control they chose to press is a much
-     * better place to ask.
+     * Tilt steering; this button is the permission gesture.
+     * iOS grants the sensor only from inside a tap, so the button the player
+     * chose is the better place to ask.
      */
     if (TiltSteering.supported) {
       this.tiltBtn = this._button('Steering: buttons', () => this.game.toggleTilt());
-      // Which way a given phone reads as "tipped right" is not something the
-      // code can know — see `input.js:_read`. This is the escape hatch.
+      // The code cannot know which way reads as "tipped right"; see input.js.
+      // This button toggles it.
       this.tiltInvBtn = this._button('Tilt: normal', () => {
         TiltSteering.setInverted(!TiltSteering.inverted);
         this.refresh();
       });
     }
 
-    // Everything auditory shares one fold, folded by default, so the panel does
-    // not open onto a wall of sliders. See `collapse()`.
+    // All audio shares one fold, folded by default. See collapse().
     this._host = this.collapse('Audio');
     this.master = this._slider('Master', 'overall level', 0, 1, pt.volume, (v) => pt.setVolume(v));
-    // Not one of the engine's buses — see wind.js. It shares the context and
-    // nothing else, so it gets its own control rather than sitting under a
-    // heading that says "voice mix" and meaning combustion.
+    // Not an engine bus (see wind.js), so it gets its own control.
     this.wind = this._slider('Wind', 'air over the body, louder the faster you go',
       0, 1, this.game.wind.volume, (v) => this.game.wind.setVolume(v));
 
@@ -253,7 +215,9 @@ export class Settings {
     this.refresh();
   }
 
-  /** Pulls state back out of the game — used when a keybind changes something. */
+  /**
+   * Pulls state back out of the game, after a keybind changes something.
+   */
   refresh() {
     const pt = this.game.powertrain;
     if (this.gfxBtns && this.gfxBtns.length) {

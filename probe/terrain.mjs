@@ -1,12 +1,8 @@
 /**
- * How faceted is the ground?
+ * terrain.mjs — measures how faceted the ground is.
  *
- * "Pointy" is a statement about the angle between neighbouring faces, so that
- * is what gets measured: build the terrain on the exact lattice the mesh uses,
- * take a normal per cell, and report the angle between horizontally adjacent
- * normals. A smooth hillside has neighbours a couple of degrees apart; a
- * faceted one has spikes of tens of degrees, and those spikes are what the eye
- * reads as a crease.
+ * Builds the terrain on the mesh lattice and reports the angles between
+ * neighbouring faces.
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
@@ -49,7 +45,6 @@ for (const seed of seeds) {
       const dv = lat[i + 1] - lat[i];
       const dhv = rows[0][i + 1] - rows[0][i];
       const dhu = rows[1][i] - rows[0][i];
-      // normal of the cell, from the two edge slopes
       const n = new THREE.Vector3(-dhv / dv, 1, -dhu / dS).normalize();
       normals.push({ n, av: Math.abs((lat[i] + lat[i + 1]) / 2) });
     }

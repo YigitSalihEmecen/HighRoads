@@ -1,18 +1,10 @@
 /**
- * Both paint slots, on every car in the roster.
+ * paint.mjs — confirms the two paint slots on every car.
  *
- * `assets.js` splits the bodywork by ATLAS CELL: the largest flat colour is the
- * car's paint, the next largest is its second colour. Nothing about that is
- * declared anywhere — it is discovered from the geometry at load — so a model
- * that happens to use one cell for almost everything, or an atlas whose cells
- * stop lining up with the 16x16 grid, would silently produce a car with a
- * second colour control that does nothing at all. There is no visual signal
- * when that happens: the swatch highlights, and the car does not change.
- *
- * So this counts the triangles that actually landed in each slot.
+ * Paint is discovered from the geometry by atlas cell.
  */
-// FBXLoader reaches for the DOM to build texture images; same stub the other
-// probes use, hoisted so it is in place before three is imported.
+// FBXLoader reaches for the DOM to build texture images; same stub as the other
+// probes, hoisted so it is in place before three is imported.
 globalThis.document = {
   createElement: (t) => ({
     tagName: t, style: {}, setAttribute() {}, getContext: () => null,
@@ -46,8 +38,8 @@ for (const spec of CARS) {
   const buf = fs.readFileSync(`assets/car_models/Fbx/${spec.file}`);
   const root = loader.parse(
     buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), '');
-  // No texture in Node, so the stock trim colour cannot be sampled here; the
-  // split itself does not depend on it.
+  // No texture in Node, so stock trim colour cannot be sampled; the split does
+  // not depend on it.
   const model = buildCarFromObject(root, null, spec.file);
 
   const tris = new Array(NAMES.length).fill(0);
@@ -71,8 +63,7 @@ for (const spec of CARS) {
   const t = spec._tris;
   check(`${spec.id}: paint slot is populated`, t[SLOT.paint] > 0, `${t[SLOT.paint]} tris`);
   check(`${spec.id}: second colour is populated`, t[SLOT.trim] > 0, `${t[SLOT.trim]} tris`);
-  // Both lamp pairs must survive the extra slot's renumbering — getting the
-  // slot indices out of step would light the bodywork instead of the lamps.
+  // Both lamp pairs must survive the extra slot's renumbering.
   check(`${spec.id}: both lamp pairs found`, t[SLOT.head] > 0 && t[SLOT.tail] > 0,
     `${t[SLOT.head]} front, ${t[SLOT.tail]} rear`);
 }

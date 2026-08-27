@@ -1,28 +1,7 @@
 /**
- * The game, actually rendered.
+ * render.mjs — the game, actually rendered.
  *
- * Until this existed, nothing in the project had ever been seen. Every claim
- * about the world came from headless measurement, and the standing note in
- * AGENT_CONTEXT §8 was that no browser had drawn a single frame of it — which
- * meant the whole of the look (lighting, fog, tunnels as they appear, foliage
- * density, the garage framing) was unverified by construction.
- *
- * The blocker was WebGL: a headless Chrome has no GPU, so the game died at
- * `createScene` and the page never got past "building scene…". The way through
- * is SwiftShader, ANGLE's software rasteriser — `--use-angle=swiftshader` plus
- * `--enable-unsafe-swiftshader`. It is slow (about 20 fps at 1280x720, and that
- * number says nothing about real hardware) but it is a correct GL 
- * implementation, so what it draws is what a GPU would draw.
- *
- * Two bugs were found the first time it ran that no other probe could see: the
- * grass reading as a dark stripe along the verge rather than as grass, and the
- * car sitting entirely behind the garage dock on a 16:9 screen.
- *
- *   node probe/render.mjs                    # garage + driving, default seed
- *   node probe/render.mjs <seed> <seconds>
- *
- * Images land in probe/shots/. Chrome is expected at the macOS path below;
- * override with CHROME=/path/to/chrome.
+ * Boots a browser, renders the world and screenshots it.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -60,8 +39,7 @@ const server = await new Promise((res) => {
 fs.mkdirSync(OUT, { recursive: true });
 const chrome = spawn(CHROME, [
   '--headless=new',
-  // Software GL. Without these three the page never gets a context and the
-  // game stops at "building scene…" with no error anyone can see.
+  // Software GL: without these the page never gets a WebGL context at all.
   '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
   '--disable-gpu-sandbox', '--mute-audio',
   `--remote-debugging-port=${CDP}`, `--user-data-dir=${path.join(OUT, '.chrome-gl')}`,
@@ -135,16 +113,12 @@ console.log('  booted: ' + (await js(`document.getElementById('boot').textConten
 await sleep(2500);
 await shot('game-garage');
 
-// The Drive button goes through an async audio start that can reject in a
-// headless browser, so fall back to starting the run directly.
+// The Drive button's async audio start can reject headless, so start directly.
 await js(`document.getElementById('start').click()`);
 /**
- * Mid-flight.
- *
- * Timed off the flight itself rather than off the click. `begin()` awaits
- * engine_sim's audio start, which under SwiftShader can take longer than the
- * whole 1.35 s flight, so a fixed sleep after the click photographs either the
- * title screen or the road and almost never the move between them.
+ * Mid-flight, timed off the flight rather than the click: `begin()` awaits
+ * engine_sim's audio start, which under SwiftShader can outlast the whole
+ * 1.35 s flight.
  */
 for (let i = 0; i < 120; i++) {
   if (await js(`!!(window.__highroads && window.__highroads.cam.flyingIn)`)) break;
@@ -158,13 +132,9 @@ await js(`(async()=>{const g=window.__highroads;
   g.input.touch.throttle=1; })()`);
 
 /**
- * Optional teleport, in metres of arc length.
- *
- * SwiftShader runs the whole thing at roughly 20 fps, so "drive for a minute"
- * covers a couple of hundred metres and every shot is of the same kilometre.
- * `respawn` is the game's own recovery path — it puts the car on the road at an
- * arbitrary station — so a third argument picks the stretch to look at, which
- * is the only way to see a landform that takes two kilometres to arrive.
+ * Optional teleport, in metres of arc length. SwiftShader runs at ~20 fps, so
+ * "drive for a minute" covers a couple of hundred metres and every shot is of
+ * the same kilometre; `respawn` is the only way to see a distant landform.
  */
 const jumpTo = Number(process.argv[4] || 0);
 if (jumpTo > 0) {
@@ -191,47 +161,26 @@ for (let i = 0; i < 3; i++) {
         .filter(c=>c.grass).reduce((a,c)=>a+c.grass.count,0).toLocaleString()} tufts\`;})()`));
 }
 /**
- * Optional burnout, for looking at the tyre effects.
+ * Optional burnout, for looking at the tyre effects. `SKID=1` stops the car
+ * and floors it — the state `fx.js` emits smoke and rubber in.
  *
- * `SKID=1` brings the car to a stop and floors it, which is the state `fx.js`
- * emits smoke and rubber in.
- *
- * IT DOES NOT WORK THROUGH SWIFTSHADER, and the reason is worth writing down
- * rather than rediscovering. The whole page runs at about 20 fps here, so the
- * powertrain is stepped with `dt` = 50 ms — an order of magnitude outside what
- * engine_sim's launch controller is regulating at — and the engine never comes
- * off idle: measured, 1,650 rpm and 8 kN at the contact patch where a real
- * launch makes 25 kN. Eight kilonewtons does not overwhelm a 1.45 friction
- * coefficient, so no tyre slips, so there is nothing to draw. Nothing is wrong
- * with the effects; the car is simply not doing the thing.
- *
- * `probe/env.mjs` is where the emission path is actually verified. It drives
- * `TyreFX` directly against a stub carrying the slip value the real car
- * measures at full throttle from rest (0.44), which is deterministic, runs in
- * milliseconds, and can tell the difference between "no smoke" and "the
- * screenshot was taken at the wrong moment" — which a screenshot cannot.
- *
- * What this flag is still good for is proving the shaders COMPILE and the
- * meshes are in the scene: a broken `ShaderMaterial` shows up in the page's
- * console errors, which this script already fails on.
+ * It does NOT WORK through SwiftShader: at ~20 fps the powertrain is stepped
+ * with dt ≈ 50 ms, far outside what engine_sim's launch controller regulates
+ * at, and the engine never comes off idle — no slip, nothing to draw.
+ * `probe/env.mjs` verifies the emission path deterministically; this flag only
+ * proves the shaders compile and the meshes are in the scene.
  */
 if (process.env.SKID === '1') {
-  // A standing start, not a handbrake turn. With the throttle open AND the
-  // handbrake on the two longitudinal impulses very nearly cancel, so the
-  // friction circle never clamps and the tyre model reports no slip at all —
-  // which is correct, and not the state anyone means by "burnout". Dropping the
-  // car back to a standstill and flooring it is.
+  // A standing start, not a handbrake turn: throttle plus handbrake nearly
+  // cancels and the friction circle never clamps, so no slip is reported.
   await js(`(()=>{const g=window.__highroads;
     g.input.touch.handbrake=0; g.respawn(g.carS);
-    // Brake first. respawn drops the car in and it rolls; the drivetrain's
-    // launch controller regulates on ROAD SPEED (see AGENT_CONTEXT bug #42), so
-    // a car already doing 6 km/h is a car it believes has launched, and it
-    // never lets the revs up. Nothing spins a wheel from there.
+    // Brake first: the launch controller regulates on ROAD SPEED, so a car
+    // already rolling is one it believes has launched and never revs up.
     g.input.touch.brake=1;
     setTimeout(() => { g.input.touch.brake=0; g.input.touch.throttle=1; }, 1500);
-    // Watch the peak rather than whatever one sample lands on. Under
-    // SwiftShader the whole thing runs at 20 fps, so the wheelspin lasts a
-    // couple of dozen frames and a single reading usually misses it.
+    // Watch the peak: at 20 fps the wheelspin lasts a couple of dozen frames,
+    // so a single reading usually misses it.
     g.__peak = { slip: 0, rpm: 0, puffs: 0, marks: 0 };
     g.__watch = setInterval(() => {
       const s = Math.max(...g.vehicle.wheels.map(w => w.slipAmount));
@@ -252,8 +201,8 @@ if (process.env.SKID === '1') {
 console.log('  rig: ' + await js(rig));
 await shot('game-drive');
 
-// The pause menu, over a real frame of the road rather than over the flat
-// backdrop `probe/uishot.mjs` stands in for the scene.
+// The pause menu, over a real frame of the road rather than the flat backdrop
+// `probe/uishot.mjs` stands in for the scene.
 await js(`window.__highroads.setPaused(true)`);
 await sleep(700);
 await shot('game-pause');

@@ -1,50 +1,8 @@
 /**
- * fx.js — what the tyres leave behind: smoke in the air, rubber on the road.
+ * fx.js — smoke and rubber marks left by the tyres.
  *
- * Both are driven by ONE quantity, `wheel.slipAmount`, which `vehicle.js`
- * already computes as how far past its peak a tyre is — the same number the
- * skid audio uses. There is deliberately no second opinion here about whether a
- * tyre is sliding; a visual effect that disagrees with the sound is worse than
- * no visual effect at all.
- *
- * ── smoke: a pool, not a spawner ────────────────────────────────────────────
- *
- * `FX.smoke.max` particles are allocated once and recycled oldest-first. A
- * thirty-second burnout therefore costs exactly what a one-second one does,
- * there is no allocation anywhere in the frame loop, and the draw is a single
- * instanced call whatever is happening.
- *
- * The particles are integrated ON THE GPU. Each instance carries an origin, a
- * velocity and a birth time; the vertex shader works out where it is from
- * `uTime - birth` in closed form, including the drag term, so the CPU writes to
- * a particle exactly once — when it is born. Updating 260 matrices a frame
- * would not be expensive, but it would be 260 matrices a frame forever, and
- * this is free.
- *
- * They are BILLBOARDS built in view space: the quad's local x and y are added
- * after the origin has been transformed, so the card always faces the camera
- * without anything on the CPU knowing where the camera is. Smoke has no
- * orientation of its own, so anything else is wrong.
- *
- * ── marks: a ring buffer of quads ───────────────────────────────────────────
- *
- * A trail that grows is a trail that grows forever, and this road does not end.
- * `FX.marks.maxQuads` quads are allocated once and written round; the oldest is
- * a couple of hundred metres behind the car by the time it is overwritten, so
- * the recycling is never seen. Each quad bridges the gap between where a wheel
- * was and where it is, at the tyre's own width, lifted just clear of the
- * terrain.
- *
- * Age is a vertex attribute and the fade is in the shader, so a mark laid
- * sixteen seconds ago is gone without anything having to walk the buffer
- * looking for it.
- *
- * ── why marks do not use the depth buffer normally ──────────────────────────
- *
- * They are coplanar with the ground by construction, which is the one thing a
- * depth buffer cannot resolve. `polygonOffset` biases them toward the camera
- * and `depthWrite` is off so overlapping segments of one long drift do not
- * carve holes in each other's alpha.
+ * Both effects follow wheel.slipAmount, the same number the skid audio uses.
+ * Particles come from one fixed pool, recycled oldest-first.
  */
 
 import * as THREE from 'three';
@@ -55,12 +13,8 @@ import { makeCanvas, paint, tileFbm } from './env/textures.js';
 /* ------------------------------------------------------------------ smoke -- */
 
 /**
- * A soft round puff: radial falloff with noise eaten out of the edge.
- *
- * A clean gaussian disc reads as a ball of cotton wool — every particle the
- * same shape, and where two overlap the join is a lens. Breaking the edge with
- * fBm and rotating each instance means a cloud is made of pieces rather than of
- * copies.
+ * A soft round puff: radial falloff with noise eaten out of the edge. Rotating
+ * each instance keeps a cloud made of pieces rather than copies.
  */
 function puffTexture(size) {
   const target = makeCanvas(size);
@@ -69,9 +23,7 @@ function puffTexture(size) {
     const dx = u - 0.5;
     const dy = v - 0.5;
     const r = Math.hypot(dx, dy) * 2;               // 0 at centre, 1 at the edge
-    // Billowing edge. The noise is subtracted from the radius rather than
-    // multiplied into the alpha, so it eats into the shape instead of making
-    // the whole puff patchy.
+    // Subtract noise from the radius so it eats into the edge, not the body.
     const n = tileFbm(u, v, 4, 4, 0.55, 7);
     const rr = r + (n - 0.5) * 0.42;
     const a = Math.max(0, 1 - rr);
@@ -180,9 +132,8 @@ function markMaterial() {
   const material = new THREE.ShaderMaterial({
     uniforms,
     transparent: true,
-    // Coplanar with the ground by construction, which is the one thing a depth
-    // buffer cannot resolve. Bias toward the camera, and do not write depth so
-    // overlapping passes of one long drift do not cut holes in each other.
+    // Coplanar with the ground. Bias toward the camera, and do not write depth
+    // so overlapping drift segments do not cut holes in each other.
     depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -4,
@@ -238,8 +189,7 @@ export class TyreFX {
 
     const n = FX.smoke.max;
     const geo = new THREE.InstancedBufferGeometry();
-    // A unit quad. `uv` doubles as the corner offset in the vertex shader, so
-    // there is no separate position attribute to keep in step with it.
+    // A unit quad; `uv` also offsets the corner in the vertex shader.
     geo.setAttribute('position', new THREE.Float32BufferAttribute(
       [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(
@@ -329,10 +279,7 @@ export class TyreFX {
 
   /**
    * Bridges the gap between a wheel's previous mark and this one.
-   *
-   * The quad is built from the two contact points and the direction between
-   * them, not from the wheel's heading: a sliding tyre is not pointing where it
-   * is going, and a mark drawn across its own path is the giveaway.
+   * The quad uses the travel direction, not the wheel's heading.
    */
   _layMark(i, contact, normal, halfWidth, strength) {
     const m = this.marks;
@@ -383,8 +330,7 @@ export class TyreFX {
     if (!vehicle) return;
 
     const speed = Math.abs(vehicle.forwardSpeed);
-    // Smoke needs the contact patch to be moving relative to the ROAD, not the
-    // car to be moving relative to the world — see FX.smoke.speedFade.
+    // The contact patch must move relative to the road; see FX.smoke.speedFade.
     const speedGate = 1 - smoothstep(FX.smoke.speedFade[0], FX.smoke.speedFade[1], speed);
 
     for (let i = 0; i < vehicle.wheels.length; i++) {
@@ -418,8 +364,8 @@ export class TyreFX {
         this.smoke.debt[i] += FX.smoke.rate * drive * speedGate * dt;
         while (this.smoke.debt[i] >= 1) {
           this.smoke.debt[i] -= 1;
-          // Born just behind and above the patch, carrying a share of the
-          // wheel's own slip velocity plus a little scatter.
+          // Born just behind and above the patch, with some of the wheel's slip
+          // velocity plus scatter.
           const p = this._a.copy(w.contact)
             .addScaledVector(vehicle.fwd, -FX.smoke.offset[0])
             .addScaledVector(w.normal, FX.smoke.offset[1]);

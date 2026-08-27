@@ -29,21 +29,26 @@ import * as THREE from 'three';
 import { createTreeAssets } from '../src/env/trees.js';
 import { createBushAssets } from '../src/env/bushes.js';
 import { createGrassAssets } from '../src/env/grass.js';
-import { GRASS } from '../src/config.js';
+import { GRASS, ATMOSPHERE } from '../src/config.js';
 
 const W = window.innerWidth, H = window.innerHeight;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(W, H);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NeutralToneMapping;
+// THE GAME'S OWN EXPOSURE AND LIGHTS, from `ATMOSPHERE`. A sheet lit to its own
+// taste is a sheet that lies: the conifer palettes were darkened by a quarter
+// against a hotter rig here and came out muddy in the world.
+renderer.toneMappingExposure = ATMOSPHERE.exposure;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xd3dde2);
-scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x5a6650, 1.3));
-const sun = new THREE.DirectionalLight(0xfff3e0, 1.9);
+scene.add(new THREE.HemisphereLight(
+  ATMOSPHERE.hemiSky, ATMOSPHERE.hemiGround, ATMOSPHERE.hemiIntensity));
+const sun = new THREE.DirectionalLight(ATMOSPHERE.sunColor, ATMOSPHERE.sunIntensity);
 sun.position.set(-40, 60, 40);
 sun.castShadow = true;
 sun.shadow.camera.left = -70; sun.shadow.camera.right = 70;

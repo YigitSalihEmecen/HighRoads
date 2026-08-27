@@ -16,7 +16,7 @@ npm run probe
 | `surface.mjs` | Is anything standing in the carriageway, or missing from under it? Casts down the drivable width along the whole route, against the window of chunks the GAME keeps alive. Exits non-zero on any step over 30 cm or any hole. Was `tunnel.mjs`. |
 | `traffic.mjs` | Do cars appear in view, stop dead, or overlap? Drives a synthetic player for several minutes and reports spawn distance, stalls, overlaps, lane error, population and impact Δv. |
 | `terrain.mjs` | How faceted is the ground? Angle between adjacent face normals, by distance band. |
-| `props.mjs` | The canopy and the understorey: per-species triangle counts for both tiers, whether the library is deterministic, whether the far tier is the same tree as the near one, per-chunk caps and draw batches, scatter cost, clearance from the carriageway, float off the real collider — and whether the scatter is LUMPY rather than uniform, which is the thing the clustering exists to do. |
+| `props.mjs` | The canopy and the understorey: per-species triangle counts for both tiers, **whether every proto is a solid wound outward and closed**, whether the library is deterministic, whether the far tier is the same tree as the near one, per-chunk caps and draw batches, scatter cost, clearance from the carriageway, float off the real collider — and whether the scatter is LUMPY rather than uniform, which is the thing the clustering exists to do. |
 | `canopy.mjs` | **What the canopy looks like.** Contact sheet of the whole library — every species, every variant, both tiers, one light, one ground — with the distance fade switched off so the two tiers can be compared at true size. The only check that can see whether a tree looks like the reference art. Not in `npm run probe`: needs a local Chrome. |
 | `offroad.mjs` | Is there ground everywhere the player is allowed to drive? Rays a grid over the whole area the recovery bound permits, reports the corridor width the fold guard is delivering, and counts folded cells. Bug #64's regression test. |
 | `cliff.mjs` | Longitudinal steps in the terrain sheet — a seam the car can catch on and the eye reads as a tear. |
@@ -88,6 +88,30 @@ verge, because two ambient-occlusion terms multiplied to 11%. Numbers cannot see
 that. `render.mjs` can, and `canopy.mjs` is the same argument for the canopy:
 the crown radii of the two tiers agreed to 2% while every shrub in the world
 photographed as a grey snowball.
+
+**An invisible face is not a visible bug.** `side: FrontSide` back-face culls a
+reversed triangle, so `tube` and `tier` were both wound inside out from the day
+they were written — every trunk, branch and conifer skirt in the world — and
+every headless measure passed: triangle counts, bounding boxes, LOD widths,
+scatter, float. It reads as foliage with transparent parts, not as an error.
+Signed volume is one line and catches the whole class.
+
+**And a closed mesh is a different claim from an outward one.** With the winding
+fixed, the library still had 1,668 rims standing in open air, from four
+unrelated causes. Signed volume cannot see them: it is dominated by the solid
+part and stays comfortably positive. The check that can is to weld by position,
+find the edges used by one face instead of two, and fan rays off them — a rim
+buried in a bigger lump is fine, a rim that reaches open air is a hole.
+
+**Parity is the wrong ray test for a union of solids**, and it cost an hour
+before that one worked. A tree is interpenetrating closed lumps, so a point in
+the lens where two of them overlap crosses both surfaces on the way out — two
+crossings, even, "you are outside" — and every rim inside an overlap gets
+reported as a hole. Count the rays that reach open air instead.
+
+**A preview rig must use the SHIPPING lighting.** `canopy.mjs` lit its sheet to
+its own taste, which is how the conifer palettes got darkened by a quarter
+against an exposure the game does not use. It now reads `ATMOSPHERE`.
 
 **A screenshot probe must serve `cache-control: no-store`.** Chrome keeps its
 HTTP cache in the `--user-data-dir`, which persists between runs, so a sheet

@@ -1,64 +1,9 @@
 /**
- * env/trees.js — the canopy, built from faceted solids.
+ * env/trees.js — tree forms built from faceted solids.
  *
- * This module owns what a tree IS. Where trees go is `chunks.js`'s job and
- * which species belong where is `foliage.js`'s, the same split every other
- * generator in this directory uses. The primitives are `env/lowpoly.js`'s.
- *
- * ── the look, and what it replaced ──────────────────────────────────────────
- *
- * Stylised low-poly, from the reference art in `style_examples/`: a tapered
- * faceted stem carrying either a cluster of big warped lumps or a stack of
- * jagged conical skirts, flat-shaded, in saturated flat colours with visible
- * facet-to-facet variation. There are no leaves in it anywhere.
- *
- * What it replaced was a grown branch skeleton with alpha-cutout leaf cards
- * hung on the tips, and a four-triangle painted billboard standing in past
- * 260 m. That was a coherent design for a naturalistic canopy and it is the
- * wrong object for this one. Three things went with it:
- *
- *   THE ATLASES. Two 512 canvases, a hand-tuned mip gutter, and a whole class
- *   of bug about which cell a UV lands in. A faceted solid has no UVs at all.
- *   THE CUTOUT. `alphaTest`, `alphaToCoverage` and `DoubleSide` are gone;
- *   the material is opaque and culls its own back faces.
- *   THE BILLBOARD. The far tier is now the SAME BUILDER at a lower
- *   subdivision — same envelope, same colours, same proportions — so the
- *   handover has nothing left to disagree about. The reported symptom was
- *   distant trees looking "very out of place" and shrinking as near ones grew;
- *   that was two different pictures of one tree, and there is now one.
- *
- * ── how one is built ────────────────────────────────────────────────────────
- *
- * No recursion and no growth simulation. The old file grew a branch skeleton
- * because leaf cards need somewhere to hang; nothing hangs off anything here,
- * so the tree is DESCRIBED rather than grown:
- *
- *   STEM     a polyline from the ground with `bend` and `lean`, swept as a
- *            tapering n-gon with a flared base. 5 or 6 sides — few enough that
- *            the facets are visible, which is the point.
- *   CROWN    'tier'  M jagged skirts up the stem   (pine, spruce)
- *            'blob'  N warped lumps in an envelope (everything broadleaf)
- *            'bare'  nothing                       (dead)
- *   LIMBS    for blob crowns, one branch reaching from the stem to each lump's
- *            centre. That is what the reference art does and it is why the
- *            crown reads as carried rather than balanced.
- *
- * Everything is built in units where the tree is about one high, then
- * normalised exactly: unit tall, standing on y = 0, so `chunks.js` scales by a
- * height in metres and nothing else.
- *
- * ── budget ──────────────────────────────────────────────────────────────────
- *
- * Interior culling does the heavy lifting — see `lowpoly.js:blob`. A crown of
- * six overlapping lumps loses a third of its faces to being inside its
- * neighbours, and a conifer is nearly free because a skirt is one fan.
- *
- *   near tree   ~110-330 triangles depending on species
- *   far tree    ~25-45   triangles, same silhouette
- *   library     8 species x TREES.variants x 2 tiers, built once at boot
- *
- * `probe/props.mjs` prints the measured figures per species and checks the
- * in-view total against the terrain sheet.
+ * A tree is described, not grown: a tapered stem carries faceted crowns or
+ * conical skirts. The far tier is the same builder at lower subdivision, so
+ * the tiers cannot disagree. Placement is chunks.js's job.
  */
 
 import * as THREE from 'three';
@@ -70,17 +15,6 @@ import { Facets, blob, makeWarp, tube, tier, triangleCount } from './lowpoly.js'
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const lerp = (a, b, t) => a + (b - a) * t;
 
-/* --------------------------------------------------------------- colours -- */
-
-/**
- * A crown face's colour.
- *
- * Two things vary and both are deliberate. The MIX between the palette's main
- * and alt hue runs with how far up the crown the face sits and how far it
- * faces the sky, which is the gradient every one of the reference images has:
- * lit on top, saturated underneath. The JITTER is per face and small, and it is
- * what stops a lump reading as a single smooth object with creases drawn on it.
- */
 function crownShader(pal, jitter) {
   const [main, alt] = pal;
   return (ny, height, j) => {
@@ -95,13 +29,6 @@ function crownShader(pal, jitter) {
   };
 }
 
-/**
- * Bark. A vertical gradient only — dark at the root, which is ambient occlusion
- * a wood really does have — plus a whisper of per-facet jitter.
- *
- * NOT the crown's per-face jitter: a trunk is five facets around, and colour
- * noise at that count reads as a corrupt buffer rather than as wood.
- */
 function barkShader(bark, jitter) {
   return (t, k) => {
     const shade = 0.68 + 0.44 * t + ((k * 7.13) % 1 - 0.5) * jitter * 0.4;
@@ -113,20 +40,6 @@ function barkShader(bark, jitter) {
   };
 }
 
-/* ------------------------------------------------------------ the shapes -- */
-
-/**
- * The stem as a polyline, base to tip.
- *
- * `bend` curves it in one direction and `lean` displaces the tip; together they
- * are the difference between the reference art's straight conifers and its
- * hand-drawn-looking broadleaves, and they cost four numbers instead of the
- * gnarl-per-section simulation they replace.
- *
- * The base is FLARED rather than skirted: the radius multiplier falls off over
- * the bottom fifth, quadratically, so the widening is at the very foot. That is
- * the whole of why a trunk looks planted rather than pushed in like a pin.
- */
 function stemNodes(t, top, rnd) {
   const dir = rnd() * Math.PI * 2;
   const bx = Math.cos(dir), bz = Math.sin(dir);
@@ -135,8 +48,6 @@ function stemNodes(t, top, rnd) {
   for (let i = 0; i <= SEGS; i++) {
     const u = i / SEGS;
     const fl = 1 + (t.flare - 1) * Math.pow(Math.max(0, 1 - u * 5), 2);
-    // `bend` is a quadratic bow; `lean` is linear. A bow with no lean is a
-    // banana and a lean with no bow is a leaning post.
     const off = (t.bend * u * (1 - u) * 2 + t.lean * u) * top;
     nodes.push({
       x: bx * off,
@@ -148,7 +59,6 @@ function stemNodes(t, top, rnd) {
   return { nodes, bx, bz };
 }
 
-/** Where the stem is at height fraction `u`, by walking the polyline. */
 function alongStem(nodes, u) {
   const top = nodes[nodes.length - 1].y;
   const y = clamp01(u) * top;
@@ -162,52 +72,87 @@ function alongStem(nodes, u) {
   return nodes[nodes.length - 1];
 }
 
-/**
- * Lump centres and radii, before any of them is turned into triangles.
- *
- * PLANNED FIRST, EMITTED SECOND, and that ordering is the whole reason the
- * interior culling is symmetric: every lump can be hidden by every other one,
- * including the ones that come after it. Emitting as it goes would only ever
- * let a lump be hidden by its predecessors, which leaves the last lump placed
- * carrying a full sphere of faces buried in the middle of the crown.
- *
- * The centres are a golden-angle spiral through the envelope rather than random
- * points: random points clump, and a clumped crown has a lopsided silhouette
- * that reads as a mistake rather than as character.
- */
-function planBlobs(cfg, count, grow, rnd) {
-  const plans = [];
-  const [sx, sy, sz] = cfg.spread;
-  for (let i = 0; i < count; i++) {
-    // The first lump is the core, on the axis. Everything after it goes out on
-    // the spiral, so a two-lump far tier is a core plus one shoulder and still
-    // reads as the same tree.
-    const t = count > 1 ? i / (count - 1) : 0;
-    const ang = i * 2.39996 + rnd() * 0.5;
-    const rad = i === 0 ? 0 : Math.sqrt(t) * (0.7 + rnd() * 0.5);
-    const up = i === 0 ? cfg.lift * 0.5 : (rnd() * 2 - 1) * 0.9 + cfg.lift;
-    const size = lerp(cfg.size[1], cfg.size[0], t * (0.6 + rnd() * 0.6)) * grow;
-    plans.push({
-      c: [Math.cos(ang) * rad * sx, cfg.centre + up * sy, Math.sin(ang) * rad * sz],
-      r: [size, size * cfg.squash, size],
-      warp: makeWarp(rnd, cfg.warp),
-    });
-  }
-  return plans;
+// Cross with the axis `d` is least aligned to, so a vertical trunk has no degenerate case.
+function perp(d, out) {
+  const ax = Math.abs(d[0]), ay = Math.abs(d[1]), az = Math.abs(d[2]);
+  let ux, uy, uz;
+  if (ax <= ay && ax <= az) { ux = 1; uy = 0; uz = 0; }
+  else if (ay <= az) { ux = 0; uy = 1; uz = 0; }
+  else { ux = 0; uy = 0; uz = 1; }
+  const x = d[1] * uz - d[2] * uy;
+  const y = d[2] * ux - d[0] * uz;
+  const z = d[0] * uy - d[1] * ux;
+  const l = Math.hypot(x, y, z) || 1;
+  out[0] = x / l; out[1] = y / l; out[2] = z / l;
+  return out;
 }
 
-/* ---------------------------------------------------------------- a tree -- */
+function branch(F, from, dir, len, radius, level, L, bark, sway, rnd, tips) {
+  const rise = L.rise * (1 - level * 0.3);
+  const to = [
+    from[0] + dir[0] * len,
+    from[1] + dir[1] * len,
+    from[2] + dir[2] * len,
+  ];
+  const reach = Math.hypot(to[0] - from[0], to[2] - from[2]);
+  const mid = [
+    (from[0] + to[0]) * 0.5 + (rnd() - 0.5) * radius,
+    (from[1] + to[1]) * 0.5 + reach * rise,
+    (from[2] + to[2]) * 0.5 + (rnd() - 0.5) * radius,
+  ];
+  const tipR = radius * L.taper;
+  const last = level + 1 >= L.levels;
 
-/**
- * Builds one tree.
- *
- * @param {object} form  a `TREE_FORMS` entry
- * @param {number} seed
- * @param {number} variant  which palette to bake in
- * @param {boolean} far     build the cheap tier instead of the near one
- * @returns {{geometry: THREE.BufferGeometry, height: number, radius: number}}
- *          normalised: standing on y = 0, exactly one unit tall.
- */
+  // Far tier walks the skeleton without emitting — the tips must match the near tier's.
+  if (L.draw !== false) {
+    tube(F, [
+      { x: from[0], y: from[1], z: from[2], r: radius },
+      { x: mid[0], y: mid[1], z: mid[2], r: radius * 0.72 },
+      { x: to[0], y: to[1], z: to[2], r: tipR },
+    ], L.sides, bark, sway,
+    // Capped at the far end: terminal tips are buried in their lump, but a fork
+    // is an open ring unless closed — `capTips` closes the no-lump species.
+    !last || L.capTips ? { end: true } : null);
+  }
+
+  // Children leave along the bowed tip direction, not the launch one, or they fan out of plane.
+  const td = [to[0] - mid[0], to[1] - mid[1], to[2] - mid[2]];
+  const tl = Math.hypot(td[0], td[1], td[2]) || 1;
+  td[0] /= tl; td[1] /= tl; td[2] /= tl;
+
+  if (last) {
+    tips.push({ p: to, dir: td, r: tipR, level });
+    return;
+  }
+
+  const side = perp(td, [0, 0, 0]);
+  const up = [
+    td[1] * side[2] - td[2] * side[1],
+    td[2] * side[0] - td[0] * side[2],
+    td[0] * side[1] - td[1] * side[0],
+  ];
+  const roll0 = rnd() * Math.PI * 2;
+  for (let i = 0; i < L.split; i++) {
+    const roll = roll0 + i * 2.39996 + (rnd() - 0.5) * 0.7;
+    const a = L.splitAngle * (0.7 + rnd() * 0.6);
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const cr = Math.cos(roll), sr = Math.sin(roll);
+    const d = [
+      td[0] * ca + (side[0] * cr + up[0] * sr) * sa,
+      td[1] * ca + (side[1] * cr + up[1] * sr) * sa,
+      td[2] * ca + (side[2] * cr + up[2] * sr) * sa,
+    ];
+    const dl = Math.hypot(d[0], d[1], d[2]) || 1;
+    d[0] /= dl; d[1] /= dl; d[2] /= dl;
+    // Roots back inside the parent (1.7 tip radii); a ring on the end cap leaves an open crescent.
+    const back = tipR * 1.7;
+    const root = [to[0] - td[0] * back, to[1] - td[1] * back, to[2] - td[2] * back];
+    branch(F, root, d, len * L.shrink * (0.8 + rnd() * 0.4),
+      // da Vinci's rule: a child is ~1/sqrt(n) of its parent.
+      tipR * L.radius, level + 1, L, bark, sway, rnd, tips);
+  }
+}
+
 export function growTree(form, seed, variant = 0, far = false) {
   const rnd = rng(seed);
   const F = new Facets();
@@ -216,20 +161,18 @@ export function growTree(form, seed, variant = 0, far = false) {
   const crown = crownShader(pal, TREES.faceJitter);
   const bark = barkShader(form.bark, TREES.faceJitter);
 
-  // Quadratic in height, with a floor: the root is pinned and a limb reaching
-  // sideways low down still shivers. One function for the whole tree, so the
-  // stem and the crown it carries never disagree about where the wind is.
   const sway = (y) => clamp01(y * y * 0.92 + 0.06);
 
   const t = form.trunk;
   const sides = far ? (lod.trunkSides || 3) : t.sides;
-  // A conifer's stem has to clear its lowest skirt, or the tree is standing on
-  // a pole nobody can see; a broadleaf's is exactly what the table says.
+  // A conifer's stem must clear its lowest skirt.
   const stemTop = form.crown === 'tier'
     ? Math.max(t.height, form.tiers.from + 0.06)
     : t.height;
   const { nodes } = stemNodes(t, stemTop, rnd);
-  tube(F, nodes, sides, bark, sway);
+  // Capped at both ends — on a slope the foot shows, and branches are thinner
+  // than the stem, so either end is otherwise a hole.
+  tube(F, nodes, sides, bark, sway, { start: true, end: true });
 
   if (form.crown === 'tier') {
     const cfg = form.tiers;
@@ -246,72 +189,88 @@ export function growTree(form, seed, variant = 0, far = false) {
         height: step * cfg.height,
         sides: skirtSides,
         droop: cfg.droop, jag: cfg.jag, phase: i * 0.7, rnd,
-        // The lowest skirt is the only one with nothing under it.
-        floor: i === 0,
-        colour: (around, facing, j) => crown(facing > 0 ? 0.55 : -0.6, k, j),
+        colour: (around, ny, j) => crown(ny, k, j),
         sway,
       });
     }
-  } else if (form.crown === 'blob') {
-    const cfg = form.blobs;
-    const count = far ? (lod.blobs || 2) : cfg.count;
-    // Fewer lumps have to be bigger or the far crown is a smaller tree, and the
-    // fade would then be a visible shrink — which is the exact complaint this
-    // rewrite exists to answer. The exponent is under a half because the lumps
-    // overlap, so covered volume grows faster than the count does.
-    const grow = far ? Math.pow(cfg.count / count, TREES.lodGrow) : 1;
-    const plans = planBlobs(cfg, count, grow, rnd);
+    return normalise(F.build());
+  }
 
-    // Limbs first, so the lumps can cull them: a branch that ends inside a
-    // crown is mostly inside that crown.
-    if (form.limbs && !far) {
-      const L = form.limbs;
-      for (let i = 0; i < L.count; i++) {
-        const u = lerp(L.from, L.to, L.count > 1 ? i / (L.count - 1) : 0.5);
-        const at = alongStem(nodes, u);
-        limbFrom(F, [at.x, at.y, at.z], at.r * L.radius,
-          plans[i % plans.length].c, L.sides, bark, sway, L.rise, rnd);
-      }
+  const L = form.limbs;
+  const tips = [];
+  if (L) {
+    const levels = far ? Math.max(1, (lod.levels ?? L.levels) ) : L.levels;
+    const split = far ? (lod.split ?? L.split) : L.split;
+    const count = far ? Math.max(2, Math.round(L.count * (lod.limbs ?? 1))) : L.count;
+    // `bare` still draws its skeleton on the far tier, or a bare stem is left
+    // that `matchWidth` cannot widen.
+    const cfg = {
+      ...L, levels, split, sides: L.sides,
+      draw: !far || form.crown === 'bare',
+    };
+
+    const side = [0, 0, 0];
+    const roll0 = rnd() * Math.PI * 2;
+    for (let i = 0; i < count; i++) {
+      const u = count > 1 ? lerp(L.from, L.to, i / (count - 1)) : L.to;
+      const at = alongStem(nodes, u);
+      const roll = roll0 + i * 2.39996 + (rnd() - 0.5) * 0.6;
+      const a = L.angle * (0.75 + rnd() * 0.5);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const d = [Math.cos(roll) * sa, ca, Math.sin(roll) * sa];
+      const dl = Math.hypot(d[0], d[1], d[2]) || 1;
+      d[0] /= dl; d[1] /= dl; d[2] /= dl;
+      // Roots inside the stem, not on its surface, or the join leaves a notch.
+      branch(F, [at.x, at.y, at.z], d, L.length * (0.8 + rnd() * 0.4),
+        at.r * L.radius, 0, cfg, bark, sway, rnd, tips);
+      void side;
     }
+  }
 
-    const span = Math.max(1e-4, cfg.spread[1] * 2);
-    for (let i = 0; i < plans.length; i++) {
-      const p = plans[i];
-      const h = clamp01(0.5 + (p.c[1] - cfg.centre) / span);
-      blob(F, {
-        c: p.c, r: p.r,
-        detail: far ? (lod.detail || 0) : cfg.detail,
-        warpFn: p.warp, rnd,
-        sway: (x, y) => sway(y),
-        hide: plans.filter((q) => q !== p),
-        colour: (nx, ny, nz, j) => crown(ny, h, j),
+  const cfg = form.blobs;
+  if (cfg && tips.length) {
+    const grow = far ? Math.pow(1 / Math.max(0.2, tips.length / cfg.tips), TREES.lodGrow) : 1;
+    const detail = far ? (lod.detail ?? 0) : cfg.detail;
+
+    const plans = [];
+    for (const tip of tips) {
+      // `lift` pushes each lump past its tip so it sits on the branch, not skewered by it.
+      const size = lerp(cfg.size[0], cfg.size[1], rnd()) * grow;
+      plans.push({
+        c: [
+          tip.p[0] + tip.dir[0] * size * cfg.lift,
+          tip.p[1] + tip.dir[1] * size * cfg.lift,
+          tip.p[2] + tip.dir[2] * size * cfg.lift,
+        ],
+        r: [size, size * cfg.squash, size],
+        warp: makeWarp(rnd, cfg.warp),
       });
     }
-  } else if (form.limbs) {
-    // Bare. The limbs fork, because an armature with no second generation is a
-    // fence post with pegs in it.
-    const L = form.limbs;
-    for (let i = 0; i < L.count; i++) {
-      const u = lerp(L.from, L.to, L.count > 1 ? i / (L.count - 1) : 0.5);
-      const ang = i * 2.39996 + rnd() * 0.8;
-      const at = alongStem(nodes, u);
-      const len = L.length * (0.6 + rnd() * 0.8);
-      const tip = [
-        at.x + Math.cos(ang) * Math.sin(L.angle) * len,
-        at.y + Math.cos(L.angle) * len + len * L.rise * 0.4,
-        at.z + Math.sin(ang) * Math.sin(L.angle) * len,
-      ];
-      const r0 = at.r * L.radius;
-      limbFrom(F, [at.x, at.y, at.z], r0, tip, L.sides, bark, sway, L.rise, rnd);
-      if (far) continue;
-      for (let k = 0; k < (L.fork || 0); k++) {
-        const a2 = ang + (k - 0.5) * 1.3 + (rnd() - 0.5) * 0.7;
-        limbFrom(F, tip, r0 * 0.38, [
-          tip[0] + Math.cos(a2) * len * 0.5,
-          tip[1] + len * (0.3 + rnd() * 0.5),
-          tip[2] + Math.sin(a2) * len * 0.5,
-        ], L.sides, bark, sway, L.rise, rnd);
-      }
+    // Apex lump never on the far tier — a whole lump for a bump a dozen pixels across.
+    if (cfg.apex > 0 && !far) {
+      const top = nodes[nodes.length - 1];
+      const size = cfg.size[1] * cfg.apex * grow;
+      plans.push({
+        c: [top.x, top.y + size * 0.5, top.z],
+        r: [size, size * cfg.squash, size],
+        warp: makeWarp(rnd, cfg.warp),
+      });
+    }
+
+    // Culling is one-way, biggest first; mutual culling drops the covering
+    // surface and leaves windows — sorted by volume this is closed by construction.
+    plans.sort((a, b) => b.r[0] * b.r[1] * b.r[2] - a.r[0] * a.r[1] * a.r[2]);
+    for (let i = 0; i < plans.length; i++) {
+      plans[i].detail = i < (cfg.fine ?? 1) ? detail : Math.max(0, detail - 1);
+    }
+    for (let i = 0; i < plans.length; i++) {
+      const p = plans[i];
+      blob(F, {
+        c: p.c, r: p.r, detail: p.detail, warpFn: p.warp, rnd,
+        sway: (x, y) => sway(y),
+        hide: plans.slice(0, i),
+        colour: (nx, ny, nz, j) => crown(ny, clamp01(p.c[1] / Math.max(0.2, stemTop + 0.6)), j),
+      });
     }
   }
 
@@ -319,35 +278,8 @@ export function growTree(form, seed, variant = 0, far = false) {
 }
 
 /**
- * One branch: a three-node tube from the stem surface to a target point, bowed
- * upward on the way — which is the shape every branch in the reference art has,
- * and it is one lerp rather than a growth loop.
- */
-function limbFrom(F, from, r0, to, sides, bark, sway, rise = 0.5, rnd = null) {
-  const reach = Math.hypot(to[0] - from[0], to[2] - from[2]);
-  const mid = [
-    (from[0] + to[0]) * 0.5,
-    (from[1] + to[1]) * 0.5 + reach * rise * 0.35,
-    (from[2] + to[2]) * 0.5,
-  ];
-  if (rnd) {
-    mid[0] += (rnd() - 0.5) * r0 * 2;
-    mid[2] += (rnd() - 0.5) * r0 * 2;
-  }
-  tube(F, [
-    { x: from[0], y: from[1], z: from[2], r: r0 },
-    { x: mid[0], y: mid[1], z: mid[2], r: r0 * 0.68 },
-    { x: to[0], y: to[1], z: to[2], r: r0 * 0.38 },
-  ], sides, bark, sway);
-}
-
-/**
- * Unit tall, standing on y = 0, and the crown half-width that goes with it.
- *
- * The clamp comes FIRST. A drooping skirt or a low lump can reach under the
- * root, and the anchor a tree is planted by is its trunk base — so aligning the
- * bounding box instead would lift the whole tree by however far its foliage
- * hung, which is what used to float a spruce a metre and a half. Bug #68.
+ * Clamp to y = 0 first: a drooping skirt under the root would otherwise lift
+ * the whole tree off the ground (bug #68).
  */
 function normalise(geo) {
   const pos = geo.getAttribute('position');
@@ -363,32 +295,12 @@ function normalise(geo) {
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
 
-  // Read off the PRE-scale spans held above as numbers. `computeBoundingBox`
-  // writes into the existing Box3 in place, so a reference taken before the
-  // call is silently the post-scale box — which is already divided by `h`, and
-  // dividing again halved every crown radius. Bug #69.
+  // Pre-scale spans: `computeBoundingBox` overwrites the Box3 in place, so a
+  // reference read after the call is already divided by `h` (bug #69).
   return { geometry: geo, height: 1, radius: Math.max(spanX, spanZ) / (2 * h) };
 }
 
-/**
- * Squeezes a far tree sideways until it is exactly as wide as its near twin.
- *
- * Both tiers are normalised to unit HEIGHT, so height already agrees to the
- * bit. Width does not: a far crown is two lumps where a near one is five, and
- * `TREES.lodGrow` can only be one exponent for a table containing both a dome
- * and a column — measured before this, a poplar's far tier came out 45% wider
- * than its near tier and a dead tree 35% narrower. Either way the cross-fade is
- * a visible change of size, which is the complaint the whole rewrite answers.
- *
- * One number per proto removes the whole class of problem, and it is exact by
- * construction rather than by tuning. The clamp is a guard, not a tolerance: if
- * a form ever lands outside it, the geometry is wrong and squashing it flat
- * would only hide that.
- *
- * The NORMALS are transformed too. Under a scale of (k, 1, k) the correct
- * normal transform is the inverse transpose, (1/k, 1, 1/k) — skipping it leaves
- * every slanted facet lit for a shape the tree no longer is.
- */
+/** Normals take the inverse transpose (1/k, 1, 1/k) under the (k, 1, k) scale. */
 function matchWidth(proto, target) {
   const k = Math.min(1.6, Math.max(0.6, target / Math.max(1e-4, proto.radius)));
   if (Math.abs(k - 1) < 0.02) return proto;
@@ -407,26 +319,11 @@ function matchWidth(proto, target) {
   return proto;
 }
 
-/* ---------------------------------------------------------- the material -- */
-
-/**
- * One tier's material. Untextured, opaque, flat-shaded by construction.
- *
- * Deliberately the same shape as `env/grass.js`'s, down to the shared program
- * cache key: near trees, far trees and every bush compile to ONE program,
- * because the fade window is a uniform rather than a `#define` and the only
- * thing that differs between them is numbers.
- *
- * `flatShading` is NOT set, and that is not an oversight. The geometry is
- * non-indexed with a baked per-face normal and a baked per-face colour, so the
- * facets are already hard and three would only recompute normals it already
- * has — while leaving the colour smooth, which is half the look gone.
- */
+/** `flatShading` is off on purpose: facets and colours are baked per face. */
 export function foliageMaterial(fadeOut, fadeIn, opts = {}) {
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    // Opaque and single-sided. The cutout the leaf cards needed is gone with
-    // them, and so is the doubled fragment cost of DoubleSide.
+    // Opaque and single-sided; the doubled fragment cost of DoubleSide is gone.
     side: THREE.FrontSide,
     roughness: 0.88,
     metalness: 0.0,
@@ -515,21 +412,6 @@ export function foliageMaterial(fadeOut, fadeIn, opts = {}) {
   return { material, uniforms };
 }
 
-/* ------------------------------------------------------------- the boot -- */
-
-/**
- * Builds the whole tree library: every species, every variant, both tiers.
- *
- * `TREES.variants` of each species, each from its own seed AND its own palette.
- * The variant count is a DRAW CALL decision as much as a look one —
- * `chunks.js` runs an InstancedMesh per (chunk, geometry), so a chunk commits
- * to one variant per species and neighbouring chunks pick different ones.
- * Three is enough that a stand does not read as a copy-paste, and because the
- * palettes are per variant it is also three seasons of maple.
- *
- * @returns the `src/env/` bundle, plus two `Map`s of species -> variant protos
- *          in the shape `chunks.js` expects: `{ geometry, height, radius }`.
- */
 export function createTreeAssets() {
   const names = Object.keys(TREE_FORMS);
 
@@ -544,11 +426,8 @@ export function createTreeAssets() {
     const near = [];
     const cheap = [];
     for (let v = 0; v < TREES.variants; v++) {
-      // Seeded from the species index and the variant, never from the world
-      // seed: every player sees the same trees, and a reload does not reshuffle
-      // the forest's vocabulary underneath the placement that chose from it.
-      // BOTH TIERS TAKE THE SAME SEED, so a far tree's lumps sit where the near
-      // one's do and the cross-fade has nothing left to slide.
+      // Seeded from species and variant, never the world seed — and both tiers
+      // share it, so a far tree's lumps sit where the near one's do.
       const seed = (0x7ee5 + si * 131 + v * 7919) >>> 0;
       const a = growTree(form, seed, v, false);
       const b = matchWidth(growTree(form, seed, v, true), a.radius);
@@ -564,8 +443,6 @@ export function createTreeAssets() {
 
   const nearMat = foliageMaterial([TREES.lodFade[0], TREES.lodFade[1]], null);
   const farMat = foliageMaterial(TREES.farFade, TREES.farFadeIn, {
-    // A distant canopy that swings as hard as a near one reads as a gale. The
-    // motion is also four pixels wide out there, so nothing is lost by damping.
     windStrength: TREES.windStrength * 0.45,
   });
 
@@ -574,15 +451,6 @@ export function createTreeAssets() {
     far,
     material: nearMat.material,
     farMaterial: farMat.material,
-    /**
-     * The live uniform objects behind both materials.
-     *
-     * `setTime` already reaches into them; exposing them costs nothing and buys
-     * the one thing that cannot be done from outside — `probe/canopy.mjs`
-     * neutralises the distance fade so it can photograph the two tiers at true
-     * size and side by side, which is the only way to see that they are the
-     * same tree.
-     */
     uniforms: { near: nearMat.uniforms, far: farMat.uniforms },
     /** Mean triangles per tree in each tier, for the budget lines in the probes. */
     trianglesPerTree: nearTris / Math.max(1, count),

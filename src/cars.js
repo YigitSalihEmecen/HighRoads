@@ -1,43 +1,9 @@
 /**
- * cars.js — the roster.
+ * cars.js — the vehicle roster.
  *
- * Every entry names an FBX and the handful of numbers that make it feel like a
- * distinct vehicle. Everything geometric — wheelbase, track, rolling radius,
- * body box — is measured from the model at load time rather than typed in
- * here, so the physics always matches what you can see.
- *
- * The derived numbers below are what keep nine very different vehicles all
- * driveable without individual hand-tuning:
- *
- *   springK        set from mass so static sag is the same fraction of travel
- *                  on a 1.1 t hatchback and a 2.6 t monster truck alike;
- *   damping        a fixed ratio of critical, hence sqrt(k·m);
- *   anti-roll      a fixed fraction of the spring rate;
- *   travel         scaled off the rolling radius, so big-wheeled trucks get
- *                  the long soft suspension their proportions imply;
- *   CoM height     a fraction of body height — this is what makes the truck
- *                  lean and the sports car stay flat.
- *
- * The pack also contains `Air Plane_1.fbx`, which has three wheels and a
- * propeller. It is not in the roster: a four-corner raycast vehicle has nothing
- * sensible to do with it.
- */
-
-/**
- * Grip, roll and weight — the character numbers.
- *
- * The roster's `grip` values were raised by about 12% across the board and each
- * car's centre of mass dropped two points of body height. Both pull the same
- * way and neither is a fudge: the cars corner harder, and because `comHeight`
- * feeds both the roll moment and the Static Stability Factor, a lower CoM buys
- * that extra cornering without the tall vehicles becoming any more likely to
- * lie down — the anti-roll bar is sized from the roll moment this car will
- * actually see, so it follows the change automatically.
- *
- * Downforce went up with them on the road cars. It only exists above about
- * 30 m/s, so it is the one lever that steadies a fast sweeper without making a
- * car-park manoeuvre feel like it is on rails; the van, military and monster
- * keep almost none, because nothing that shape should feel planted.
+ * Each entry names an FBX and the numbers that define a vehicle. Wheelbase,
+ * track, rolling radius and body box come from the model at load time.
+ * Spring and damping derive from mass so all vehicles drive similarly.
  */
 
 /** Static sag as a fraction of total suspension travel. */
@@ -55,7 +21,6 @@ export const CARS = [
     file: 'Sport Car_39.fbx',
     name: 'Sport',
     blurb: 'Light, low and rear-driven. The quickest thing here, and the least forgiving.',
-    /** Flat-plane V8 — no half-orders, so it screams rather than burbles. */
     engine: 'v8flat',
     gearbox: 'dct',
     shiftTimeMs: 45,
@@ -76,7 +41,6 @@ export const CARS = [
     file: 'N_Muscle Car_10.fbx',
     name: 'Muscle',
     blurb: 'Big torque, long bonnet, lazy gearing. Will step out if you ask it to.',
-    /** Cross-plane V8. Uneven bank firing puts 31% of its energy in the half-orders: the burble. */
     engine: 'v8cross',
     gearbox: 'manual',
     shiftTimeMs: 150,
@@ -97,7 +61,6 @@ export const CARS = [
     file: 'Classic Car_9.fbx',
     name: 'Classic',
     blurb: 'Skinny tyres, soft springs and modest power. Slow in, wobbly out.',
-    /** Inline six — perfectly balanced, even firing, a smooth hum. */
     engine: 'i6',
     gearbox: 'manual',
     shiftTimeMs: 170,
@@ -118,7 +81,6 @@ export const CARS = [
     file: 'Hatchback Car_15.fbx',
     name: 'Hatchback',
     blurb: 'Front-driven, short and eager. Understeers honestly and never bites.',
-    /** Inline four, even intervals and no half-order content. */
     engine: 'i4',
     gearbox: 'manual',
     shiftTimeMs: 130,
@@ -139,7 +101,6 @@ export const CARS = [
     file: 'Police Car N_4.fbx',
     name: 'Interceptor',
     blurb: 'A saloon with the good engine. Fast, heavy, and stops well.',
-    /** 60-degree V6. */
     engine: 'v6',
     gearbox: 'auto',
     shiftTimeMs: 120,
@@ -160,7 +121,6 @@ export const CARS = [
     file: 'Pick Up_11.fbx',
     name: 'Pick-Up',
     blurb: 'Long wheelbase, light rear end, four-wheel drive when it counts.',
-    /** Cross-plane V8 with a long-geared automatic. */
     engine: 'v8cross',
     gearbox: 'auto',
     shiftTimeMs: 190,
@@ -181,7 +141,6 @@ export const CARS = [
     file: 'N Van_10.fbx',
     name: 'Van',
     blurb: 'Tall, slow and permanently leaning. Surprisingly relaxing.',
-    /** Turbocharged inline five — offbeat, and it spools. */
     engine: 'i5',
     gearbox: 'auto',
     shiftTimeMs: 200,
@@ -202,7 +161,6 @@ export const CARS = [
     file: 'Military Vehicle_3.fbx',
     name: 'Military',
     blurb: 'Two and a half tonnes of permanent four-wheel drive. Ignores terrain.',
-    /** Turbocharged inline six, geared for pulling. */
     engine: 'i6',
     gearbox: 'auto',
     shiftTimeMs: 210,
@@ -223,7 +181,6 @@ export const CARS = [
     file: 'Monster Truck_15.fbx',
     name: 'Monster Truck',
     blurb: 'Enormous wheels, endless travel, comically high roll centre.',
-    /** Cross-plane V8 with nothing between it and the sky. */
     engine: 'v8cross',
     gearbox: 'auto',
     shiftTimeMs: 180,
@@ -234,20 +191,14 @@ export const CARS = [
     drive: 'awd',
     grip: 1.32,
     comHeight: 0.44,
-    // Long and soft — it should wallow — but not so much that the body has more
-    // vertical travel than a road car has total height.
+    // Long and soft — capped so body travel stays under a road car's total height.
     travelScale: 1.6,
     dragCoefficient: 1.5,
     downforce: 0.2,
   },
 ];
 
-/**
- * Paint options. These drive a plain material rather than the palette atlas —
- * the atlas cell carrying each car's bodywork is detected at load and moved
- * onto its own material slot, so any colour is available, not just the 256 in
- * the texture.
- */
+/** The paint slot is a plain material, not the atlas — the bodywork's atlas cell is moved off at load. */
 export const CAR_COLORS = [
   { id: 'red',    name: 'Rosso',     hex: 0xc0392b },
   { id: 'orange', name: 'Amber',     hex: 0xd97a1a },
@@ -265,20 +216,7 @@ export function colorById(id) {
   return CAR_COLORS.find((c) => c.id === id) || CAR_COLORS[0];
 }
 
-/**
- * The second paint colour.
- *
- * Every model in the pack has a large flat block of colour that is not its
- * bodywork — the Hatchback's upper half, the Van's roof, the Interceptor's
- * panels, the Muscle car's trim — and it used to be fixed whatever paint the
- * player chose. `assets.js` now puts that swatch on its own material slot, so
- * it is a second colour rather than a permanent one.
- *
- * `stock` is first and is the default: `hex: null` means "leave the artist's
- * colour alone", so a car looks exactly as it always did until asked otherwise.
- * The rest of the list is the paint palette plus two neutrals that read as
- * contrast trim rather than as a second body colour.
- */
+/** Second paint colour; hex: null leaves the artist's swatch, which is what Stock asks for. */
 export const CAR_TRIM_COLORS = [
   { id: 'stock', name: 'Stock', hex: null },
   ...CAR_COLORS,
@@ -292,11 +230,7 @@ export function trimColorById(id) {
 
 export const DEFAULT_TRIM = 'stock';
 
-/**
- * The engine roster from engine_sim. Any engine can go in any car — the
- * drivetrain profile (mass, ratios, final drive) stays the car's own, so
- * dropping a V12 into the van changes what it sounds like *and* what it does.
- */
+/** Any engine can go in any car; the drivetrain profile stays the car's own. */
 export const ENGINE_OPTIONS = [
   { id: 'stock',    name: 'Stock' },
   { id: 'vtwin',    name: 'V-twin' },
@@ -330,25 +264,13 @@ const DRIVE_SPLIT = {
   awd: [0.19, 0.19, 0.31, 0.31],
 };
 
-/**
- * Combines a roster entry with the geometry measured from its FBX to produce
- * the full parameter set the vehicle controller consumes.
- *
- * @param {object} spec     one of CARS
- * @param {object} metrics  from assets.loadCarModel
- * @param {object} base     shared defaults (config.VEHICLE)
- * @param {number} gravity  m/s², positive magnitude
- */
 export function buildCarParams(spec, metrics, base, gravity) {
   const mass = spec.mass;
 
-  // Suspension travel follows wheel size: a 0.64 m monster-truck wheel implies
-  // far more travel than a 0.39 m road wheel, and hard-coding one number for
-  // both makes the truck ride like a go-kart.
+  // Travel follows wheel size — one number for all makes big wheels ride like a go-kart.
   const restLength = metrics.wheelRadius * 1.15 * (spec.travelScale || 1);
 
-  // Spring rate chosen so static sag is the same fraction of travel for every
-  // car:  k = m·g / (4 · sag)
+  // Static sag is the same fraction of travel for every car: k = m·g/(4·sag).
   const sag = restLength * SAG_FRACTION;
   const springK = (mass * gravity) / (4 * sag);
 
@@ -358,25 +280,12 @@ export function buildCarParams(spec, metrics, base, gravity) {
   // Underbody clearance: enough to clear the suspension's own static travel.
   const clearance = Math.max(sag * 1.6, metrics.wheelRadius * 0.55);
 
-  // Static Stability Factor — the real-world rollover metric: half-track over
-  // centre-of-mass height. A vehicle tips once lateral acceleration exceeds
-  // SSF·g, so anything with SSF below its own grip coefficient will roll before
-  // it slides. That is precisely the monster truck and the van, and without
-  // this they lie down in the first corner every time.
+  // SSF = half-track/CoM height; a vehicle rolls once lateral accel exceeds SSF·g.
   const comHeight = metrics.bodyHeight * spec.comHeight;
   const ssf = metrics.trackHalf / comHeight;
   const rolloverAccel = gravity * ssf * 0.82;
 
-  // Anti-roll sized from the roll moment this vehicle will actually see, not as
-  // a fixed fraction of spring rate. A fraction fails badly at the extremes: the
-  // monster truck's springs are soft *because* its travel is huge, so a
-  // proportional bar leaves a 2.9 m-tall body with almost no roll stiffness and
-  // it lies down in the first corner.
-  //   roll moment  M = m · a_limit · arm      (arm reduced by frictionAnchorLift,
-  //                                            since tyre forces are applied
-  //                                            above the contact patch)
-  //   roll stiffness needed for a target lean:  K = M / θ
-  //   springs already provide  k · track² / 2;  the bars make up the shortfall.
+  // Bar sized from the roll moment the car sees; a fraction of spring rate fails big soft trucks.
   const aLimit = Math.min(spec.grip * gravity, rolloverAccel);
   const arm = Math.max(0.15, comHeight - base.frictionAnchorLift);
   const track = metrics.trackHalf * 2;
@@ -396,12 +305,7 @@ export function buildCarParams(spec, metrics, base, gravity) {
     /** Overall body height — the chase camera scales itself off this. */
     bodyHeight: metrics.bodyHeight,
 
-    // Body origin is the contact plane, and these models include a floor pan
-    // reaching all the way down to it. Wrapping the collider around the full
-    // body height therefore rests its underside on the road: the box scrapes,
-    // Rapier's contact friction fights the tyres, and the heavier bodies (van,
-    // monster truck) simply never move. Lift it to a real ground clearance —
-    // always more than the static sag, or it grounds out the moment it settles.
+    // Models include a floor pan to the contact plane — collider must sit above real clearance or it scrapes.
     chassis: {
       hx: metrics.bodyHalfWidth * 0.92,
       hy: (metrics.bodyHeight - clearance) * 0.5,
@@ -411,11 +315,7 @@ export function buildCarParams(spec, metrics, base, gravity) {
     groundClearance: clearance,
     comOffset: { x: 0, y: metrics.bodyHeight * spec.comHeight, z: 0.04 },
 
-    // The anchor is where the strut meets the body. Subtracting the static sag
-    // is what makes the settled physics pose coincide with the model's design
-    // pose: at rest the body origin lands exactly on the contact plane and each
-    // wheel centre exactly one rolling radius above it — which is where the FBX
-    // author put them. Omit the sag term and the whole car sits buried by 12 cm.
+    // Anchor = hub − sag, so the settled pose matches the FBX pose; omit sag and the car sits buried ~12 cm.
     anchorHeight: metrics.wheelRadius + restLength - sag,
     staticSag: sag,
     restLength,
@@ -438,12 +338,7 @@ export function buildCarParams(spec, metrics, base, gravity) {
     rollingResistance: mass * 0.26,
 
     tyreFriction: spec.grip,
-    /**
-     * Lateral acceleration at which this body tips, with margin. The steering
-     * law takes the lower of this and the grip limit, so top-heavy vehicles
-     * run out of steering angle before they run out of roll — they push wide
-     * instead of falling over, which is how such things behave in reality.
-     */
+    /** Top-heavy vehicles run out of steering before they run out of roll — they push wide instead of tipping. */
     rolloverAccel,
     staticStabilityFactor: ssf,
     dragCoefficient: spec.dragCoefficient,

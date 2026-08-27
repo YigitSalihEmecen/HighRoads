@@ -1,18 +1,14 @@
 /**
- * DOM wiring check.
+ * ui.mjs — checks the DOM wiring.
  *
- * Nothing here renders, so a mistyped element id fails silently at runtime —
- * `getElementById` returns null and the feature simply does nothing. With no
- * browser to look at, this is the only thing standing between a typo and a dead
- * button. It reads index.html for the ids it defines and every module for the
- * ids they reach for, and compares the two.
+ * Proves every element id resolves and every toggled class has a style rule.
  */
 import fs from 'node:fs';
 
 const html = fs.readFileSync('index.html', 'utf8');
 const defined = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
 const classes = new Set([...html.matchAll(/\bclass="([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/)));
-// Classes only ever created in JS still have to be styled to do anything.
+// JS-created classes still have to be styled to do anything.
 const styled = new Set([...html.matchAll(/[.#]([A-Za-z][-\w]*)\s*[,{: ]/g)].map((m) => m[1]));
 
 let bad = 0;
@@ -36,8 +32,7 @@ for (const [id, file] of wanted) {
   }
 }
 
-// Class names the code toggles must exist in the stylesheet, or the toggle is
-// a no-op that looks like it worked.
+// Toggled classes must exist in the stylesheet, or the toggle is a no-op.
 const toggled = new Set();
 for (const file of fs.readdirSync('src')) {
   if (!file.endsWith('.js')) continue;

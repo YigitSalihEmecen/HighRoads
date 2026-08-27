@@ -1,25 +1,8 @@
 /**
  * score.js — near-miss scoring for Traffic mode.
  *
- * The mechanic is the familiar one and the shape matters more than the numbers:
- * threading past another car pays, closer pays more, and consecutive passes
- * build a multiplier that bleeds away unless it is refreshed. What makes it a
- * game rather than a readout is that the multiplier is a *decision* — the chain
- * is worth more than any single pass, so the player keeps hunting for one more
- * gap instead of backing off, which is exactly the behaviour that gets them hit.
- *
- * Two details that are not decoration:
- *
- *   ONCOMING TRAFFIC PAYS MORE. It arrives at the sum of both speeds, so the
- *   same lateral gap is a fraction of the time to judge and react to. Paying
- *   the same for it would make the safe half of the road the optimal one.
- *
- *   THERE IS A COOLDOWN. Without one, driving between two cars abreast scores
- *   twice in the same instant, and a queue in both lanes is a jackpot for a
- *   single decision. One decision, one payment.
- *
- * This module owns no DOM and no game state beyond the run: it takes passes and
- * a speed, and reports numbers.
+ * Closer passes pay more, oncoming passes pay more still, consecutive passes
+ * build a multiplier that decays unless refreshed.
  */
 
 import { SCORE } from './config.js';
@@ -49,9 +32,7 @@ export class ScoreRun {
   }
 
   /**
-   * @param {number} dt
    * @param {Array<{gap:number, oncoming:boolean}>} passes  completed this frame
-   * @param {number} speed  m/s
    */
   update(dt, passes, speed) {
     this.lastAward = 0;
@@ -83,8 +64,8 @@ export class ScoreRun {
       this.lastAward = award;
       this.lastOncoming = p.oncoming;
 
-      // The chain is refilled, not extended: a late pass is worth as much as an
-      // early one, so there is never a reason to hold back and wait.
+      // The chain is REFILLED, not extended: a late pass is worth as much as an
+      // early one, so there is no reason to hold back and wait.
       this.chain = SCORE.chainTime;
       this.multiplier = Math.min(SCORE.chainMax, this.multiplier + SCORE.chainStep);
       this._cooldown = SCORE.cooldown;

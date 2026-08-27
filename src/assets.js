@@ -1,17 +1,9 @@
 /**
- * assets.js — loading and conditioning of the external art.
+ * assets.js — loads the external art.
  *
- * CARS, AND NOTHING ELSE. There used to be a second pipeline in here — an OBJ
- * parser and an inlined 18-colour palette for the Quaternius nature pack — and
- * it is gone, along with the models. Everything the world is dressed with is
- * now generated from code in `src/env/`, which means the whole of the external
- * art in this project is the car pack in `assets/`.
- *
- *   CARS (FBX).  Every model is one body mesh plus four tyres named
- *   `*_FL_Tire` … `*_BR_Tire`, sharing a 512x512 palette atlas. The tyres are
- *   detached so the vehicle controller can steer and spin them, and the
- *   materials are rebuilt locally rather than trusting whatever the exporter
- *   embedded.
+ * The only external art is the car pack in assets/. Each FBX is one body plus
+ * four detached wheels, sharing a palette atlas. Materials are rebuilt
+ * locally instead of trusting the exporter.
  */
 
 import * as THREE from 'three';
@@ -19,14 +11,11 @@ import * as THREE from 'three';
 const CAR_DIR = 'assets/car_models/Fbx';
 const CAR_TEXTURE = 'assets/car_models/Fbx/Texture/Color.png';
 
-/* ------------------------------------------------------------- loaders --- */
-
 /** The shared car atlas. Nearest filtering — it is a palette, not a picture. */
 export async function loadCarTexture() {
   const tex = await new THREE.TextureLoader().loadAsync(CAR_TEXTURE);
   tex.colorSpace = THREE.SRGBColorSpace;
-  // The atlas packs flat colour swatches edge to edge. Any filtering blends
-  // neighbouring swatches and bleeds the wrong colour along every UV seam.
+  // Any filtering blends edge-to-edge swatches and bleeds along UV seams.
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
   tex.generateMipmaps = false;
@@ -59,19 +48,7 @@ function cellKey(u, v) {
   return `${Math.floor(u * ATLAS_GRID)},${Math.floor(v * ATLAS_GRID)}`;
 }
 
-/**
- * Reads the flat colour out of one atlas cell.
- *
- * The second paint slot has to default to the colour the artist put there, or
- * every car would arrive in the garage already wearing a change nobody asked
- * for. Each cell is a single flat swatch, so one pixel from the middle of it is
- * the whole answer.
- *
- * Cached on the texture: nine cars share one atlas and the canvas readback is
- * the only part of loading that touches the 2D context at all. Returns null
- * when there is no decoded image to read — headless probes pass no texture, and
- * a tainted canvas throws — and every caller has a fallback for that.
- */
+/** Cell → flat colour, cached on the texture; null when there is no image (headless probes, tainted canvas). */
 function sampleCell(texture, key) {
   if (!texture || !texture.image || !key) return null;
   try {
@@ -92,8 +69,7 @@ function sampleCell(texture, key) {
     const [cx, cy] = key.split(',').map(Number);
     const cw = ctx.canvas.width / ATLAS_GRID;
     const ch = ctx.canvas.height / ATLAS_GRID;
-    // The texture is loaded with flipY = false, so v maps straight to rows and
-    // the cell's row index is its y index — no flip to undo here.
+    // flipY is false, so v maps straight to rows — no flip to undo.
     const px = Math.min(ctx.canvas.width - 1, Math.floor((cx + 0.5) * cw));
     const py = Math.min(ctx.canvas.height - 1, Math.floor((cy + 0.5) * ch));
     const d = ctx.getImageData(px, py, 1, 1).data;
@@ -114,25 +90,7 @@ function triangleMaterials(geo, triCount) {
   return out;
 }
 
-/**
- * Ranks the palette cells the bodywork uses by the surface area they cover,
- * largest first, across every non-emissive group.
- *
- * The first is the car's paint. The SECOND is the reason this returns a list at
- * all: every model in the pack has one, it is always a large flat block of
- * colour, and until now it kept whatever the artist chose no matter what the
- * player picked — the Hatchback's green upper body, the Van's brown roof, the
- * Interceptor's grey, the Muscle car's dark trim. Those are the "permanently
- * coloured sections". Because each cell is a single flat colour, both can be
- * moved onto plain materials and recoloured by setting `.color` — no texture
- * rewriting, and instant.
- *
- * Ranking by raw surface area does count geometry nobody sees, so it was
- * checked against the alternative: six orthographic z-buffers over each model,
- * counting only the cells actually visible from outside. Across the nine
- * roster cars the two metrics agree on the top cell every time and on the
- * second for seven of nine, so the cheap one stands.
- */
+/** Ranks used cells by surface area; validated against orthographic z-buffers across the roster. */
 function rankPaintCells(meshes, bloomIndex) {
   const area = new Map();
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
@@ -169,16 +127,7 @@ function rankPaintCells(meshes, bloomIndex) {
   return [...area].sort((a, b) => b[1] - a[1]).map(([key]) => key);
 }
 
-/**
- * Rebuilds one body mesh's material groups into the five slots above.
- *
- * The importer hands us dozens of tiny groups alternating between two
- * materials, and both lamps share one of them. Triangles are reclassified —
- * emissive ones split front/rear by their z sign (the models face +Z, so
- * positive is the front), the rest by which of the two paint swatches they sit
- * on, if either — then an index buffer is written that orders them by slot, so
- * each class is one contiguous group and therefore one draw call.
- */
+/** Triangles re-slot by z sign (models face +Z) for lamps and by paint cell, one contiguous group each. */
 function regroupBody(mesh, paintCell, trimCell, bloomIndex, materials) {
   const geo = mesh.geometry;
   const pos = geo.attributes.position;
@@ -222,27 +171,14 @@ function regroupBody(mesh, paintCell, trimCell, bloomIndex, materials) {
   mesh.material = materials;
 }
 
-/**
- * Loads one car FBX and takes it apart.
- *
- * The models face +Z, whereas everything in this project treats -Z as forward,
- * so the body is yawed 180°. Wheel anchors are measured from the tyre meshes
- * rather than guessed, which is what lets each vehicle get its own real
- * wheelbase, track and rolling radius.
- *
- * Returns { body, wheels, metrics } in metres, with the origin at the ground
- * contact plane — the same origin the physics body uses.
- */
+/** Models face +Z so the body is yawed 180°; wheel anchors are measured from the tyre meshes, not guessed. */
 export async function loadCarModel(file, texture) {
   const { FBXLoader } = await import('three/addons/loaders/FBXLoader.js');
   const root = await new FBXLoader().loadAsync(`${CAR_DIR}/${encodeURIComponent(file)}`);
   return buildCarFromObject(root, texture, file);
 }
 
-/**
- * The half of loadCarModel that does not touch the network, split out so the
- * whole take-apart-and-measure step can be exercised without a browser.
- */
+/** The network-free half, split out so the take-apart-and-measure step runs headless. */
 export function buildCarFromObject(root, texture, label = 'model') {
   root.updateMatrixWorld(true);
 
@@ -252,31 +188,19 @@ export function buildCarFromObject(root, texture, label = 'model') {
     roughness: 0.55,
     metalness: 0.12,
   });
-  // The paint swatch is a single flat colour, so it does not need the texture
-  // at all — a plain material means changing colour is one property write.
+  // Flat swatch needs no texture — recolouring is one property write.
   const paint = new THREE.MeshStandardMaterial({
     color: 0xc0392b,
     roughness: 0.42,
     metalness: 0.28,
   });
-  /**
-   * The second paint slot.
-   *
-   * Same idea as `paint`, one swatch further down: the largest flat colour on
-   * the model that is NOT the main bodywork. On most of the roster that is a
-   * genuine two-tone feature — the Hatchback's upper body, the Van's roof, the
-   * Muscle car's trim — and it is what stayed put whatever colour the player
-   * chose. Slightly less metallic than the main paint, because on a real car
-   * this is usually the part that is plastic, matte or a contrast wrap.
-   */
+  /** The second slot — the largest non-body flat colour (roof, trim); slightly less metallic. */
   const secondary = new THREE.MeshStandardMaterial({
     color: 0x9aa0a6,
     roughness: 0.52,
     metalness: 0.18,
   });
-  // "Color Bloom" is the exporter's name for the lamps. The atlas cell behind
-  // the rear lamps is actually blue, so the lights are given their own
-  // materials rather than inheriting whatever swatch the artist happened to use.
+  // "Color Bloom" is the exporter's lamp material; the rear atlas cell is blue, so lamps get own materials.
   const headlight = new THREE.MeshStandardMaterial({
     color: 0xfff4dd,
     emissive: 0xffeec2,
@@ -300,8 +224,7 @@ export function buildCarFromObject(root, texture, label = 'model') {
 
     const tag = WHEEL_RE.exec(o.name);
     if (tag) {
-      // Tyres are not re-grouped, so they need the atlas material assigned
-      // directly — left alone they keep whatever the exporter embedded.
+      // Tyres are not re-grouped, so the atlas material is assigned here.
       o.material = trim;
       wheelMeshes[tag[1].toUpperCase()] = o;
     } else {
@@ -343,11 +266,7 @@ export function buildCarFromObject(root, texture, label = 'model') {
   // Ground plane of the model: the lowest point of the tyres.
   const groundY = Math.min(...keys.map((k) => wheelInfo[k].centre.y - wheelInfo[k].size.y / 2));
 
-  // Bake each part's world transform into its geometry. FBX hierarchies carry
-  // transforms on ancestor nodes (exporters routinely put a 0.01 scale on the
-  // root), and re-parenting a mesh silently drops everything above it. Baking
-  // first means every part is expressed in one common space with an identity
-  // local transform, so the groups below are the only transforms in play.
+  // FBX hierarchies carry ancestor transforms (root scale); bake world transforms in so re-parenting drops nothing.
   for (const mesh of [...bodyParts, ...keys.map((k) => wheelMeshes[k])]) {
     mesh.updateWorldMatrix(true, false);
     mesh.geometry = mesh.geometry.clone();
@@ -357,21 +276,15 @@ export function buildCarFromObject(root, texture, label = 'model') {
     mesh.scale.set(1, 1, 1);
   }
 
-  // Re-group the bodywork so both paint colours and each pair of lamps are
-  // independently addressable. Done after baking, while the geometry is still
-  // in the model's own +Z-forward space — the front/rear split reads the sign
-  // of z directly.
+  // Re-group after baking, while geometry is still +Z-forward so the front/rear split reads z's sign.
   const [paintCell = null, trimCell = null] = rankPaintCells(bodyParts, bloomIndex);
-  // Second colour starts as whatever the artist painted it, so a car arrives in
-  // the garage looking exactly as it always did until somebody changes it.
+  // Second colour starts as the artist painted it.
   const trimStock = sampleCell(texture, trimCell);
   if (trimStock !== null) secondary.color.setHex(trimStock, THREE.SRGBColorSpace);
   const bodyMaterials = [trim, paint, secondary, headlight, taillight];
   for (const part of bodyParts) regroupBody(part, paintCell, trimCell, bloomIndex, bodyMaterials);
 
-  // Body group, yawed to face -Z and dropped so y = 0 is the contact plane.
-  // A yaw about Y leaves y untouched, so combining it with the drop in a single
-  // node is safe here.
+  // Yaw to −Z and drop to the contact plane; a Y yaw leaves y alone, so one node is safe.
   const body = new THREE.Group();
   const inner = new THREE.Group();
   inner.rotation.y = Math.PI;
@@ -379,14 +292,7 @@ export function buildCarFromObject(root, texture, label = 'model') {
   for (const part of bodyParts) inner.add(part);
   body.add(inner);
 
-  // Wheels become free-standing, each re-centred on its own axle so the vehicle
-  // can steer and spin them about their own hub.
-  //
-  // The centring translation and the yaw MUST live on separate nodes. Three
-  // composes a local matrix as T·R·S, so a single node carrying both maps a
-  // point to R·p + T — the rotation is applied *before* the offset, leaving the
-  // hub at R·centre − centre rather than at the origin. The wheel then orbits
-  // that leftover offset instead of spinning in place.
+  // Centring and yaw must be separate nodes: Three composes T·R·S, so one node would orbit the leftover offset.
   const wheels = {};
   for (const k of keys) {
     const holder = new THREE.Group(); // steer + spin, driven by the vehicle
@@ -421,10 +327,7 @@ export function buildCarFromObject(root, texture, label = 'model') {
     /** The colour the artist gave the second slot; null if the atlas was unreadable. */
     trimStock,
 
-    /**
-     * Head lamps. `flash` overdrives them well past "on" — a flash reads as a
-     * flash because it is brighter than the beam, not merely present.
-     */
+    /** flash outruns "on" — a flash reads because it is brighter than the beam. */
     setHeadlights(on, flash) {
       headlight.emissiveIntensity = flash ? HEAD_FLASH : on ? HEAD_ON : HEAD_OFF;
     },
@@ -434,21 +337,14 @@ export function buildCarFromObject(root, texture, label = 'model') {
       paint.color.setHex(hex, THREE.SRGBColorSpace);
     },
 
-    /**
-     * Repaints the second colour. Passing null restores the swatch the model
-     * shipped with, which is what the garage's "Stock" option asks for.
-     */
+    /** null restores the shipped swatch — what the garage's Stock option asks for. */
     setTrimColor(hex) {
       const value = hex == null ? trimStock : hex;
       if (value == null) return;
       secondary.color.setHex(value, THREE.SRGBColorSpace);
     },
 
-    /**
-     * Brake lights. `t` is 0..1; the lamps sit at a dim standing glow and rise
-     * an order of magnitude under braking, which is what reads as "on" once the
-     * bloom pass gets hold of it.
-     */
+    /** t is 0..1: dim standing glow to an order of magnitude brighter under braking. */
     setBrake(t) {
       const k = Math.max(0, Math.min(1, t));
       taillight.emissiveIntensity = TAIL_IDLE + (TAIL_BRAKE - TAIL_IDLE) * k;

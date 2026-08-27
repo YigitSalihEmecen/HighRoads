@@ -61,7 +61,7 @@ road, the sheet and the streaming window.
 |---|---|---|
 | `textures.js` | canvas helpers, seeded PRNG, **tileable** noise/fBm/ridged, `paint()` | — |
 | `lowpoly.js` | faceted-solid primitives: warped lumps, tapering tubes, conifer skirts | — |
-| `trees.js` | faceted low-poly trees, near and far tiers from ONE builder | 93–334 / **39–88** |
+| `trees.js` | faceted low-poly trees, near and far tiers from ONE builder | 105–500 / **30–254** |
 | `bushes.js` | four shrub forms, clusters of faceted lumps | 75–115 |
 | `grass.js` | crossed-card tufts: roadside, woodland-floor and far tiers | 4 |
 | `rocks.js` | fractured convex boulders, slabs, scree | 20–80 |
@@ -349,30 +349,88 @@ instance matrix**, so the cross-fade is a change of face count and nothing else.
 
 | | near | far |
 |---|---|---|
-| triangles | 93–334 (mean 223) | 39–88 (mean 53) |
+| triangles | 150–376 (mean 307) | 66–270, **87 per tree placed** |
 | lifetime | `TREES.behind/ahead` = 7 chunks | with the chunk = 9 |
 | fade | out 260→420 m | in 260→420, out 620→720 |
 
 `TREES.loneFadeIn` [480, 660] is for far trees with **no** near mesh behind them:
-`nearCap` 180 and `farCap` 760 are a 4:1 density difference, and with one window
-for both the surplus shrank into the ground as the player drove at it.
+`nearCap` 120 and `farCap` 760 are a density difference of several times, and
+with one window for both the surplus shrank into the ground as the player drove
+at it. `farCap` does not bind — the stand mask and the habitat kill far more
+than it does — so it is not the place to pay for anything.
+
+#### A skeleton, not a bouquet
+
+`branch()` is a two-generation recursion: the stem forks into `limbs.count`
+primaries, each into `limbs.split` secondaries, and a crown lump hangs on every
+terminal tip. **The branching decides where the foliage goes**, which is the
+whole difference from the version before it — that one drew straight tubes from
+the stem to the centre of lumps placed on a golden-angle spiral, and produced
+exactly one silhouette for every species: blobs on top of a pole.
+
+- Children leave along the parent's **tip direction**, not the direction it
+  started in. The tube is bowed, so those differ, and using the start direction
+  fans the second generation out of the wrong plane.
+- **`limbs.draw` is false on the far tier** and the skeleton is still walked. A
+  branch is centimetres wide and the far tier starts at 260 m, so every tube is
+  sub-pixel — but the crown must hang in the same places or the tiers are
+  different trees. Worth 40% of a far tree. The exception is `dead`: a bare
+  tree's branches ARE its silhouette, so it draws them at both tiers.
+- **Lump detail is chosen by lump SIZE.** Six lumps at `detail: 1` is 480 faces
+  before culling and most of what a broadleaf costs; a lump under half the
+  crown radius is mostly buried anyway. Splitting on the size the tip drew takes
+  a crown from 480 faces to about 300 with no extra parameter.
+- Three generations was tried: invisible under the crown at any distance the
+  near tier is used at, and dearer than the lumps.
 
 #### Primitives (`env/lowpoly.js`)
 
 `Facets` (non-indexed, per-face normal + colour + `aSway`), `blob` (warped
-icosphere), `tube` (parallel-transported tapering n-gon, no caps), `tier`
-(jagged conifer skirt; only the lowest gets a floor).
+icosphere), `tube` (parallel-transported tapering n-gon, optional end caps),
+`tier` (jagged conifer skirt; only the lowest gets a floor).
 
-- **Interior culling** drops any face whose centroid is inside another lump —
-  worth a third of the canopy. It evaluates the occluder's **own** warp, so the
-  occluder records must be the `{c, r, warp}` plans the caller assembled. A shape
-  mismatch fails **silently**: an oak was 576 triangles instead of 334 with no
-  symptom but the budget.
+- **WINDING IS THE WHOLE GAME.** The material is `side: FrontSide`, so a face
+  wound the wrong way is not drawn — and a tree whose faces are all wrong does
+  not look like an error, it looks like a tree with a lot of transparent parts
+  in it. `tube` and `tier` were both inside out from the day they were written.
+  `probe/props.mjs` now checks the signed volume of every proto.
+- **CLOSED IS A SEPARATE QUESTION FROM WOUND OUTWARD**, and it took a second
+  pass to learn that. `probe/props.mjs` welds every proto, finds the edges used
+  by one face instead of two, and fans rays off them: a rim that reaches open
+  air is a hole. It found 1,668 after the winding was fixed, in four unrelated
+  places. Every end is now either capped or demonstrably buried:
+  - **every conifer skirt is floored**, not just the lowest. A skirt's rim is
+    its widest point and the cone below it has tapered past that height, so an
+    unfloored tier is a hollow cone.
+  - **every fork is capped and its children are rooted 1.7 tip radii BACK
+    INSIDE the parent.** A child ring centred on the parent's end plane is half
+    in and half out, and the half outside is an open crescent. Same reason a
+    primary starts on the stem's axis rather than on its surface.
+  - a terminal tip is left open only where a crown lump swallows it
+    (`blobs.lift` is a fraction of the lump's radius); `limbs.capTips` marks the
+    species with no lumps at all.
+- **Interior culling is ONE-WAY, biggest lump first, per-vertex, against the
+  facets.** Each of those words was a bug (#81). It evaluates the occluder's
+  **own** warp, so the occluder records must be the `{c, r, warp}` plans the
+  caller assembled — a shape mismatch fails **silently**, an oak was 576
+  triangles instead of 334 with no symptom but the budget. It is worth much less
+  than the symmetric version was: with the crown hung on real branch tips the
+  lumps barely overlap, so a broadleaf's crown is close to its raw face count
+  and `nearCap`/`BUSHES.cap` paid the difference.
+- **`tier` passes the colour shader its face's REAL normal-y.** It used to pass
+  +1 for a skirt and −1 for the underside, which put every big flat skirt face
+  on the shader's fully-lit branch while a lump's varied normals took a spread.
+  Under the game's own light the conifers came out pale mint.
 - **`material.flatShading` is deliberately NOT set.** It would recompute normals
   the geometry already has and leave the colour smooth — and per-face colour is
   half the look.
 
 #### Colour is BAKED, per variant
+
+**Lump detail is by RANK, not size** (`blobs.fine`, default 1): after the sort
+the biggest lump carries the silhouette at `blobs.detail`, everything else drops
+one level. Six lumps at detail 1 is 480 faces before culling and there is now
+very little culling.
 
 `TREE_FORMS[*].palettes` and `SHRUBS[*].palettes` are `[main, alt]` per variant,
 mixed by height and facing. A chunk commits to one variant, so a copse is one
@@ -609,7 +667,7 @@ no storage).
 | | High | Medium | Low |
 |---|---|---|---|
 | chunks ahead | 6 | 4 | 3 |
-| near canopy | 180/chunk | 95 | **0** |
+| near canopy | 150/chunk | 95 | **0** |
 | far canopy | 760 | 380 | 300 |
 | grass / shrubs / stone | on | thinned | **off** |
 | worst-case foliage in view | 723k tris | 302k | 95k |
@@ -759,6 +817,13 @@ Every one was real, diagnosed by measurement, and is re-introducible.
 | 73 | A dark conifer in every bright birch stand | species were drawn independently per point; the stand mask says how much canopy, not what kind. And the guild field, once added, sat inside `mask`'s unstretched middle band | guilds as bands on a slow axis, **stretched against the mask's measured p05–p95** (§4.11). Agreement 83% (79% by chance) → 87–93% (39–48%) |
 | 74 | Shrubs photographed as broken rock | `detail: 0` (20 faces to a sphere) plus `warp` 0.26–0.34 is a crystal, not a leafy dome | main lump `detail: 1`, warp halved (§4.11) |
 | 75 | The woodland grass tier was invisible to every probe | gated on the TEXTURE, which is null wherever there is no canvas | gate on the config; `src/env/README.md` rule 2 |
+| 76 | **Foliage full of see-through gaps** | `tube` and `tier` were BOTH wound inside out, from the day they were written — every trunk, every branch and every conifer skirt in the world, back-face culled by `side: FrontSide`. Measured: a conifer enclosed **−0.043**. Nothing caught it, because the triangle counts, bounding boxes, LOD widths and scatter were all right | reverse both; `probe/props.mjs` now checks the signed volume and that baked normals agree with the winding |
+| 77 | Holes at the top of every trunk and the end of every dead limb | `tube` had no caps at all, on the reasoning that a base is buried and a tip is inside a crown. True for a branch under foliage; false for the stem's top ring (wider than any branch leaving it), for its foot on a slope, and for a bare tree | `caps: {start, end}`, on where the end is not buried |
+| 78 | Every species was "blobs on the tip of a pole" | the crown was a golden-angle spiral of lumps that knew nothing about the branches, and the branches were straight tubes drawn to the lumps. The only things that differed between species were the envelope and the palette | `branch()`: a two-generation recursion whose **tips decide where the foliage goes** |
+| 79 | Conifers came out pale mint against saturated broadleaves | two causes, and the first was mistaken for the second: `tier` handed the colour shader a CONSTANT facing value, so every big flat skirt face took the fully-lit branch; and a skirt tilted skyward drinks the hemisphere's pale blue, so a palette with B at half of G reads as sage | real face normal-y to the shader, `droop` 0.16 → 0.34, and B pulled to a third of G. Measured B/G at the pixel: 0.65 → 0.55, matching the oak's 0.53 |
+| 80 | **Still see-through after #76 and #77** — winding was half the answer | four independent holes, none visible to any count. (a) Only the LOWEST conifer skirt was floored, on the reasoning that the others have a skirt beneath them — but a skirt's rim is its widest point and the cone below has already tapered past it, so every upper tier was a hollow cone. (b) A FORK left the parent's end ring open and the children, thinner by `limbs.radius`, started on that plane half in and half out. (c) A hazel's stems were capped at neither end. (d) Interior culling dropped a face without leaving anything behind it — three separate mechanisms, below | floor every tier; cap every fork and root the children **back inside** the parent by 1.7 tip radii; cap the shrub stems; and the culling fixes in #81. **1,668 see-through rims → 0** |
+| 81 | Interior culling was opening the holes it was meant to save triangles on | three compounding mistakes. **Centroid-only**: a detail-1 face is half a radius across, so a face whose centre is deep inside its neighbour still has corners in the air. **Mutual**: A drops a face buried in B while B drops the very faces that would have covered the rim left behind. **Smooth-surface**: a subdivided icosahedron is inscribed and its faces sag to 0.93 (0.79 at detail 0) of the radius, so a point "inside" the lump can be outside the mesh | all three corners inside; culling is **one-way, biggest lump first**, so every escape route ends on a surface that is still there; and the test runs against `FACET[detail]`, the measured sag |
+| 82 | Medium graphics quietly drew MORE shrubs than high | `applyGraphics` sets absolute numbers. `nearCap` came down 150 → 120 and `BUSHES.cap` 115 → 78 to pay for the closed crowns, and medium's stale 95 / 110 went from two thirds of high to four fifths and 141% | re-derived: 76 and 72. **Any change to a cap in `TREES`/`BUSHES` has to be carried into `applyGraphics`** |
 
 ### Harness bugs that masqueraded as game bugs
 
@@ -875,15 +940,17 @@ moving — at one frame per second through SwiftShader it is a still image.
   seeds, 4 km each. Height equals the exact cut/fill clamp to **0.000000 m**.
 - **Ground everywhere the player may drive**: 0 holes in 114,240 probes/seed
   across six seeds, including 57,600 beyond the recovery bound.
-- **Foliage.** 8 species × 3 variants at 93–334 tris near (mean 223) and 39–88
-  far (mean 53); 4 shrubs at 75–115 (mean 88). Per chunk: 29,776 near + 12,015
-  far + 13,292 shrub; **436,000 alive at once** against ~109,000 of terrain
-  sheet, over two lifetimes. Scatter **3.8 ms**/chunk, 12.1 draw batches of 14,
-  nothing closer than 16.4 m to the centreline against an 11 m clearance, mean
-  float off the collider **19.7 mm**, per-chunk count varies by 35% of its mean.
-  Crown radii of the two tiers agree to **2%**. Library bit-identical between
-  builds. Neighbouring trees share a guild **87–93%** of the time against
-  39–48% by chance.
+- **Foliage.** 8 species × 3 variants at 150–376 tris near (mean 307) and
+  66–270 far (**87 per tree actually placed**); 4 shrubs at 112–183 (mean 136).
+  Per chunk: 31,580 near + 20,013 far + 10,094 shrub; **492,000 alive at once**
+  against ~109,000 of terrain sheet, over two lifetimes. Every proto encloses a
+  positive volume, every baked normal agrees with its winding, and **not one of
+  the twenty protos has a rim that reaches open air** — 1,668 did before this
+  pass. Scatter ~4 ms/chunk, 12 draw batches of 14, nothing closer than 16 m to
+  the centreline against an 11 m clearance, mean float off the collider
+  **12 mm**, per-chunk count varies by 28% of its mean. Crown radii of the two
+  tiers agree to **1%**. Library bit-identical between builds. Neighbouring
+  trees share a guild **87–93%** of the time against 39–48% by chance.
 - Ground cover: ~19,700 roadside + ~3,300 woodland + ~3,100 far tufts per chunk,
   **0 on the carriageway**, none beyond its band, fade windows overlap.
 - Stone: 6.0 draw batches/chunk, 5,790 tris/chunk, inside its band.
@@ -980,13 +1047,29 @@ moving — at one frame per second through SwiftShader it is a still image.
     sometimes the road really is that tight. (#64)
 36. **Tilt's axis depends on `screen.orientation.angle`**, and the sign flips
     again between the two landscape orientations.
-37. **Interior culling fails silently.** `lowpoly.js:blob`'s occluders must be
+37. **Check the winding of any new primitive.** `side: FrontSide` means a
+    reversed face is invisible, not wrong-looking, and a whole primitive can be
+    inside out for months. `probe/props.mjs` measures signed volume; a new
+    primitive that does not raise it is suspect. (#76)
+38. **An uncapped tube end is a hole**, and so is an unfloored cone, and so is
+    a culled face with nothing behind it. Caps are off by default because most
+    ends are buried; any end that is not buried needs one. `probe/props.mjs`
+    welds every proto and rays its rims — **`no proto has a see-through gap` is
+    the check, and it is not implied by the winding one**. (#77, #80, #81)
+38a. **Interior culling must be ONE-WAY, biggest occluder first, per-vertex,
+    against the facets.** Any of the three obvious shortcuts — centroid,
+    symmetric, smooth surface — opens holes. It culls less; that is the price.
+    (#81)
+39. **Interior culling fails silently.** `lowpoly.js:blob`'s occluders must be
     the `{c, r, warp}` plans. A shape mismatch culls nothing and has no symptom
     but the triangle count. (#72)
-38. **Foliage hue is BAKED, per variant; stone hue comes from `ROCKS.palette`.**
+39a. **A cap in `TREES`/`BUSHES` is repeated as an absolute in
+    `applyGraphics`.** Move one and the medium tier silently stops being a
+    reduction. (#82)
+40. **Foliage hue is BAKED, per variant; stone hue comes from `ROCKS.palette`.**
     Both are documented exceptions to "hue on the instance", which is a rule
     about things that grow. (§4.11, §4.14)
-39. **A field's numbers must be against its MEASURED range.** `terrain.mask` is
+41. **A field's numbers must be against its MEASURED range.** `terrain.mask` is
     two octaves and spans 0.25–0.72, not 0–1. Getting this wrong makes a field
     that looks wired up and does nothing. (#73, and `TREES.barePatch`)
 

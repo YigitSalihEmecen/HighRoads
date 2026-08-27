@@ -1,14 +1,11 @@
 /**
- * How much steering does the driver actually have, and can a slide be caught?
+ * handling.mjs — measures steering authority on flat ground.
  *
- * Runs on flat ground so the terrain plays no part. Three questions:
- *   1. usable steering angle across the speed range;
- *   2. steady-state cornering — what the car will actually pull;
- *   3. provoke a slide, then try to catch it, and see whether countersteer
- *      arrests the yaw or the car simply spins.
+ * Usable steering angle across speed, steady-state cornering, and slide
+ * recovery.
  */
-// FBXLoader reaches for the DOM to build texture images; the same stub the
-// other probes use, hoisted so it is in place before three is imported.
+// FBXLoader reaches for the DOM to build texture images; same stub as the other
+// probes, hoisted so it is in place before three is imported.
 globalThis.document = {
   createElement: (t) => ({
     tagName: t, style: {}, setAttribute() {}, getContext: () => null,
@@ -101,19 +98,9 @@ console.log('\n=== provoke a slide, then try to catch it (Sport, 30 m/s) ===');
   const yawAt = () => sim.v.body.angvel().y;
   const peak = yawAt();
   // Countersteer and feed power, the way a driver would.
-  // "Spun" means the car went round, not that it was yawing fast at the instant
-  // the handbrake came off — the provocation itself guarantees that.
-  //
-  // Heading is integrated ONLY UNTIL THE YAW IS ARRESTED, and that is not a
-  // detail. The test holds full opposite lock and half throttle for the whole
-  // four seconds, because that is what a driver catching a slide does — but a
-  // car that recovers early then spends the remaining three seconds obeying
-  // that input and driving a steady circle the other way. Integrating through
-  // it charged the car for the test's own cornering: measured, a tune that
-  // caught the slide in 0.82 s after 62 deg was reported as "240 deg, WENT
-  // ROUND" purely because it recovered in time to start turning. The question
-  // being asked is how far the SLIDE carried the car round, so the answer stops
-  // when the slide does.
+  // Heading is integrated only until the yaw is arrested: the test holds
+  // opposite lock for the whole 4 s, and a car that recovers early then drives
+  // a steady circle the other way — which would charge it for its own cornering.
   let caught = -1, maxYaw = Math.abs(peak), heading = 0, keptSpeed = 0;
   for (let i = 0; i < Math.round(4.0 / h); i++) {
     step(sim, IN(-1, 0.5, 0, false), 3000);
@@ -164,8 +151,8 @@ console.log('\n=== can a drift be held? (Sport, handbrake released, power on) ==
   console.log(`  mean slip ${(slipSum / n).toFixed(3)}, final speed ${(sim.v.speed * 3.6).toFixed(0)} km/h`);
 }
 
-// How much of the recovery is the damper (an assist) versus the steering and
-// tyre changes (honest)? Rerun the catch with the damper switched off.
+// Rerun the catch with the spin-recovery damper off, to separate assist from
+// honest steering and tyre work.
 console.log('\n=== how much of the catch is the assist? ===');
 {
   const V0 = VEHICLE.spinRecovery;
@@ -173,8 +160,7 @@ console.log('\n=== how much of the catch is the assist? ===');
     VEHICLE.spinRecovery = strength;
     const sim = atSpeed('sport', 30);
     for (let i = 0; i < Math.round(0.7 / h); i++) step(sim, IN(1, 0.4, 0, true), 4000);
-    // Same rule as above: stop integrating once the slide is over, or the
-    // held countersteer's own cornering lands on the car's bill.
+    // Same rule as above: stop integrating once the slide is over.
     let caught = -1, heading = 0;
     for (let i = 0; i < Math.round(5.0 / h); i++) {
       step(sim, IN(-1, 0.5, 0, false), 3000);

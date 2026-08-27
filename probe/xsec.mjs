@@ -1,13 +1,8 @@
 /**
- * Terrain cross-sections across the corridor.
+ * xsec.mjs — prints terrain cross-sections across the corridor.
  *
- * Prints the ground profile either side of the road at a series of stations, so
- * the shape the player actually sees can be READ rather than guessed at. It was
- * written to inspect tunnel portals; with those gone it is the fastest way to
- * see what an alignment is doing — whether the road is on a shelf, in a
- * cutting, on an embankment, or halfway up a hillside.
- *
- *   node probe/xsec.mjs [seed] [startS] [count]
+ * Ground profile each side of the road at every station, so the shape the
+ * player sees is read, not guessed.
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
