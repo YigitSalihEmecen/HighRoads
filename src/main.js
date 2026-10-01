@@ -15,7 +15,7 @@ import {
   CARS, CAR_COLORS, CAR_TRIM_COLORS, ENGINE_OPTIONS, DEFAULT_CAR, DEFAULT_TRIM,
   carById, colorById, trimColorById, buildCarParams
 } from './cars.js';
-import { smoothstep } from './util.js';
+import { smoothstep, clamp } from './util.js';
 import { createTerrain } from './noise.js';
 import { RoadPath } from './path.js';
 import { ChunkManager } from './chunks.js';
@@ -864,6 +864,12 @@ class Game {
     const s = Math.max(START_S, atS);
     this.path.ensureLength(s + CHUNK.length * 2);
     this.chunks.update(s, 6); // make sure there is ground under the spawn
+    {
+      // ...and the drawn, collidable ground around it, now rather than over
+      // the next few frames.
+      const p = this.path.frameAt(s).pos;
+      this.chunks.tiles.preload(p.x, p.z, 260);
+    }
 
     const frame = this.path.frameAt(s);
     // Sit in the inner forward lane rather than astride the centre line.
@@ -889,7 +895,11 @@ class Game {
      * the frame handed to it.
      */
     const maxFrame = WORLD.maxSubSteps * WORLD.fixedStep;
-    const dt = Math.min((now - this.lastTime) / 1000, maxFrame);
+    // Clamped at 0 as well: `lastTime` is reset to performance.now() on start
+    // and unpause, and the next rAF timestamp is the frame's START, which can be
+    // earlier. A negative dt makes every exponential damper extrapolate — the
+    // FOV was measured at 997° after a slow respawn.
+    const dt = clamp((now - this.lastTime) / 1000, 0, maxFrame);
     this.lastTime = now;
 
     /**
@@ -963,6 +973,8 @@ class Game {
     this.carS = this.path.projectPoint(this.vehicle.pos, this.carS);
     // The wind runs on wall time, not simulation time; it is scenery.
     this.chunks.advanceTime(dt);
+    // Terrain tiles follow the CAR, which may be well off the road.
+    this.chunks.focus = this.vehicle && this.active ? this.vehicle.pos : null;
     this.chunks.update(this.carS);
 
     // Tyre effects read the wheel state just written by the substeps, so they
@@ -1121,7 +1133,10 @@ class Game {
      */
     const reach = this.path.corridorAt(this.carS, this._reach);
     const edge = offset < 0 ? reach.left : reach.right;
-    const bound = Math.min(CHUNK.recoverLateral, edge - RECOVER_MARGIN);
+    // The ground is world-space tiles now and has no edge near the road, so
+    // the corridor no longer bounds this; `edge` is kept for the record.
+    void edge;
+    const bound = CHUNK.recoverLateral;
 
     // Beached: full throttle, no progress — for example on a cut face too
     // steep to climb.
