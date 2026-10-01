@@ -143,7 +143,9 @@ for (let i = 2; i < 2 + rChunks; i++) {
       const s = path.projectPoint(p, s0 + CHUNK.length * 0.5);
       const lat = Math.abs(path.lateralOffset(p, s));
       rWorstLat = Math.max(rWorstLat, lat);
-      if (lat < EDGE - 0.5) rOnRoad++;
+      // Distance to the road is the terrain field's definition now (the dense
+      // centreline); projectPoint's arc-length search disagrees by ~0.3 m on a bend.
+      if (chunks.field.roadDistance(p.x, p.z) < EDGE - 0.5) rOnRoad++;
     }
   }
 }

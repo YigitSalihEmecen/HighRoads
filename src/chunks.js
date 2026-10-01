@@ -19,6 +19,8 @@ import { createRoadAssets } from './env/road.js';
 import { createRockAssets } from './env/rocks.js';
 import { createTreeAssets } from './env/trees.js';
 import { createBushAssets } from './env/bushes.js';
+import { TerrainField, ROAD_SINK } from './terrainfield.js';
+import { WorldTiles } from './worldtiles.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const ROAD_LIFT = 0.035;
@@ -44,12 +46,14 @@ function buildLateralOffsets() {
     half.push(v);
   }
 
-  // Far field: geometric, capped at 34 m so the ridge noise stays sampled well
-  // enough not to alias into spikes.
+  // Beyond the near band: geometric, capped at 6 m. This grid is no longer
+  // DRAWN (the ground is `worldtiles.js`); it is the scatter's sampling grid,
+  // so it only has to reach as far as anything is planted from it, and be fine
+  // enough that a tuft interpolated on it sits on the drawn surface.
   let step = CHUNK.nearStep;
-  while (v < CHUNK.halfExtent) {
-    step = Math.min(step * 1.32, 34);
-    v = Math.min(v + step, CHUNK.halfExtent);
+  while (v < CHUNK.scatterExtent) {
+    step = Math.min(step * 1.18, 6);
+    v = Math.min(v + step, CHUNK.scatterExtent);
     half.push(v);
   }
 
@@ -71,6 +75,9 @@ function buildRoadColumns() {
   const cols = [];
   const push = (v, kind) => cols.push({ v, kind });
 
+  // Skirt: the edge again, dropped, so the ribbon never shows a gap against
+  // the terrain beside it from any angle.
+  cols.push({ v: -hw, kind: ASPHALT, drop: 0.45 });
   push(-hw, PAINT);                       // left edge line
   push(-hw + w, PAINT);
   push(-hw + w, ASPHALT);
@@ -97,6 +104,7 @@ function buildRoadColumns() {
   push(hw - w, ASPHALT);                  // right edge line
   push(hw - w, PAINT);
   push(hw, PAINT);
+  cols.push({ v: hw, kind: ASPHALT, drop: 0.45 });
 
   return cols;
 }
@@ -204,6 +212,19 @@ export class ChunkManager {
     this._snow = new THREE.Color(TERRAIN_COLORS.snow);
 
     this._buildSharedAssets();
+
+    /**
+     * The ground: a pure function of world position (terrainfield.js), drawn
+     * as world-space LOD tiles (worldtiles.js). Replaces the road-space sheets
+     * and the apron under them — see terrainfield.js for why.
+     */
+    this.field = new TerrainField(terrain, path, hashInt(Math.round(terrain.continent(0, 0) * 1000)));
+    this.tiles = new WorldTiles({
+      scene, field: this.field, material: this.matTerrain, world, RAPIER,
+      color: (x, z, y, ny, d, out) => this._groundColor(x, z, y, ny, d, out),
+    });
+    /** Where the tiles are centred. main.js points this at the car; null = the road at carS. */
+    this.focus = null;
 
     // A tier is a plain descriptor; everything that differs is a number, so
     // `_buildGrass` is one function.
@@ -324,80 +345,16 @@ export class ChunkManager {
       frame.s, frame.pos.x, frame.pos.z, CHUNK.halfExtent + 120, fo.list);
   }
 
-  /** Single source of truth for ground height — mesh, props, respawn all agree. */
+  /**
+   * Ground at road-space (s, v), via the frame at s. Single source of truth:
+   * the drawn tiles, the scatter grid and respawn all evaluate
+   * `this.field` — a function of world position only.
+   */
   sampleGround(frame, rightFlat, v, out) {
-    // Nominal (pre-guard) offset, used by the horizon falloff.
-    const nominal = Math.abs(v);
     v = lateralAt(frame, rightFlat, v, _latDir);
-    const av = Math.abs(v);
     const x = frame.pos.x + _latDir.x * v;
     const z = frame.pos.z + _latDir.z * v;
-
-    // Bank flattens out past the verge so the cross-slope does not tilt the
-    // hillside with it.
-    const bankFade = 1 - smoothstep(EDGE, EDGE + CHUNK.bankRunout, av);
-    const yRoad = frame.pos.y + v * Math.tan(frame.bank) * bankFade;
-
-    const yNatural = this.terrain.height(x, z, av);
-
-    // Cut and fill: the natural surface clamped between a plane rising at the
-    // cut slope and one falling at the fill slope. The ramp starts at zero
-    // gradient and the clamp is a smooth min/max, so joins round instead of
-    // creasing.
-    const t = Math.max(0, av - EDGE);
-    const ramp = (t * t) / (t + ROAD.shoulderRound);
-    const ceiling = yRoad + ROAD.cutSlope * ramp;
-    const floorY = yRoad - ROAD.fillSlope * ramp;
-
-    // Blend width tied to a quarter of the gap: on the carriageway the floor
-    // and ceiling are the same plane, so a fixed k compounds to ~1 m of terrain
-    // standing on the road.
-    const k = Math.min(ROAD.slopeBlend, (ceiling - floorY) * 0.25);
-    let y = smax(smin(yNatural, ceiling, k), floorY, k);
-
-    // Where the road doubles back, carve for the OTHER pass too, sunk below
-    // this road's own fill line so the correction cannot touch its carriageway.
-    const fo = this._foreign;
-    if (fo.s !== frame.s) this._gatherForeign(frame);
-    if (fo.n) {
-      // Plain minimum over the segments first: smoothing inside the loop would
-      // compound by k/4 per segment.
-      let fCeil = Infinity;
-      for (let i = 0; i < fo.n; i++) {
-        const a = fo.list[i * 2];
-        const b = fo.list[i * 2 + 1];
-        // Closest point on the segment, in plan; `t` doubles as the interpolant
-        // for the road's height there.
-        const ex = b.x - a.x;
-        const ez = b.z - a.z;
-        const len2 = ex * ex + ez * ez;
-        let f = len2 > 1e-6 ? ((x - a.x) * ex + (z - a.z) * ez) / len2 : 0;
-        f = f < 0 ? 0 : (f > 1 ? 1 : f);
-        const fx = x - (a.x + ex * f);
-        const fz = z - (a.z + ez * f);
-        const c = a.y + (b.y - a.y) * f - CHUNK.foreignSink
-          + CHUNK.foreignSlope * Math.sqrt(fx * fx + fz * fz);
-        if (c < fCeil) fCeil = c;
-      }
-      // Same k as the cut-fill clamp: on the carriageway these degrade to exact
-      // min/max. The floor then guarantees the result is this road's plane.
-      y = smin(y, smax(fCeil, floorY, k), k);
-    }
-
-    // Drainage ditch hugging the verge, only where the road is at grade.
-    const dt = clamp((av - EDGE) / CHUNK.ditchWidth, 0, 1);
-    if (dt > 0 && dt < 1) {
-      const fit = 1 - smoothstep(1.5, 8.0, Math.abs(yNatural - yRoad));
-      y -= CHUNK.ditchDepth * Math.sin(Math.PI * dt) * fit;
-    }
-
-    // Horizon falloff, keyed on the NOMINAL offset: the guard moves `v`, and
-    // the last few columns of the sheet must fall off whatever the guard did.
-    if (nominal > CHUNK.horizonFalloff) {
-      y -= smoothstep(CHUNK.horizonFalloff, CHUNK.halfExtent, nominal) * CHUNK.horizonDrop;
-    }
-
-    out.set(x, y, z);
+    out.set(x, this.field.height(x, z), z);
     return out;
   }
 
@@ -462,135 +419,25 @@ export class ChunkManager {
   groundAt(s, v, out = new THREE.Vector3()) {
     const f = this.path.frameAt(s, this._frame);
     this._rightFlat.crossVectors(f.tan, WORLD_UP).normalize();
+    if (Math.abs(v) <= ROAD.halfWidth) {
+      // On the carriageway the surface is the road ribbon (and its collider),
+      // which sits ROAD_SINK + ROAD_LIFT above the terrain under it.
+      out.set(f.pos.x + this._rightFlat.x * v, f.pos.y + v * Math.tan(f.bank) + ROAD_LIFT,
+        f.pos.z + this._rightFlat.z * v);
+      return out;
+    }
     this.sampleGround(f, this._rightFlat, v, out);
     return out;
-  }
-
-  /**
-   * The world-space ground under everything else.
-   *
-   * Road space degenerates at distance R inside a turn — rows 2.5 m apart have
-   * already crossed — so the far field ends as a plain world-space grid of
-   * `terrain.height`, drawn and collided UNDER the sheets.
-   */
-  _updateApron(carS) {
-    const step = CHUNK.apronStep;
-    const half = Math.round(CHUNK.apronHalf / step) * step;
-
-    const f = this.path.frameAt(carS, this._frame);
-    // Snap the centre to the sample lattice so the apron does not shimmer as
-    // the car moves.
-    const cx = Math.round(f.pos.x / step) * step;
-    const cz = Math.round(f.pos.z / step) * step;
-
-    const a = this.apron;
-    if (a && a.cx === cx && a.cz === cz) return;
-    // Hysteresis: rebuild only once the car has left the middle of the apron.
-    if (a && Math.abs(cx - a.cx) < CHUNK.apronMove && Math.abs(cz - a.cz) < CHUNK.apronMove) return;
-
-    const n = (half * 2) / step + 1;
-    const count = n * n;
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
-    const indices = new Uint32Array((n - 1) * (n - 1) * 6);
-    const c = this._color;
-
-    for (let j = 0; j < n; j++) {
-      const z = cz - half + j * step;
-      for (let i = 0; i < n; i++) {
-        const x = cx - half + i * step;
-        // The LOD arg is the apron's own resolution, not a lateral offset.
-        let y = this.terrain.height(x, z, CHUNK.apronDetail) - CHUNK.apronSink;
-
-        // Duck under the carriageway: the apron carries no earthwork, so in a
-        // cutting its natural surface can stand metres above the road. Cut down
-        // to the road's plane, and slightly below, on a shallow ramp.
-        this.path.roadNear(x, z, carS, CHUNK.apronHalf, _apronRoad);
-        if (_apronRoad.dist < Infinity) {
-          const cap = _apronRoad.y - CHUNK.apronRoadSink
-            + _apronRoad.dist * CHUNK.foreignSlope;
-          if (cap < y) y = cap;
-        }
-
-        const k = (j * n + i) * 3;
-        positions[k] = x - cx;
-        positions[k + 1] = y;
-        positions[k + 2] = z - cz;
-      }
-    }
-
-    // Normals from the finished grid, then colour — the palette keys off
-    // flatness, so it has to come after the heights are all in.
-    for (let j = 0; j < n; j++) {
-      for (let i = 0; i < n; i++) {
-        const k = (j * n + i) * 3;
-        const xi = Math.min(n - 1, i + 1), xd = Math.max(0, i - 1);
-        const zi = Math.min(n - 1, j + 1), zd = Math.max(0, j - 1);
-        const dx = (positions[(j * n + xi) * 3 + 1] - positions[(j * n + xd) * 3 + 1])
-          / Math.max(1e-3, (xi - xd) * step);
-        const dz = (positions[(zi * n + i) * 3 + 1] - positions[(zd * n + i) * 3 + 1])
-          / Math.max(1e-3, (zi - zd) * step);
-        const ny = 1 / Math.sqrt(1 + dx * dx + dz * dz);
-        this._groundColor(cx + positions[k], cz + positions[k + 2],
-          positions[k + 1] + CHUNK.apronSink, ny, CHUNK.halfExtent, c);
-        colors[k] = c.r; colors[k + 1] = c.g; colors[k + 2] = c.b;
-      }
-    }
-
-    let t = 0;
-    for (let j = 0; j < n - 1; j++) {
-      for (let i = 0; i < n - 1; i++) {
-        const p = j * n + i;
-        // Same winding as `_buildTerrain`: +column then +row is an upward face.
-        indices[t++] = p; indices[t++] = p + 1; indices[t++] = p + n;
-        indices[t++] = p + 1; indices[t++] = p + n + 1; indices[t++] = p + n;
-      }
-    }
-
-    if (a) this._disposeApron();
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-    geometry.computeVertexNormals();
-    geometry.computeBoundingSphere();
-
-    const mesh = new THREE.Mesh(geometry, this.matTerrain);
-    mesh.position.set(cx, 0, cz);
-    mesh.receiveShadow = true;
-    // No shadow casting: a coarse copy of ground the sheets already draw.
-    mesh.castShadow = false;
-    mesh.renderOrder = -1;
-    mesh.matrixAutoUpdate = false;
-    mesh.updateMatrix();
-    this.scene.add(mesh);
-
-    let collider = null;
-    if (this.world) {
-      collider = this.world.createCollider(
-        this.RAPIER.ColliderDesc.trimesh(positions, indices)
-          .setTranslation(cx, 0, cz)
-          .setFriction(1.0)
-          .setRestitution(0.0));
-    }
-    this.apron = { cx, cz, mesh, collider };
-  }
-
-  _disposeApron() {
-    const a = this.apron;
-    if (!a) return;
-    this.scene.remove(a.mesh);
-    a.mesh.geometry.dispose();
-    if (a.collider && this.world) this.world.removeCollider(a.collider, false);
-    this.apron = null;
   }
 
   // -------------------------------------------------------------- lifecycle --
 
   /** Streams chunks in and out around the vehicle's arc length. */
   update(carS, budget = CHUNK.buildPerFrame) {
-    this._updateApron(carS);
+    {
+      const fp = this.focus || this.path.frameAt(carS, this._frame).pos;
+      this.tiles.update(fp.x, fp.z);
+    }
     const center = Math.floor(carS / CHUNK.length);
     // The spline is undefined before s = 0, so a negative chunk would collapse
     // onto s = 0 and generate a degenerate, uncollidable mesh.
@@ -669,6 +516,8 @@ export class ChunkManager {
     for (let i = lo; i <= Math.min(hi, lo + count - 1); i++) {
       if (!this.chunks.has(i)) this._build(i);
     }
+    const fp = this.path.frameAt(carS, this._frame).pos;
+    this.tiles.preload(fp.x, fp.z);
     while (this._flushProps());
   }
 
@@ -680,7 +529,7 @@ export class ChunkManager {
       if (obj.userData.ownsGeometry) obj.geometry.dispose();
       if (obj.isInstancedMesh) obj.dispose();
     }
-    if (chunk.collider) this.world.removeCollider(chunk.collider, false);
+    if (chunk.collider && this.world) this.world.removeCollider(chunk.collider, false);
     if (chunk.extraColliders) {
       for (const c of chunk.extraColliders) this.world.removeCollider(c, false);
     }
@@ -693,6 +542,7 @@ export class ChunkManager {
     this.propQueue.length = 0;
     this.canopyQueue.length = 0;
 
+    this.tiles.dispose();
     this.road.dispose();
     if (this.trees) this.trees.dispose();
     if (this.bushes) this.bushes.dispose();
@@ -715,19 +565,12 @@ export class ChunkManager {
     const origin = this.path.frameAt(s0, this._frame).pos.clone();
 
     const objects = [];
-    const terrainData = this._buildTerrain(s0, s1, origin);
+    // The scatter's sampling grid. Not drawn, not collided — the ground the
+    // player sees and drives on is `this.tiles`.
+    const terrainData = this._buildSheet(s0, s1, origin);
 
-    const terrainMesh = new THREE.Mesh(terrainData.geometry, this.matTerrain);
-    terrainMesh.position.copy(origin);
-    terrainMesh.castShadow = true;
-    terrainMesh.receiveShadow = true;
-    terrainMesh.userData.ownsGeometry = true;
-    terrainMesh.matrixAutoUpdate = false;
-    terrainMesh.updateMatrix();
-    this.scene.add(terrainMesh);
-    objects.push(terrainMesh);
-
-    const roadMesh = new THREE.Mesh(this._buildRoad(s0, s1, origin), this.matRoad);
+    const roadGeo = this._buildRoad(s0, s1, origin);
+    const roadMesh = new THREE.Mesh(roadGeo, this.matRoad);
     roadMesh.position.copy(origin);
     roadMesh.receiveShadow = true;
     roadMesh.userData.ownsGeometry = true;
@@ -736,12 +579,17 @@ export class ChunkManager {
     this.scene.add(roadMesh);
     objects.push(roadMesh);
 
-    // Static trimesh collider; the origin-relative buffer serves both passes.
-    const desc = this.RAPIER.ColliderDesc.trimesh(terrainData.positions, terrainData.indices)
-      .setTranslation(origin.x, origin.y, origin.z)
-      .setFriction(1.0)
-      .setRestitution(0.0);
-    const collider = this.world.createCollider(desc);
+    // The carriageway's own collider: the car drives on the ribbon it sees.
+    // The terrain under the lanes is sunk ROAD_SINK below it (terrainfield.js),
+    // so the two never fight and nothing pokes through the tarmac.
+    let collider = null;
+    if (this.world) {
+      collider = this.world.createCollider(
+        this.RAPIER.ColliderDesc.trimesh(roadGeo.userData.colPos, roadGeo.userData.colIdx)
+          .setTranslation(origin.x, origin.y, origin.z)
+          .setFriction(1.0)
+          .setRestitution(0.0));
+    }
 
     const extraColliders = [];
 
@@ -792,103 +640,67 @@ export class ChunkManager {
 
   // -------------------------------------------------------------- terrain --
 
-  _buildTerrain(s0, s1, origin) {
+  /**
+   * The scatter grid for one chunk: road-space rows × lateral columns of
+   * ground positions (origin-relative, trap #19) and their colours, sampled
+   * from the terrain field. Everything planted interpolates this grid; the
+   * drawn tiles sample the same field, so the two agree to the interpolation
+   * error of a 2-6 m cell.
+   */
+  _buildSheet(s0, s1, origin) {
     const nu = CHUNK.segmentsU;
     const nv = this.lateral.length;
     const rows = nu + 1;
     const vertCount = rows * nv;
-
-    /**
-     * GHOST ROWS: sample one row past each end and compute normals over the
-     * extended mesh, so boundary normals are computed by the same rule as every
-     * other vertex — the neighbouring chunk's answer agrees exactly.
-     */
-    const extRows = rows + 2;
-    const extPos = new Float32Array(extRows * nv * 3);
-    const indices = new Uint32Array(nu * (nv - 1) * 6);
-
-    const lateralAbs = new Float32Array(vertCount);
-    const worldY = new Float32Array(vertCount);
-
+    const positions = new Float32Array(vertCount * 3);
+    const colors = new Float32Array(vertCount * 3);
     const p = new THREE.Vector3();
     const frame = makeFrame();
     const rightFlat = new THREE.Vector3();
     const dS = (s1 - s0) / nu;
 
-    for (let e = 0; e < extRows; e++) {
-      const j = e - 1;                       // -1 .. nu+1
-      const s = s0 + j * dS;
-      this.path.frameAt(s, frame);
+    // Candidate road segments once for the whole chunk.
+    {
+      const a = this.path.frameAt(s0, frame).pos, b = this.path.frameAt(s1, frame).pos;
+      const r = CHUNK.scatterExtent + 20;
+      this.field.beginRegion(Math.min(a.x, b.x) - r, Math.min(a.z, b.z) - r,
+        Math.max(a.x, b.x) + r, Math.max(a.z, b.z) + r);
+    }
+    for (let j = 0; j <= nu; j++) {
+      this.path.frameAt(s0 + j * dS, frame);
       rightFlat.crossVectors(frame.tan, WORLD_UP).normalize();
-
-      const interior = j >= 0 && j <= nu;
       for (let i = 0; i < nv; i++) {
-        const v = this.lateral[i];
-        this.sampleGround(frame, rightFlat, v, p);
-
-        const ke = e * nv + i;
-        extPos[ke * 3 + 0] = p.x - origin.x;
-        extPos[ke * 3 + 1] = p.y - origin.y;
-        extPos[ke * 3 + 2] = p.z - origin.z;
-
-        if (interior) {
-          const k = j * nv + i;
-          lateralAbs[k] = Math.abs(v);
-          worldY[k] = p.y;
-        }
+        this.sampleGround(frame, rightFlat, this.lateral[i], p);
+        const k = (j * nv + i) * 3;
+        positions[k] = p.x - origin.x;
+        positions[k + 1] = p.y - origin.y;
+        positions[k + 2] = p.z - origin.z;
       }
     }
+    this.field.endRegion();
 
-    // Winding +column/+row: a,b,c must give an upward face or the whole world
-    // is backface-culled and lit from below.
-    const extIdx = new Uint32Array((extRows - 1) * (nv - 1) * 6);
-    let e2 = 0;
-    for (let j = 0; j < extRows - 1; j++) {
-      for (let i = 0; i < nv - 1; i++) {
-        const a = j * nv + i;
-        const b = a + 1;
-        const c = a + nv;
-        const d = c + 1;
-        extIdx[e2++] = a; extIdx[e2++] = b; extIdx[e2++] = c;
-        extIdx[e2++] = b; extIdx[e2++] = d; extIdx[e2++] = c;
+    // Colour, with flatness from the grid's own differences.
+    const c = this._color;
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < nv; i++) {
+        const k = j * nv + i;
+        const i1 = Math.min(nv - 1, i + 1), i0 = Math.max(0, i - 1);
+        const j1 = Math.min(rows - 1, j + 1), j0 = Math.max(0, j - 1);
+        const ax = positions[(j * nv + i1) * 3] - positions[(j * nv + i0) * 3];
+        const ay = positions[(j * nv + i1) * 3 + 1] - positions[(j * nv + i0) * 3 + 1];
+        const az = positions[(j * nv + i1) * 3 + 2] - positions[(j * nv + i0) * 3 + 2];
+        const bx = positions[(j1 * nv + i) * 3] - positions[(j0 * nv + i) * 3];
+        const by = positions[(j1 * nv + i) * 3 + 1] - positions[(j0 * nv + i) * 3 + 1];
+        const bz = positions[(j1 * nv + i) * 3 + 2] - positions[(j0 * nv + i) * 3 + 2];
+        const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+        const nl = Math.hypot(nx, ny, nz) || 1;
+        const wx = positions[k * 3] + origin.x, wz = positions[k * 3 + 2] + origin.z;
+        const jit = this._groundColor(wx, wz, positions[k * 3 + 1] + origin.y,
+          Math.abs(ny / nl), Math.abs(this.lateral[i]), c);
+        colors[k * 3] = c.r * jit; colors[k * 3 + 1] = c.g * jit; colors[k * 3 + 2] = c.b * jit;
       }
     }
-    const ext = new THREE.BufferGeometry();
-    ext.setAttribute('position', new THREE.BufferAttribute(extPos, 3));
-    ext.setIndex(new THREE.BufferAttribute(extIdx, 1));
-    ext.computeVertexNormals();
-
-    // Drop the ghosts; slice copies, which is what the renderer and Rapier want.
-    const from = nv * 3;
-    const to = (nu + 2) * nv * 3;
-    const positions = extPos.slice(from, to);
-    const normals = ext.attributes.normal.array.slice(from, to);
-    ext.dispose();
-
-    let t = 0;
-    for (let j = 0; j < nu; j++) {
-      for (let i = 0; i < nv - 1; i++) {
-        const a = j * nv + i;
-        const b = a + 1;
-        const c = a + nv;
-        const d = c + 1;
-        indices[t++] = a; indices[t++] = b; indices[t++] = c;
-        indices[t++] = b; indices[t++] = d; indices[t++] = c;
-      }
-    }
-    const trimmed = t === indices.length ? indices : indices.slice(0, t);
-
-    const colors = new Float32Array(vertCount * 3);
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-    geometry.setIndex(new THREE.BufferAttribute(trimmed, 1));
-
-    this._colorTerrain(geometry, colors, lateralAbs, worldY, positions, origin);
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.computeBoundingSphere();
-
-    return { geometry, positions, indices: trimmed, colors };
+    return { positions, colors };
   }
 
   /**
@@ -928,24 +740,6 @@ export class ChunkManager {
     out.lerp(this._dirt, (1 - smoothstep(EDGE - 0.4, EDGE + 4.5, av)) * 0.9);
 
     return 0.92 + fine * 0.16;
-  }
-
-  _colorTerrain(geometry, colors, lateralAbs, worldY, positions, origin) {
-    const normals = geometry.attributes.normal.array;
-    const c = this._color;
-
-    for (let k = 0; k < lateralAbs.length; k++) {
-      // Fold-squeezed slivers have unreliable normals; magnitude keeps a bad
-      // sliver from painting a grass slope as a cliff.
-      const ny = Math.abs(normals[k * 3 + 1]);
-      const x = positions[k * 3] + origin.x;
-      const z = positions[k * 3 + 2] + origin.z;
-
-      const jitter = this._groundColor(x, z, worldY[k], ny, lateralAbs[k], c);
-      colors[k * 3 + 0] = c.r * jitter;
-      colors[k * 3 + 1] = c.g * jitter;
-      colors[k * 3 + 2] = c.b * jitter;
-    }
   }
 
   /**
@@ -1009,7 +803,7 @@ export class ChunkManager {
         const k = j * nv + i;
 
         positions[k * 3 + 0] = frame.pos.x + rightFlat.x * col.v - origin.x;
-        positions[k * 3 + 1] = frame.pos.y + col.v * slope + ROAD_LIFT - origin.y;
+        positions[k * 3 + 1] = frame.pos.y + col.v * slope + ROAD_LIFT - origin.y - (col.drop || 0);
         positions[k * 3 + 2] = frame.pos.z + rightFlat.z * col.v - origin.z;
 
         if (col.kind === PAINT || (col.kind === CENTER && dash)) c.copy(paint);
@@ -1039,6 +833,33 @@ export class ChunkManager {
     geometry.setIndex(new THREE.BufferAttribute(indices, 1));
     geometry.computeVertexNormals();
     geometry.computeBoundingSphere();
+
+    // Collider: the drivable surface only (skirt columns 0 and nv-1 left out),
+    // and only rows at distinct stations — the doubled dash-boundary rows are
+    // zero-area quads a trimesh has no use for.
+    const cn = nv - 2;
+    const keep = [];
+    for (let j = 0; j < nu; j++) if (!keep.length || rows[j].s - rows[keep[keep.length - 1]].s > 1e-3) keep.push(j);
+    const cr = keep.length;
+    const colPos = new Float32Array(cr * cn * 3);
+    for (let jj = 0; jj < cr; jj++) {
+      const j = keep[jj];
+      for (let i = 0; i < cn; i++) {
+        const src = (j * nv + i + 1) * 3, dst = (jj * cn + i) * 3;
+        colPos[dst] = positions[src]; colPos[dst + 1] = positions[src + 1]; colPos[dst + 2] = positions[src + 2];
+      }
+    }
+    const colIdx = new Uint32Array((cr - 1) * (cn - 1) * 6);
+    let q = 0;
+    for (let j = 0; j < cr - 1; j++) {
+      for (let i = 0; i < cn - 1; i++) {
+        const a = j * cn + i, b = a + 1, cc = a + cn, d = cc + 1;
+        colIdx[q++] = a; colIdx[q++] = b; colIdx[q++] = cc;
+        colIdx[q++] = b; colIdx[q++] = d; colIdx[q++] = cc;
+      }
+    }
+    geometry.userData.colPos = colPos;
+    geometry.userData.colIdx = colIdx;
     return geometry;
   }
 
@@ -1859,6 +1680,10 @@ export class ChunkManager {
         positions[i0 * 3 + 1] * w0 + positions[i1 * 3 + 1] * w1 + positions[i2 * 3 + 1] * w2,
         positions[i0 * 3 + 2] * w0 + positions[i1 * 3 + 2] * w1 + positions[i2 * 3 + 2] * w2
       );
+
+      // The band is in sheet columns; on a bend the interpolated point can land
+      // nearer the road than its column says. Ask the field.
+      if (this.field.roadDistance(p.x + origin.x, p.z + origin.z) < inner - 0.2) continue;
 
       const size = lerp(cls.spec.size[0], cls.spec.size[1], rng() * rng());
       // Firmly bedded (38-58% buried) so nothing floats or perches on a corner.

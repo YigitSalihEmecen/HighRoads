@@ -156,8 +156,10 @@ export const CHUNK = {
   /** Offsets over which the sheet's lateral direction rotates toward the relaxed heading. */
   relaxBand: [78, 260],
 
-  /** Lateral extent of generated terrain — matched against ATMOSPHERE.fogDensity. */
+  /** Legacy: lateral extent of the old road-space sheet. Still the far-tree band's outer limit. */
   halfExtent: 700,
+  /** How far the (undrawn) scatter grid reaches either side of the road, metres. */
+  scatterExtent: 200,
   /**
    * How close to the centreline anything may be planted, metres. Read by
    * `foliage.js:vegetation`; wider than `chunks.js:EDGE`.
@@ -381,7 +383,7 @@ export const GRASS = {
     /** Density, as a fraction of what would preserve ground cover at that scale. */
     coverage: 0.05,
     /** Grows in over this camera-distance window, behind the near tier's fade. */
-    fadeIn: [190, 260],
+    fadeIn: [110, 200],
     /** And shrinks out again here — the grass's own far edge, up against the fog. */
     fadeOut: [420, 630],
     /** Steepest ground it will stand on, looser than the near tier. */
@@ -761,7 +763,7 @@ export const CAMERA = {
   fov: 62,
   near: 0.4,
   /** `far` pulled in to match the fog wall for depth precision; nothing exists past ~700 m. */
-  far: 1500,
+  far: 3200,
   /**
    * Chase rig: distance / height / look-ahead, metres. `zoom` scales how much
    * the rig opens out with speed; the close camera stays put.
@@ -901,6 +903,48 @@ export const TERRAIN_COLORS = {
   snow: 0xe8ebee,
 };
 
+/**
+ * World-space terrain tiles (`worldtiles.js`). A quadtree: each level doubles
+ * the tile and its cell size. 64 m / 2 m cells beside the car, 2 km / 64 m at
+ * the horizon.
+ */
+export const TILES = {
+  /** Side of a level-0 tile, metres (32 cells of 2 m). */
+  base: 64,
+  levels: 6,
+  /** A tile splits while the focus is within `split` × its own size. */
+  split: 1.6,
+  /** How far tiles are built from the focus, metres. */
+  radius: 2600,
+  /** Tiles nearer than this carry a trimesh collider. */
+  colliderRadius: 170,
+  /** Skirt depth in cells (plus 1.5 m). */
+  skirt: 2.0,
+  buildPerFrame: 2,
+  msPerFrame: 7,
+};
+
+/** Lakes (`terrainfield.js:Lakes`, `env/water.js`). */
+export const WATER = {
+  enabled: true,
+  /** One candidate lake per cell of this size, metres. */
+  cell: 900,
+  /** Fallback chance per cell when no biome is wired in. */
+  chance: 0.35,
+  /** Shoreline radius range, metres. */
+  radius: [55, 190],
+  /** Depth at the centre below the waterline, metres. */
+  depth: 7,
+  /** Width of the shelving beach, metres. */
+  beach: 26,
+  /** Closest any road may come to a shore, metres. */
+  roadClear: 60,
+  /** Colours: deep water, shallows, and the sky tint the Fresnel term mixes toward. */
+  deep: 0x1d4a5a,
+  shallow: 0x4f8c86,
+  foam: 0xe8f0ee,
+};
+
 /* =============================================================== graphics == */
 
 /**
@@ -942,6 +986,8 @@ function applyGraphics() {
     CHUNK.ahead = 4;
     ATMOSPHERE.fogDensity = 0.0034;
     CAMERA.far = 1000;
+    TILES.radius = 1500;
+    TILES.levels = 5;
 
     // A thinner wood: `farCap` falls further than `nearCap` (a far tree is
     // fifty triangles to a near one's five, over two more chunks).
@@ -965,6 +1011,9 @@ function applyGraphics() {
     CHUNK.ahead = 3;
     ATMOSPHERE.fogDensity = 0.0044;
     CAMERA.far = 700;
+    TILES.radius = 1000;
+    TILES.levels = 5;
+    TILES.split = 1.3;
 
     // No grass, no shrubs, no stone.
     GRASS.enabled = false;
