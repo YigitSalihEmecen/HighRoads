@@ -7,6 +7,7 @@
  */
 
 import { EngineSim } from '../engine_sim/src/engine-sim.js';
+import { WORLD } from './config.js';
 
 // Air density for converting the simulator's drag area.
 const RHO_AIR = 1.225;
@@ -30,15 +31,17 @@ const LAUNCH_TORQUE_FRAC = 0.72;
 const LAUNCH_RATE_FRAC = 0.9;
 
 // Builds a drivetrain profile from the car's own derived parameters, so the
-// simulator's inertias and ratios describe the vehicle actually on screen.
+// simulator's inertias and resistances describe the vehicle actually on screen.
+// The car's ratio table is only a starting point: engine_sim redesigns the
+// gearbox for whichever engine is fitted (engine_sim/src/gearbox.js) — gear
+// count from the engine, ratios from this car's mass, wheels and drag. A fixed
+// table per car stranded every swapped-in engine whose power band did not suit
+// it, short of its top gears.
 function vehicleProfile(V, spec) {
   // Our ratio table carries reverse at 0 and neutral at 1; the simulator wants
   // forward ratios only, indexed from first.
   const forward = V.gearRatios.slice(2);
-
-  // Deriving gear teeth from each ratio reproduces the whine ordering real
-  // gearsets have (fewer teeth as the ratio shortens).
-  const gearTeeth = forward.map((r) => Math.max(16, Math.min(46, Math.round(12 + r * 7.5))));
+  const g = Math.abs(WORLD.gravity);
 
   return {
     label: spec.name,
@@ -46,15 +49,17 @@ function vehicleProfile(V, spec) {
     wheelRadius: V.wheelRadius,
     finalDrive: V.finalDrive,
     gearRatios: forward,
-    gearTeeth,
     gearbox: spec.gearbox || 'auto',
     shiftTimeMs: spec.shiftTimeMs || 160,
 
-    // These feed the simulator's own vehicle integration, which we replace
-    // below. Kept physically sensible anyway so nothing reads a nonsense value:
-    // our drag coefficient is the lumped 0.5·ρ·Cd·A, the simulator wants Cd·A.
+    // The game's own resistances, so the gearbox is designed against the road
+    // the car actually drives on. Our drag coefficient is the lumped
+    // 0.5·ρ·Cd·A (force = k·v²), the simulator wants Cd·A; rolling resistance
+    // is a flat force in vehicle.js (a quarter of V.rollingResistance per
+    // wheel), here as a coefficient under the game's gravity.
+    gravity: g,
     dragArea: V.dragCoefficient / (0.5 * RHO_AIR),
-    rollingResistance: 0.014,
+    rollingResistance: V.rollingResistance / (V.mass * g),
     brakeForce: V.brakeForce.reduce((a, b) => a + b, 0),
   };
 }
@@ -172,7 +177,8 @@ export class Powertrain {
     return this.dynamics;
   }
 
-  // Any engine in any car. The drivetrain profile stays the car's own.
+  // Any engine in any car. The car keeps its mass, wheels and drag; the
+  // gearbox is redesigned for the engine (see vehicleProfile).
   setEngine(id) {
     this.engineChoice = id || 'stock';
     if (this._car) this.setCar(this._car);
@@ -224,14 +230,10 @@ export class Powertrain {
     this.maxRpm = car.V.maxRpm;
     if (!this.sim) return;
 
-    const profile = vehicleProfile(car.V, car.spec);
-    this.sim.vehicle = profile;
-    this.sim.vehicleId = car.spec.id;
-    this.sim.physics.setVehicle(profile);
-    if (this.sim.transmission && this.sim.transmission.setVehicle) {
-      this.sim.transmission.setVehicle(profile);
-    }
+    // Engine first, then the car: the gearbox is designed for the pair.
     this.sim.setEngineType(this.engineId());
+    this.sim.vehicleId = car.spec.id;
+    this.sim.setVehicleProfile(vehicleProfile(car.V, car.spec));
     // setVehicle resets the shift controller, so the driver's mode has to be
     // reapplied or a manual gearbox silently goes back to auto.
     this.sim.setAutoShift(this.autoShift);
