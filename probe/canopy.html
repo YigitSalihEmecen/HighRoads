@@ -89,20 +89,23 @@ const SPECIES_GAP = 12, VARIANT_GAP = 3.4, ROW = 15, TALL = 9;
 let i = 0;
 for (const [name, variants] of trees.library) {
   const far = trees.far.get(name);
-  const x0 = (i - 3.5) * SPECIES_GAP;
-  variants.forEach((p, v) => put(p, trees.material, x0 + (v - 1) * VARIANT_GAP, 0, TALL));
+  // Eight species to a bank; the second bank stands behind the first.
+  const x0 = ((i % 8) - 3.5) * SPECIES_GAP;
+  const zb = -Math.floor(i / 8) * (ROW * 2 + 8);
+  variants.forEach((p, v) => put(p, trees.material, x0 + (v - 1) * VARIANT_GAP, zb, TALL));
   // Offset by half a species gap so the far row shows THROUGH the near one
   // rather than standing behind it. Comparing them means seeing both.
   far.forEach((p, v) => put(p, trees.farMaterial,
-    x0 + SPECIES_GAP * 0.5 + (v - 1) * VARIANT_GAP, -ROW, TALL));
+    x0 + SPECIES_GAP * 0.5 + (v - 1) * VARIANT_GAP, zb - ROW, TALL));
   i++;
 }
 
 // Shrubs across the very front, at their own scale. Their hue is baked in, as
 // the trees' is, so no tint is needed here.
 let b = 0;
+const nb = [...bushes.library.values()].reduce((a, v) => a + v.length, 0);
 for (const [, variants] of bushes.library) {
-  for (const p of variants) put(p, bushes.material, 4 + (b++ - 5.5) * 4.0, 14, 2.6);
+  for (const p of variants) put(p, bushes.material, (b++ - (nb - 1) / 2) * 3.1, 14, 2.6);
 }
 
 /**
@@ -153,8 +156,8 @@ ground.receiveShadow = true;
 scene.add(ground);
 
 const camera = new THREE.PerspectiveCamera(30, W / H, 0.5, 800);
-camera.position.set(0, 13, 108);
-camera.lookAt(0, 6.5, -4);
+camera.position.set(0, 26, 122);
+camera.lookAt(0, 4, -22);
 
 grass.setTime(0);
 renderer.render(scene, camera);

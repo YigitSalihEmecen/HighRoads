@@ -1610,6 +1610,9 @@ export class ChunkManager {
     // thousand object allocations a chunk.
     const mats = new Float32Array(samples * 16);
     const colours = new Float32Array(samples * 3);
+    // Per-instance atlas kind and head colour (env/grass.js GRASS_KINDS).
+    const kinds = new Float32Array(samples);
+    const blooms = new Float32Array(samples * 3);
     const p = this._cA;
     let placed = 0;
 
@@ -1683,25 +1686,41 @@ export class ChunkManager {
       // Lift: meadow brighter than soil; the woodland floor darker (in shade).
       const lift = lerp(tier.lift[0], tier.lift[1], rng());
       const o = placed * 3;
+      colours[o] = (colors[i0 * 3] * w0 + colors[i1 * 3] * w1 + colors[i2 * 3] * w2) * lift;
+      colours[o + 1] = (colors[i0 * 3 + 1] * w0 + colors[i1 * 3 + 1] * w1 + colors[i2 * 3 + 1] * w2) * lift;
+      colours[o + 2] = (colors[i0 * 3 + 2] * w0 + colors[i1 * 3 + 2] * w1 + colors[i2 * 3 + 2] * w2) * lift;
+      // Which tuft. In bloom (the biome's flower share) it is a flower tuft
+      // with a head from the biome's palette; otherwise the biome's sward mix
+      // of meadow / seed / clover. The woodland floor is long sward and seed.
+      const bi = BIOMES[cellBiome[lo2]] || BIOMES.meadow;
       const fl = cellFlower[lo2];
+      let kind;
       if (fl > 0 && rng() < fl) {
-        // In bloom: the card is luminance-only, so a tuft takes its flower
-        // colour from the instance — the biome's palette (biomes.js `bloom`).
-        const pal = (BIOMES[cellBiome[lo2]] || BIOMES.meadow).bloom;
-        const bc = pal[Math.floor(rng() * pal.length)];
-        const k = 0.85 + rng() * 0.3;
-        colours[o] = bc[0] * k * 1.35; colours[o + 1] = bc[1] * k * 1.35; colours[o + 2] = bc[2] * k * 1.35;
+        kind = 2;
+        const bc = bi.bloom[Math.floor(rng() * bi.bloom.length)];
+        const k = 0.9 + rng() * 0.2;
+        blooms[o] = bc[0] * k; blooms[o + 1] = bc[1] * k; blooms[o + 2] = bc[2] * k;
       } else {
-        colours[o] = (colors[i0 * 3] * w0 + colors[i1 * 3] * w1 + colors[i2 * 3] * w2) * lift;
-        colours[o + 1] = (colors[i0 * 3 + 1] * w0 + colors[i1 * 3 + 1] * w1 + colors[i2 * 3 + 1] * w2) * lift;
-        colours[o + 2] = (colors[i0 * 3 + 2] * w0 + colors[i1 * 3 + 2] * w1 + colors[i2 * 3 + 2] * w2) * lift;
+        const mix = tier.cover === 'floor' ? [0.65, 0.35, 0] : (bi.sward || [0.65, 0.2, 0.15]);
+        const r = rng() * (mix[0] + mix[1] + mix[2]);
+        kind = r < mix[0] ? 0 : r < mix[0] + mix[1] ? 1 : 3;
+        // Seed heads: straw, from the ground colour toward a dry gold.
+        blooms[o] = 0.62 + colours[o] * 0.25; blooms[o + 1] = 0.52 + colours[o + 1] * 0.2;
+        blooms[o + 2] = 0.30 + colours[o + 2] * 0.15;
       }
+      kinds[placed] = kind;
       placed++;
     }
 
     if (!placed) return null;
 
-    const mesh = new THREE.InstancedMesh(this.grass.geometry, tier.material, placed);
+    // A per-chunk clone of the 8-vertex tuft: the per-instance kind and bloom
+    // attributes live on the geometry, so it cannot be shared.
+    const tuft = this.grass.geometry.clone();
+    tuft.setAttribute('aKind', new THREE.InstancedBufferAttribute(kinds.subarray(0, placed), 1));
+    tuft.setAttribute('aBloom', new THREE.InstancedBufferAttribute(blooms.subarray(0, placed * 3), 3));
+    const mesh = new THREE.InstancedMesh(tuft, tier.material, placed);
+    mesh.userData.ownsGeometry = true;
     // Swap buffers in; `subarray` is a view, so the trim costs nothing.
     mesh.instanceMatrix = new THREE.InstancedBufferAttribute(mats.subarray(0, placed * 16), 16);
     mesh.instanceColor = new THREE.InstancedBufferAttribute(colours.subarray(0, placed * 3), 3);
@@ -1938,6 +1957,7 @@ export class ChunkManager {
           const mesh = chunk[tier.key];
           this.scene.remove(mesh);
           mesh.dispose();
+          if (mesh.userData.ownsGeometry) mesh.geometry.dispose();
           const at = chunk.objects.indexOf(mesh);
           if (at >= 0) chunk.objects.splice(at, 1);
           chunk[tier.key] = null;
