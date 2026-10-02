@@ -7,76 +7,7 @@
 
 import * as THREE from 'three';
 import { ATMOSPHERE, CAMERA } from './config.js';
-
-const SKY_VERT = /* glsl */ `
-  varying vec3 vDir;
-  void main() {
-    vDir = position;
-    // Kill translation so the dome is always centred on the camera.
-    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-    gl_Position = projectionMatrix * mvPos;
-    gl_Position.z = gl_Position.w; // force to the far plane
-  }
-`;
-
-const SKY_FRAG = /* glsl */ `
-  uniform vec3 uTop;
-  uniform vec3 uHorizon;
-  uniform vec3 uZenith;
-  uniform vec3 uSun;
-  uniform vec3 uSunDir;
-  uniform float uTime;
-  varying vec3 vDir;
-
-  // Cheap value noise + fbm, enough for cloud shape at sky scale.
-  float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-  }
-  float vnoise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
-               mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
-  }
-  float fbm(vec2 p) {
-    float a = 0.0, w = 0.5;
-    for (int i = 0; i < 5; i++) { a += w * vnoise(p); p *= 2.03; w *= 0.5; }
-    return a;
-  }
-
-  void main() {
-    vec3 dir = normalize(vDir);
-    float h = clamp(dir.y, -1.0, 1.0);
-
-    // Three-stop gradient: real sky darkens and saturates toward the zenith.
-    float t = pow(clamp(h * 1.15, 0.0, 1.0), 0.55);
-    vec3 col = mix(uHorizon, uTop, t);
-    col = mix(col, uZenith, pow(clamp(h, 0.0, 1.0), 2.1) * 0.85);
-
-    // Below the eyeline, settle into haze so terrain gaps read as ground.
-    col = mix(col * 0.95, col, smoothstep(-0.25, 0.02, h));
-
-    // Clouds projected onto the dome; dividing by height stretches them toward
-    // the horizon the way perspective does.
-    float band = smoothstep(0.02, 0.36, h);
-    vec2 cuv = dir.xz / max(0.16, h + 0.08) * 0.9 + vec2(uTime * 0.004, uTime * 0.0016);
-    float n = fbm(cuv * 1.35);
-    float wisp = fbm(cuv * 3.7 + n);
-    float cloud = smoothstep(0.52, 0.86, n * 0.72 + wisp * 0.42) * band;
-
-    float sd = max(dot(dir, uSunDir), 0.0);
-    // Silver lining: clouds facing the sun are brighter at their edges.
-    vec3 cloudCol = mix(vec3(0.86, 0.88, 0.92), uSun * 1.08, pow(sd, 3.0) * 0.55);
-    col = mix(col, cloudCol, cloud * 0.72);
-
-    // A restrained sun: soft glow, tight halo, small disc.
-    col += uSun * pow(sd, 10.0) * 0.11 * (1.0 - cloud * 0.7);
-    col += uSun * pow(sd, 400.0) * 0.32 * (1.0 - cloud * 0.85);
-    col += uSun * smoothstep(0.9996, 0.9999, sd) * 1.1 * (1.0 - cloud);
-
-    gl_FragColor = vec4(col, 1.0);
-  }
-`;
+import { SKY_VERT, SKY_FRAG, skyUniforms, applySky, chosenSky } from './sky.js';
 
 /**
  * Radial blur, strength driven by road speed.
@@ -92,6 +23,7 @@ const SPEED_BLUR_SHADER = {
     tDiffuse: { value: null },
     uStrength: { value: 0 },
     uInner: { value: 0.16 },
+    uCA: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -104,6 +36,7 @@ const SPEED_BLUR_SHADER = {
     uniform sampler2D tDiffuse;
     uniform float uStrength;
     uniform float uInner;
+    uniform float uCA;
     varying vec2 vUv;
 
     void main() {
@@ -113,13 +46,18 @@ const SPEED_BLUR_SHADER = {
       float falloff = smoothstep(uInner, 0.72, r);
       float amount = uStrength * falloff * falloff;
 
-      vec4 sum = texture2D(tDiffuse, vUv);
-      float weight = 1.0;
-      for (int i = 1; i <= 8; i++) {
+      // Lateral chromatic aberration grows with the same falloff: red pushed
+      // out, blue pulled in, a lens straining at the edge of the frame.
+      vec2 ca = toCentre * uCA * falloff;
+      vec4 sum = vec4(0.0);
+      float weight = 0.0;
+      for (int i = 0; i <= 8; i++) {
         float t = float(i) / 8.0;
-        vec2 off = toCentre * amount * t;
+        vec2 uv = vUv - toCentre * amount * t;
         float w = 1.0 - t * 0.55;
-        sum += texture2D(tDiffuse, vUv - off) * w;
+        sum.r += texture2D(tDiffuse, uv + ca).r * w;
+        sum.ga += texture2D(tDiffuse, uv).ga * w;
+        sum.b += texture2D(tDiffuse, uv - ca).b * w;
         weight += w;
       }
       gl_FragColor = sum / weight;
@@ -156,7 +94,10 @@ const VIGNETTE_SHADER = {
       c.rgb = mix(c.rgb * uCool, c.rgb * uWarm, smoothstep(0.18, 0.85, l));
 
       // Gentle S-curve for midtone contrast, leaving the ends alone.
-      c.rgb = mix(c.rgb, c.rgb * c.rgb * (3.0 - 2.0 * c.rgb), 0.22);
+      // On the clamped value: the cubic goes NEGATIVE above 1, and a bright
+      // sun disc (HDR here, before tone mapping) came out green.
+      vec3 cc = clamp(c.rgb, 0.0, 1.0);
+      c.rgb = mix(c.rgb, cc * cc * (3.0 - 2.0 * cc) + max(c.rgb - 1.0, 0.0), 0.22);
 
       float d = distance(vUv, vec2(0.5));
       c.rgb *= mix(1.0 - uAmount, 1.0, smoothstep(0.80, 0.30, d));
@@ -232,14 +173,7 @@ export async function createScene(container) {
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(1, 32, 20),
     new THREE.ShaderMaterial({
-      uniforms: {
-        uTop: { value: new THREE.Color(ATMOSPHERE.skyTop) },
-        uHorizon: { value: new THREE.Color(ATMOSPHERE.skyHorizon) },
-        uZenith: { value: new THREE.Color(ATMOSPHERE.skyZenith) },
-        uSun: { value: new THREE.Color(ATMOSPHERE.sunColor) },
-        uSunDir: { value: sunDir.clone() },
-        uTime: { value: 0 },
-      },
+      uniforms: skyUniforms(),
       vertexShader: SKY_VERT,
       fragmentShader: SKY_FRAG,
       side: THREE.BackSide,
@@ -256,6 +190,7 @@ export async function createScene(container) {
   let composer = null;
   let renderPass = null;
   let speedBlur = null;
+  let vignette = null;
   try {
     const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { ShaderPass }, { OutputPass }] =
       await Promise.all([
@@ -277,7 +212,7 @@ export async function createScene(container) {
         ATMOSPHERE.bloomThreshold
       )
     );
-    const vignette = new ShaderPass(VIGNETTE_SHADER);
+    vignette = new ShaderPass(VIGNETTE_SHADER);
     // Drive the config value instead of the shader's hard-coded default.
     vignette.uniforms.uAmount.value = ATMOSPHERE.vignette;
     composer.addPass(vignette);
@@ -323,8 +258,16 @@ export async function createScene(container) {
   // How hard the periphery streaks. `t` is 0..1 across the speed range.
   function setSpeedBlur(t) {
     if (!speedBlur) return;
-    speedBlur.uniforms.uStrength.value = ATMOSPHERE.speedBlur * Math.max(0, Math.min(1, t));
+    const k = Math.max(0, Math.min(1, t));
+    speedBlur.uniforms.uStrength.value = ATMOSPHERE.speedBlur * k;
+    speedBlur.uniforms.uCA.value = (ATMOSPHERE.speedAberration ?? 0.012) * k * k;
   }
 
-  return { renderer, scene, camera, sun, hemi, sky, sunDir, composer, follow, render, resize, setSpeedBlur };
+  const gfx = {
+    renderer, scene, camera, sun, hemi, fill, sky, sunDir, composer, follow, render, resize,
+    setSpeedBlur, grade: vignette, baseFogDensity: ATMOSPHERE.fogDensity, speedBlur,
+  };
+  // The sky preset (sky.js): the URL's `?sky=`, else the saved choice, else day.
+  applySky(gfx, chosenSky());
+  return gfx;
 }

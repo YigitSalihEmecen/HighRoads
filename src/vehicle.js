@@ -505,7 +505,7 @@ export class RaycastVehicle {
       this._beams = [];
       const m = this.V;
       for (const side of [-1, 1]) {
-        const spot = new THREE.SpotLight(0xfff2d6, 0, 130, 0.42, 0.45, 1.1);
+        const spot = new THREE.SpotLight(0xfff2d6, 0, 160, 0.46, 0.5, 1.1);
         spot.position.set(side * m.trackHalf * 0.72, m.bodyHeight * 0.45, -m.wheelbaseHalf - 0.6);
         spot.target.position.set(side * m.trackHalf * 0.5, -0.6, -40);
         this.group.add(spot);
@@ -514,7 +514,9 @@ export class RaycastVehicle {
       }
     }
     if (this._beams) {
-      const power = flash ? 9 : on ? 5 : 0;
+      // `headlightBoost` comes from the sky preset: at night the same lamps
+      // have to light the road against an exposure set for moonlight.
+      const power = (flash ? 9 : on ? 5 : 0) * (this.headlightBoost || 1);
       for (const b of this._beams) b.intensity = power;
     }
   }
