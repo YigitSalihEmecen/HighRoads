@@ -852,6 +852,50 @@ ground rises ≥ 2–7 m on both sides of the road (a cutting), **strain** from
 uphill grade × load. Smoothed in `setSurroundings`; ignored by an older
 engine_sim.
 
+### 4.25 Performance — measured, and how to measure it
+
+Three tools, because the costs live in three places:
+
+- `probe/perf.mjs` boots the game with `?perf` (`src/perf.js`, a per-frame
+  lap profiler that is a single boolean test when off) and reports mean / p95 /
+  max per frame section, draw calls and triangles. With
+  `INSPECT='<js>'` it evaluates a script after the run; the GPU attribution
+  used below pins the camera, waits for streaming, then times
+  `render() + readPixels(1 px)` (a real GPU sync — `gl.finish()` is not one in
+  Chrome) with each category hidden in turn. Under SwiftShader that is the
+  GPU's work on the CPU: absolute numbers are meaningless, ratios are not,
+  and it OVER-weights vertex work (grass) relative to a real GPU.
+- `probe/stream.mjs` drives world streaming alone at 60 fps and a set speed
+  and prints the per-frame distribution — the hitch profile.
+- Engine audio: `Engine_Sim/test/render.mjs` logs offline render time; 11 s
+  of sound renders in 1.8-2.3 s, i.e. the audio thread costs ~16-21 % of a
+  core. Physics ~1 ms and the powertrain's JS ~0.4 ms per frame.
+
+What was found and done, heaviest first:
+
+| Cost | Cause | Fix |
+|---|---|---|
+| Grass, ~55 % of the GPU frame | `frustumCulled = false` on every grass chunk (the wind shader "might move it"), so all grass drew every frame, behind the camera included; and tufts already faded to zero were still drawn | tufts generated in ROAD ORDER (sorted sample targets), so the ones within a tier's fade reach are a prefix: `_cullGrass` sets `mesh.count` per frame; bounds tracked during placement; each chunk split into two 60 m halves (a child mesh viewing the same buffers) so the half behind the camera culls |
+| Main-thread hitches at speed: 198 frames > 16 ms in 40 s at 144 km/h, worst 97 ms | (a) tiles sampled the field with no region, re-collecting ~50 hash cells per sample — ¾ of a sample's cost; (b) the chunk build sampled a 6,300-point scatter sheet in one go (~45 ms); (c) props, grass and rocks could land in the same frame; (d) single prop / grass scatters of 25-45 ms | (a) `beginRegion` per tile (tile builds 9.2 → 6.1 ms) and per scatter; (b) the sheet is a generator, `_stepSheets` resumes it under budget, scatter waits on `chunk.sheet`; (c) one shared per-frame budget (`CHUNK.frameBudgetMs`, scaled to ~30 % of the smoothed frame time); (d) `_propsJob` / `_grassJob` generators driven by `_drive(job, deadline)`, which opens the field region around each slice. Result: **0 frames > 16 ms, worst 14.9 ms, p99 9.6 ms** |
+| Terrain fill | five texture samples per pixel everywhere, two of them triplanar | near tile + triplanar only inside the near-fade distance, triplanar only off the flat (−23 %) |
+| Terrain past the fog | tiles to 2600 m, far plane 3200 m, yet the thinnest preset fog is 99.6 % by ~1770 m (medium/low built past their own far plane) | radius 1850 / 1050 / 720, far 2300 / 1100 / 760 |
+| Post | speed blur and grade were two passes, the blur's nine taps running at a standstill; bloom at half resolution for a 0.10-strength glow | one FINISH pass with the blur behind a uniform branch; bloom at quarter resolution |
+| Terrain noise | all six landform fBms evaluated at every sample | skip weights < 1e-4 (≤ 5 cm change; `height()` −20 %) |
+| Fill on weak / high-DPI GPUs | fixed pixel ratio | `gfx.adapt`: dynamic resolution, down after ~1 s over budget, back after ~4 s of headroom, floor 75 % of the device ratio (≥ 1.0) |
+
+Measured, same harness before and after:
+
+| | before | after |
+|---|---|---|
+| GPU work, fixed view, SwiftShader 720p (two runs each) | 2326 / 2378 ms | 1862 / 1859 ms (−21 %) |
+| streaming at 144 km/h, 40 s: frames > 8 ms / > 16 ms / worst | 542 / 198 / 97 ms | 15 / 0 / 15 ms |
+| tile build | 9.2 ms | 6.1 ms, and sliced |
+| game under SwiftShader (HUD fps) | 0-1 | ~20 |
+
+Grass remains the largest GPU cost in this view (all of it is in front of
+the camera here, so the culling has nothing to remove); the next lever is
+density, which is a look decision, not a free one.
+
 ---
 
 ## 5. The config contract
@@ -1233,6 +1277,13 @@ moving — at one frame per second through SwiftShader it is a still image.
     800 m away fills the frame and is correctly ~75% fogged, while grass on a
     crest 150 m away is not. Ray-march the pixel against `field.height`
     before touching the fog.
+45. **Streaming is time-sliced; finish it before you measure.** Sheets, prop
+    and grass scatters are generators resumed under `CHUNK.frameBudgetMs`, so
+    a fixed number of `chunks.update()` calls no longer completes a chunk.
+    Probes loop until the queues (`pending`, `sheetQueue`, `propQueue`,
+    `propJob`, each grass tier's `queue`/`job`, `rockQueue`) are empty, and
+    call `chunks._ensureSheet(i)` before timing a scatter. A scatter on a
+    chunk whose `sheet` is still null returns nothing.
 44. **Scatter must take its height from the FIELD, not the sheet.** The
     chunk "sheet" is a coarse road-space grid that is no longer drawn; its
     chords sit metres off the world-space tiles. `chunks._groundY(x, z, G)`
@@ -1275,6 +1326,8 @@ npm run probe
 | `uishot.mjs` | **what the interface looks like**, 17 viewports + overflow report. Needs Chrome |
 | `render.mjs` | **what the GAME looks like**, through SwiftShader. Needs Chrome. `SKY=night`, `CAM=chase`, `TAG=prefix-`, `EVAL='js'` |
 | `vista.mjs` | aerial views of the world: `[seed] [s] [sky]`. Needs Chrome |
+| `perf.mjs` | **where a frame goes** (`?perf` profiler), draw calls, triangles; `INSPECT=` for GPU attribution (§4.25). Needs Chrome |
+| `stream.mjs` | the streaming hitch profile at a set speed, no renderer (§4.25) |
 
 The Chrome scripts are not in `npm run probe` (`CHROME=/path/to/chromium`; as root they pass `--no-sandbox`). `render.mjs` takes
 `[seed] [seconds] [teleport]`; `SKID=1` stops the car and floors it (see §8 for

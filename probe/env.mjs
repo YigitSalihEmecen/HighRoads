@@ -68,7 +68,13 @@ const chunks = new ChunkManager({
 });
 // The window the game would actually hold, built the way the game builds it.
 chunks.preload(CHUNK.length * 2);
-for (let i = 0; i < 40; i++) chunks.update(CHUNK.length * 2);
+// Until streaming is idle: it now runs under a per-frame time budget
+// (CHUNK.frameBudgetMs), so a fixed 40 frames no longer finishes it.
+for (let i = 0; i < 3000; i++) {
+  chunks.update(CHUNK.length * 2);
+  if (i > 40 && !chunks.pending.length && !chunks.sheetQueue.length && !chunks.propQueue.length
+      && !chunks.propJob && !chunks.rockQueue.length && chunks.grassTiers.every((t) => !t.queue.length && !t.job)) break;
+}
 
 const EDGE = ROAD.halfWidth + ROAD.shoulder;
 const tier = chunks.grassTiers.find((t) => t.key === 'grassFar');
@@ -80,14 +86,17 @@ if (!tier) {
   const chunkCount = 4;
   for (let i = 2; i < 2 + chunkCount; i++) {
     const s0 = i * CHUNK.length;
+    // The sheet is built over several frames in the game (chunks._stepSheets);
+    // finish it here so the timing is the scatter alone.
+    chunks._ensureSheet(i);
     const t0 = performance.now();
     const mesh = chunks._buildGrass(i, s0, s0 + CHUNK.length, chunks.chunks.get(i).origin, tier);
     cost += performance.now() - t0;
     if (!mesh) continue;
-    inst += mesh.count;
+    inst += (mesh.userData.total ?? mesh.count);
     const m = mesh.instanceMatrix.array;
     const origin = chunks.chunks.get(i).origin;
-    for (let k = 0; k < mesh.count; k++) {
+    for (let k = 0; k < (mesh.userData.total ?? mesh.count); k++) {
       const o = k * 16;
       tallest = Math.max(tallest, m[o + 5]);
       const x = m[o + 12] + origin.x;
@@ -129,16 +138,19 @@ const rChunks = 4;
 for (let i = 2; i < 2 + rChunks; i++) {
   const s0 = i * CHUNK.length;
   const origin = chunks.chunks.get(i).origin;
+  // The sheet is built over several frames in the game (chunks._stepSheets);
+  // finish it here so the timing is the scatter alone.
+  chunks._ensureSheet(i);
   const t0 = performance.now();
   const meshes = chunks._buildRocks(i, s0, s0 + CHUNK.length, origin);
   rCost += performance.now() - t0;
   if (!meshes) continue;
   rBatches += meshes.length;
   for (const mesh of meshes) {
-    rInst += mesh.count;
-    rTris += (mesh.geometry.attributes.position.array.length / 9) * mesh.count;
+    rInst += (mesh.userData.total ?? mesh.count);
+    rTris += (mesh.geometry.attributes.position.array.length / 9) * (mesh.userData.total ?? mesh.count);
     const m = mesh.instanceMatrix.array;
-    for (let k = 0; k < mesh.count; k++) {
+    for (let k = 0; k < (mesh.userData.total ?? mesh.count); k++) {
       const p = new THREE.Vector3(m[k * 16 + 12] + origin.x, 0, m[k * 16 + 14] + origin.z);
       const s = path.projectPoint(p, s0 + CHUNK.length * 0.5);
       const lat = Math.abs(path.lateralOffset(p, s));

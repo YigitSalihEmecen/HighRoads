@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, TERRAIN_COLORS } from './config.js';
+import { CHUNK, ROAD, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, TERRAIN_COLORS, TILES } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -21,6 +21,7 @@ import { createRockAssets } from './env/rocks.js';
 import { createTreeAssets } from './env/trees.js';
 import { createBushAssets } from './env/bushes.js';
 import { TerrainField, ROAD_SINK } from './terrainfield.js';
+import { PERF } from './perf.js';
 import { WorldTiles } from './worldtiles.js';
 import { WaterSystem } from './env/water.js';
 
@@ -266,6 +267,7 @@ export class ChunkManager {
     // `_buildGrass` is one function.
     this.rockQueue = [];
     this.canopyQueue = [];
+    this.sheetQueue = [];
     this.grassTiers = [];
     if (this.grass) {
       this.grassTiers.push({
@@ -287,6 +289,7 @@ export class ChunkManager {
         lift: [1.20, 1.55],
         // Offsets the per-chunk seed, so the two tiers do not land tuft-on-tuft.
         salt: 0x517cc1b7,
+        reach: GRASS.fadeEnd,
         queue: [],
       });
       if (GRASS.wood.enabled && this.grass.woodMaterial) {
@@ -310,6 +313,7 @@ export class ChunkManager {
           widthRatio: W.widthRatio,
           lift: W.lift,
           salt: 0x71ab39d5,
+          reach: W.fadeOut[1],
           queue: [],
         });
       }
@@ -337,6 +341,7 @@ export class ChunkManager {
           widthRatio: GRASS.widthRatio,
           lift: [1.20, 1.55],
           salt: 0x2f9e3c11,
+          reach: F.fadeOut[1],
           queue: [],
         });
       }
@@ -344,6 +349,8 @@ export class ChunkManager {
   }
 
   advanceTime(dt) {
+    // Smoothed frame time for the streaming budget (see update()).
+    this._frameMs = this._frameMs ? this._frameMs + (dt * 1000 - this._frameMs) * 0.1 : dt * 1000;
     this.time += dt;
     if (this.grass) this.grass.setTime(this.time);
     if (this.trees) this.trees.setTime(this.time);
@@ -499,9 +506,23 @@ export class ChunkManager {
 
   /** Streams chunks in and out around the vehicle's arc length. */
   update(carS, budget = CHUNK.buildPerFrame) {
+    // Every stage below shares ONE frame budget: once streaming has spent
+    // CHUNK.frameBudgetMs this frame, the remaining builds wait for the next.
+    // Without it a tile, a prop scatter, a grass chunk and a rock scatter could
+    // all land in the same frame (a 97 ms hitch, probe/stream.mjs).
+    const frameT0 = performance.now();
+    // Scaled by the smoothed frame time: ~30 % of a frame, never under the
+    // configured floor. At 60 fps that is the floor (5 ms); a device running
+    // at 20 fps gets 15 ms, so streaming keeps pace with the car instead of
+    // receiving a third of the throughput.
+    const B = Math.max(CHUNK.frameBudgetMs, Math.min(0.3 * (this._frameMs || 16.7), 40));
+    const spent = () => performance.now() - frameT0;
     {
       const fp = this.focus || this.path.frameAt(carS, this._frame).pos;
-      this.tiles.update(fp.x, fp.z);
+      const t0 = PERF.on ? performance.now() : 0;
+      this.tiles.update(fp.x, fp.z, TILES.buildPerFrame,
+        Math.max(TILES.msPerFrame, Math.min(0.25 * (this._frameMs || 16.7), 30)));
+      if (PERF.on) PERF.add('.tiles', performance.now() - t0);
       this.water.update(fp.x, fp.z, this.time);
     }
     const center = Math.floor(carS / CHUNK.length);
@@ -528,15 +549,20 @@ export class ChunkManager {
     });
 
     let built = 0;
+    let tp = PERF.on ? performance.now() : 0;
     while (this.pending.length && built < budget) {
       const i = this.pending.shift();
       this._build(i);
       built++;
     }
+    if (PERF.on) { const t = performance.now(); PERF.add('.chunkBuild', t - tp); tp = t; }
 
-    // Scenery on a frame where no ground was built: either half stays under a
-    // frame budget.
-    if (!built) for (let k = 0; k < budget; k++) if (!this._flushProps()) break;
+    // Sheets advance every frame (at least a sliver, so they always finish),
+    // then scenery if the frame still has budget.
+    this._stepSheets(center, Math.max(1.5, B - spent()));
+    if (PERF.on) { const t = performance.now(); PERF.add('.sheets', t - tp); tp = t; }
+    if (!built && spent() < B) this._flushProps(frameT0 + B);
+    if (PERF.on) { const t = performance.now(); PERF.add('.props', t - tp); tp = t; }
 
     for (const [i, chunk] of this.chunks) {
       if (i < lo || i > hi) {
@@ -559,10 +585,14 @@ export class ChunkManager {
     // scatters never land in the same frame as a terrain build.
     if (!built) {
       // Canopy first: its absence is a hole in the world, and it is the
-      // cheapest to build — the scatter already ran.
-      this._updateCanopy(carS, 1);
-      this._updateGrass(carS, GRASS.buildPerFrame);
-      this._updateRocks(carS, 1);
+      // cheapest to build — the scatter already ran. Each later stage builds
+      // only while the frame is under budget (eviction runs regardless).
+      this._updateCanopy(carS, spent() < B ? 1 : 0);
+      if (PERF.on) { const t = performance.now(); PERF.add('.canopy', t - tp); tp = t; }
+      this._updateGrass(carS, spent() < B ? frameT0 + B : 0);
+      if (PERF.on) { const t = performance.now(); PERF.add('.grass', t - tp); tp = t; }
+      this._updateRocks(carS, spent() < B ? 1 : 0);
+      if (PERF.on) { const t = performance.now(); PERF.add('.rocks', t - tp); tp = t; }
     } else {
       // Eviction still has to run every frame, or a departed chunk keeps its
       // cover.
@@ -570,6 +600,7 @@ export class ChunkManager {
       this._updateGrass(carS, 0);
       this._updateRocks(carS, 0);
     }
+    this._cullGrass(carS);
   }
 
   /** Builds `count` chunks immediately — used once, before the first frame. */
@@ -582,6 +613,7 @@ export class ChunkManager {
     for (let i = lo; i <= Math.min(hi, lo + count - 1); i++) {
       if (!this.chunks.has(i)) this._build(i);
     }
+    this._stepSheets(center, Infinity);
     const fp = this.path.frameAt(carS, this._frame).pos;
     this.tiles.preload(fp.x, fp.z);
     while (this._flushProps());
@@ -594,6 +626,8 @@ export class ChunkManager {
       // and materials are shared and must survive.
       if (obj.userData.ownsGeometry) obj.geometry.dispose();
       if (obj.isInstancedMesh) obj.dispose();
+      const half = obj.userData.half;
+      if (half) { half.geometry.dispose(); half.dispose(); }
     }
     if (chunk.collider && this.world) this.world.removeCollider(chunk.collider, false);
     if (chunk.extraColliders) {
@@ -626,7 +660,10 @@ export class ChunkManager {
 
     // Extend early so the foreign-road clamp's answer is a pure function of
     // position, not of how much route happened to be generated yet.
+    let tq = PERF.on ? performance.now() : 0;
+    const lapq = (name) => { if (PERF.on) { const t = performance.now(); PERF.add(name, t - tq); tq = t; } };
     this.path.ensureLength(s1 + ROUTE.selfFar);
+    lapq('..route');
 
     // Chunk-local origin preserves float precision far from the world origin.
     const origin = this.path.frameAt(s0, this._frame).pos.clone();
@@ -634,9 +671,11 @@ export class ChunkManager {
     const objects = [];
     // The scatter's sampling grid. Not drawn, not collided — the ground the
     // player sees and drives on is `this.tiles`.
-    const terrainData = this._buildSheet(s0, s1, origin);
+    // Built over the next frames by _stepSheets (preload finishes it at once).
+    this.sheetQueue.push({ index, gen: this._sheetJob(s0, s1, origin), box: this._sheetBox(s0, s1) });
 
     const roadGeo = this._buildRoad(s0, s1, origin);
+    lapq('..road');
     const roadMesh = new THREE.Mesh(roadGeo, this.matRoad);
     roadMesh.position.copy(origin);
     roadMesh.receiveShadow = true;
@@ -657,17 +696,15 @@ export class ChunkManager {
           .setFriction(1.0)
           .setRestitution(0.0));
     }
+    lapq('..roadCollider');
 
     const extraColliders = [];
 
     const chunk = {
       index, objects, collider, origin, props: false, extraColliders,
-      // The renderer's own buffers, so scattered cover sits on the visible
-      // surface (and colour) by construction, not by agreement.
-      sheet: {
-        positions: terrainData.positions,
-        colors: terrainData.colors,
-      },
+      // The scatter grid ({ positions, colors }); null until _stepSheets
+      // has finished it. Nothing scatters on a chunk before that.
+      sheet: null,
       /** The near canopy's recipe and its live meshes (short-lived; see `_updateCanopy`). */
       canopySpec: null,
       canopy: null,
@@ -686,24 +723,43 @@ export class ChunkManager {
     this.propQueue.push({ index, s0, s1, origin });
   }
 
-  _flushProps() {
-    while (this.propQueue.length) {
-      const job = this.propQueue.shift();
-      const chunk = this.chunks.get(job.index);
-      // The chunk may have streamed back out before this ran.
-      if (!chunk || chunk.props) continue;
-      for (const obj of this._buildProps(job.index, job.s0, job.s1, job.origin)) {
-        obj.position.copy(job.origin);
-        obj.matrixAutoUpdate = false;
-        obj.updateMatrix();
-        this.scene.add(obj);
-        chunk.objects.push(obj);
+  /**
+   * Advance the scatter of the nearest chunk whose sheet is ready, until
+   * `untilT`. Returns true if a job is running or finished this call.
+   */
+  _flushProps(untilT = Infinity) {
+    if (!this.propJob) {
+      for (let q = 0; q < this.propQueue.length; q++) {
+        const job = this.propQueue[q];
+        const chunk = this.chunks.get(job.index);
+        // The chunk may have streamed back out before this ran.
+        if (!chunk || chunk.props) { this.propQueue.splice(q--, 1); continue; }
+        if (!chunk.sheet) continue;             // its sheet is still being built
+        this.propQueue.splice(q, 1);
+        this.propJob = { ...job,
+          gen: this._propsJob(job.index, job.s0, job.s1, job.origin),
+          box: this._scatterBox(job.s0, job.s1, Math.max(CHUNK.scatterExtent, TREES.distantExtent || 0)) };
+        break;
       }
-      chunk.props = true;
-      return true;
+      if (!this.propJob) return false;
     }
-    return false;
+    const job = this.propJob;
+    const chunk = this.chunks.get(job.index);
+    if (!chunk || chunk.props) { this.propJob = null; return true; }
+    const r = this._drive(job, untilT);
+    if (!r.done) return true;
+    this.propJob = null;
+    for (const obj of r.value) {
+      obj.position.copy(job.origin);
+      obj.matrixAutoUpdate = false;
+      obj.updateMatrix();
+      this.scene.add(obj);
+      chunk.objects.push(obj);
+    }
+    chunk.props = true;
+    return true;
   }
+
 
   // -------------------------------------------------------------- terrain --
 
@@ -714,7 +770,14 @@ export class ChunkManager {
    * drawn tiles sample the same field, so the two agree to the interpolation
    * error of a 2-6 m cell.
    */
-  _buildSheet(s0, s1, origin) {
+  /**
+   * The sheet as a RESUMABLE job: yields after every row, so `_stepSheets`
+   * can spread one chunk's ~6,000 field samples over several frames under a
+   * time budget (it was a 40-55 ms hitch at every chunk boundary,
+   * probe/stream.mjs). The caller opens the field region around each slice;
+   * the generator's return value is `{ positions, colors }`.
+   */
+  *_sheetJob(s0, s1, origin) {
     const nu = CHUNK.segmentsU;
     const nv = this.lateral.length;
     const rows = nu + 1;
@@ -726,14 +789,8 @@ export class ChunkManager {
     const rightFlat = new THREE.Vector3();
     const dS = (s1 - s0) / nu;
 
-    // Candidate road segments once for the whole chunk.
-    {
-      const a = this.path.frameAt(s0, frame).pos, b = this.path.frameAt(s1, frame).pos;
-      const r = CHUNK.scatterExtent + 20;
-      this.field.beginRegion(Math.min(a.x, b.x) - r, Math.min(a.z, b.z) - r,
-        Math.max(a.x, b.x) + r, Math.max(a.z, b.z) + r);
-    }
     for (let j = 0; j <= nu; j++) {
+      yield;
       this.path.frameAt(s0 + j * dS, frame);
       rightFlat.crossVectors(frame.tan, WORLD_UP).normalize();
       for (let i = 0; i < nv; i++) {
@@ -744,11 +801,10 @@ export class ChunkManager {
         positions[k + 2] = p.z - origin.z;
       }
     }
-    this.field.endRegion();
-
     // Colour, with flatness from the grid's own differences.
     const c = this._color;
     for (let j = 0; j < rows; j++) {
+      yield;
       for (let i = 0; i < nv; i++) {
         const k = j * nv + i;
         const i1 = Math.min(nv - 1, i + 1), i0 = Math.max(0, i - 1);
@@ -768,6 +824,46 @@ export class ChunkManager {
       }
     }
     return { positions, colors };
+  }
+
+  /** The region a chunk's sheet samples in (its road ± the scatter extent). */
+  _sheetBox(s0, s1) {
+    const f = this._regionFrame || (this._regionFrame = makeFrame());
+    const a = this.path.frameAt(s0, f).pos.clone(), b = this.path.frameAt(s1, f).pos;
+    const r = CHUNK.scatterExtent + 20;
+    return [Math.min(a.x, b.x) - r, Math.min(a.z, b.z) - r, Math.max(a.x, b.x) + r, Math.max(a.z, b.z) + r];
+  }
+
+  /** The whole sheet at once (preload, probes). */
+  _buildSheet(s0, s1, origin) {
+    const box = this._sheetBox(s0, s1);
+    this.field.beginRegion(box[0], box[1], box[2], box[3]);
+    const gen = this._sheetJob(s0, s1, origin);
+    let r;
+    do { r = gen.next(); } while (!r.done);
+    this.field.endRegion();
+    return r.value;
+  }
+
+  /**
+   * Advance pending sheets, nearest chunk first, for at most `budgetMs`.
+   * A chunk's scatter (props, grass, rocks) waits for its sheet.
+   */
+  _stepSheets(center, budgetMs) {
+    const t0 = performance.now();
+    this.sheetQueue.sort((a, b) => Math.abs(a.index - center) - Math.abs(b.index - center));
+    while (this.sheetQueue.length) {
+      const job = this.sheetQueue[0];
+      const chunk = this.chunks.get(job.index);
+      if (!chunk) { this.sheetQueue.shift(); continue; }
+      const box = job.box;
+      this.field.beginRegion(box[0], box[1], box[2], box[3]);
+      let r;
+      do { r = job.gen.next(); } while (!r.done && performance.now() - t0 < budgetMs);
+      this.field.endRegion();
+      if (r.done) { chunk.sheet = r.value; this.sheetQueue.shift(); }
+      if (performance.now() - t0 >= budgetMs) return;
+    }
   }
 
   /**
@@ -993,7 +1089,30 @@ export class ChunkManager {
    * every instance, per camera position, which is the thing instancing exists
    * to avoid.
    */
+  /** Finish chunk `index`'s sheet now if it is still pending (sync callers). */
+  _ensureSheet(index) {
+    const chunk = this.chunks.get(index);
+    if (!chunk || chunk.sheet) return;
+    const q = this.sheetQueue.findIndex((j) => j.index === index);
+    if (q < 0) return;
+    const r = this._drive(this.sheetQueue[q], Infinity);
+    chunk.sheet = r.value;
+    this.sheetQueue.splice(q, 1);
+  }
+
+  /** The whole scatter at once (preload, probes). */
   _buildProps(index, s0, s1, origin) {
+    this._ensureSheet(index);
+    return this._drive({ gen: this._propsJob(index, s0, s1, origin),
+      box: this._scatterBox(s0, s1, Math.max(CHUNK.scatterExtent, TREES.distantExtent || 0)) }, Infinity).value;
+  }
+
+  /**
+   * One chunk's trees and shrubs as a RESUMABLE job (yields every few dozen
+   * samples), driven under the frame budget by `_drive` — a whole scatter in
+   * one frame was a 25-45 ms hitch. Returns the objects to add.
+   */
+  *_propsJob(index, s0, s1, origin) {
     if (!this.trees && !this.bushes) return [];
     const chunk = this.chunks.get(index);
     if (!chunk || !chunk.sheet) return [];
@@ -1225,6 +1344,7 @@ export class ChunkManager {
       };
 
       for (let n = 0; n < TREES.samples; n++) {
+        if ((n & 63) === 63) yield;
         if (placed >= nearCap && far >= TREES.farCap) break;
 
         let s, v, home = null, edgeness = 0;
@@ -1338,6 +1458,7 @@ export class ChunkManager {
         const f0 = this._propFrame, rf = this._propRight;
         let n = 0;
         for (let k = 0; k < TREES.distantSamples && n < TREES.distantCap; k++) {
+          if ((k & 31) === 31) yield;
           const s = lerp(s0, s1, drng());
           const side = drng() < 0.5 ? -1 : 1;
           const v = side * lerp(175, TREES.distantExtent, Math.sqrt(drng()));
@@ -1406,6 +1527,7 @@ export class ChunkManager {
       }
 
       for (let n = 0; n < BUSHES.samples && kinds.length; n++) {
+        if ((n & 63) === 63) yield;
         if (placed >= BUSHES.cap) break;
 
         let s, v;
@@ -1557,7 +1679,15 @@ export class ChunkManager {
    *
    * @returns {THREE.InstancedMesh|null}
    */
+  /** One chunk's grass at once (probes). */
   _buildGrass(index, s0, s1, origin, tier = this.grassTiers[0]) {
+    this._ensureSheet(index);
+    return this._drive({ gen: this._grassJob(index, s0, s1, origin, tier),
+      box: this._scatterBox(s0, s1, tier.halfExtent) }, Infinity).value;
+  }
+
+  /** One chunk's grass as a RESUMABLE job (yields every 1024 samples). */
+  *_grassJob(index, s0, s1, origin, tier = this.grassTiers[0]) {
     const chunk = this.chunks.get(index);
     if (!this.grass || !tier || !chunk || !chunk.sheet) return null;
 
@@ -1626,6 +1756,7 @@ export class ChunkManager {
     const cellBiome = [];
 
     for (let j = 0; j < nu; j++) {
+      if (j & 1) yield;   // the cell table is a vegetation() call per cell: slice it too
       for (let i = 0; i < nv - 1; i++) {
         const av0 = Math.abs(lat[i]);
         const av1 = Math.abs(lat[i + 1]);
@@ -1673,11 +1804,25 @@ export class ChunkManager {
     // Per-instance atlas kind and head colour (env/grass.js GRASS_KINDS).
     const kinds = new Float32Array(samples);
     const blooms = new Float32Array(samples * 3);
+    // Arc length of each tuft, for the per-frame distance cull (sorted below).
+    const sOf = new Float32Array(samples);
+    // Bounds per HALF of the chunk (rows before / after the middle): each half
+    // is drawn as its own mesh so the one behind the camera can be culled.
+    const bb = [[Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity],
+                [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]];
     const p = this._cA;
     let placed = 0;
 
+    // Draw every sample position first and sort them: the cell table is laid
+    // out row by row along the road, so sorted targets place the tufts in
+    // ROAD ORDER. That makes the tufts within the fade reach a prefix of the
+    // buffers (_cullGrass), with no reordering pass afterwards.
+    const targets = new Float64Array(samples);
+    for (let n = 0; n < samples; n++) targets[n] = rng() * total;
+    targets.sort();
     for (let n = 0; n < samples; n++) {
-      const target = rng() * total;
+      if ((n & 1023) === 1023) yield;
+      const target = targets[n];
       let lo2 = 0, hi2 = cum.length - 1;
       while (lo2 < hi2) {
         const mid = (lo2 + hi2) >> 1;
@@ -1716,7 +1861,9 @@ export class ChunkManager {
       // Height from the terrain field, not the sheet: the scatter sheet is a
       // coarse road-space grid that is no longer drawn, and its chords sat
       // metres off the world-space tiles — every prop floated (or sank).
-      p.y = this._groundY(p.x + origin.x, p.z + origin.z, 4) - origin.y;
+      // Lattice spacing to match the tiles that draw this ground: the far
+      // tier lives 110-630 m out, where tiles are 8-16 m cells.
+      p.y = this._groundY(p.x + origin.x, p.z + origin.z, tier.key === 'grassFar' ? 8 : 4) - origin.y;
 
       // Slope straight from the cell's own corners — the gradient of the very
       // triangle the tuft is standing on, for four subtractions.
@@ -1773,29 +1920,104 @@ export class ChunkManager {
         blooms[o + 2] = 0.30 + colours[o + 2] * 0.15;
       }
       kinds[placed] = kind;
+      sOf[placed] = s0 + (Math.floor(a / nv) + 1) * rowLen;   // the row's far edge: conservative
+      // Bounds as we go (the cull spheres), instead of a pass over every matrix.
+      const B = bb[Math.floor(a / nv) < (nu >> 1) ? 0 : 1];
+      if (p.x < B[0]) B[0] = p.x; if (p.x > B[3]) B[3] = p.x;
+      if (p.y < B[1]) B[1] = p.y; if (p.y + height > B[4]) B[4] = p.y + height;
+      if (p.z < B[2]) B[2] = p.z; if (p.z > B[5]) B[5] = p.z;
       placed++;
     }
 
     if (!placed) return null;
 
+
     // A per-chunk clone of the 8-vertex tuft: the per-instance kind and bloom
     // attributes live on the geometry, so it cannot be shared.
-    const tuft = this.grass.geometry.clone();
-    tuft.setAttribute('aKind', new THREE.InstancedBufferAttribute(kinds.subarray(0, placed), 1));
-    tuft.setAttribute('aBloom', new THREE.InstancedBufferAttribute(blooms.subarray(0, placed * 3), 3));
-    const mesh = new THREE.InstancedMesh(tuft, tier.material, placed);
-    mesh.userData.ownsGeometry = true;
-    // Swap buffers in; `subarray` is a view, so the trim costs nothing.
-    mesh.instanceMatrix = new THREE.InstancedBufferAttribute(mats.subarray(0, placed * 16), 16);
-    mesh.instanceColor = new THREE.InstancedBufferAttribute(colours.subarray(0, placed * 3), 3);
-    // A 78 m cascade cannot resolve a 60 cm blade, so no cast.
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
-    // The shader shrinks and leans tufts; three knows nothing about either, so
-    // skip the cull.
-    mesh.frustumCulled = false;
-    mesh.userData.grass = true;
+    // Split at the middle row: the first half is `mesh`, which holds ALL the
+    // chunk's instances in its buffers (probes and eviction see one object),
+    // and draws only its own range; the second half is a child drawing a view
+    // of the same arrays. Instances are in road order, so both are prefixes.
+    const sArr = sOf.subarray(0, placed);
+    const sMid = s0 + (nu >> 1) * rowLen;
+    let split = 0;
+    { let lo = 0, hi = placed; while (lo < hi) { const m = (lo + hi) >> 1; if (sArr[m] <= sMid + 1e-3) lo = m + 1; else hi = m; } split = lo; }
+    const sphere = (B) => new THREE.Sphere(
+      new THREE.Vector3((B[0] + B[3]) / 2, (B[1] + B[4]) / 2, (B[2] + B[5]) / 2),
+      0.5 * Math.hypot(B[3] - B[0], B[4] - B[1], B[5] - B[2]) + 2);
+    const make = (from, to) => {
+      // A per-mesh clone of the 8-vertex tuft: the per-instance kind and bloom
+      // attributes live on the geometry, so it cannot be shared.
+      const tuft = this.grass.geometry.clone();
+      tuft.setAttribute('aKind', new THREE.InstancedBufferAttribute(kinds.subarray(from, to), 1));
+      tuft.setAttribute('aBloom', new THREE.InstancedBufferAttribute(blooms.subarray(from * 3, to * 3), 3));
+      const m = new THREE.InstancedMesh(tuft, tier.material, to - from);
+      m.userData.ownsGeometry = true;
+      // Swap buffers in; `subarray` is a view, so the trim costs nothing.
+      m.instanceMatrix = new THREE.InstancedBufferAttribute(mats.subarray(from * 16, to * 16), 16);
+      m.instanceColor = new THREE.InstancedBufferAttribute(colours.subarray(from * 3, to * 3), 3);
+      // A 78 m cascade cannot resolve a 60 cm blade, so no cast.
+      m.castShadow = false;
+      m.receiveShadow = true;
+      // The shader only SHRINKS tufts (fade) and leans their tips by the wind
+      // (< 0.3 m), so the instances' own bounds plus a margin are
+      // conservative. Grass used to skip the cull entirely, and every grass
+      // chunk was drawn every frame — including the ones behind the camera.
+      m.frustumCulled = true;
+      m.userData.grass = true;
+      return m;
+    };
+    const mesh = make(0, placed);
+    mesh.boundingSphere = sphere(bb[0].every(Number.isFinite) ? bb[0] : bb[1]);
+    mesh.userData.sSorted = sArr;
+    mesh.userData.total = placed;
+    mesh.userData.split = split;
+    if (split < placed) {
+      const half = make(split, placed);
+      half.boundingSphere = sphere(bb[1]);
+      half.matrixAutoUpdate = false;
+      mesh.add(half);
+      mesh.userData.half = half;
+    }
+    mesh.count = split > 0 ? split : placed;
+    if (split === 0) { mesh.boundingSphere = sphere(bb[1]); mesh.userData.split = placed; mesh.userData.half = null; if (mesh.children.length) mesh.remove(mesh.children[0]); }
     return mesh;
+  }
+
+  /** The region box for a scatter `extent` metres either side of [s0, s1]. */
+  _scatterBox(s0, s1, extent) {
+    const f = this._regionFrame || (this._regionFrame = makeFrame());
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+    for (let k = 0; k <= 4; k++) {
+      const p = this.path.frameAt(s0 + (s1 - s0) * k / 4, f).pos;
+      if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+      if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
+    }
+    const r = extent + 30;
+    return [x0 - r, z0 - r, x1 + r, z1 + r];
+  }
+
+  /**
+   * Resume a resumable build (`{ gen, box }`) inside its field region until it
+   * finishes or `untilT` (a performance.now() deadline) passes. The region is
+   * opened and closed around every slice: other work samples the field in
+   * between. Returns `{ done, value }`.
+   */
+  _drive(job, untilT) {
+    const b = job.box;
+    this.field.beginRegion(b[0], b[1], b[2], b[3]);
+    let r;
+    do { r = job.gen.next(); } while (!r.done && performance.now() < untilT);
+    this.field.endRegion();
+    return r;
+  }
+
+  /** Releases a grass mesh and the half it carries. */
+  _disposeGrass(mesh) {
+    const half = mesh.userData.half;
+    if (half) { half.geometry.dispose(); half.dispose(); }
+    mesh.geometry.dispose();
+    mesh.dispose();
   }
 
   /**
@@ -1807,6 +2029,7 @@ export class ChunkManager {
    * stone is mineral, and the verge's green on a chip reads as algae.
    */
   _buildRocks(index, s0, s1, origin) {
+    this._ensureSheet(index);
     const chunk = this.chunks.get(index);
     if (!this.rocks || !chunk || !chunk.sheet) return null;
 
@@ -1890,7 +2113,7 @@ export class ChunkManager {
       // Height from the terrain field, not the sheet: the scatter sheet is a
       // coarse road-space grid that is no longer drawn, and its chords sat
       // metres off the world-space tiles — every prop floated (or sank).
-      p.y = this._groundY(p.x + origin.x, p.z + origin.z) - origin.y;
+      p.y = this._groundY(p.x + origin.x, p.z + origin.z, 4) - origin.y;
 
       // The band is in sheet columns; on a bend the interpolated point can land
       // nearer the road than its column says. Ask the field.
@@ -1967,7 +2190,7 @@ export class ChunkManager {
 
     for (const [i, chunk] of this.chunks) {
       const wanted = i >= lo && i <= hi;
-      if (wanted && !chunk.rocks && !chunk.rocksEmpty && !this.rockQueue.includes(i)) {
+      if (wanted && chunk.sheet && !chunk.rocks && !chunk.rocksEmpty && !this.rockQueue.includes(i)) {
         this.rockQueue.push(i);
       } else if (!wanted && chunk.rocks) {
         for (const mesh of chunk.rocks) {
@@ -2008,7 +2231,32 @@ export class ChunkManager {
    * its chunk, so it tracks the car; the near tier is served first because its
    * absence is the visible one, and the far tier fills in behind the fog.
    */
-  _updateGrass(carS, budget) {
+  /**
+   * Draw only the tufts that can be seen: the sorted prefix within the tier's
+   * fade reach of the car (+ a margin for the camera standing off the car).
+   * Camera distance is at least the along-road distance, so this never drops a
+   * visible tuft.
+   */
+  _cullGrass(carS) {
+    for (const tier of this.grassTiers) {
+      const reach = carS + tier.reach + 20;
+      for (const chunk of this.chunks.values()) {
+        const mesh = chunk[tier.key];
+        if (!mesh || !mesh.userData.sSorted) continue;
+        const sArr = mesh.userData.sSorted;
+        let lo = 0, hi = sArr.length;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (sArr[m] <= reach) lo = m + 1; else hi = m; }
+        // Two halves, each its own prefix of the drawable range.
+        const split = mesh.userData.split, half = mesh.userData.half;
+        mesh.count = Math.min(lo, split);
+        if (half) { half.count = Math.max(0, lo - split); half.visible = half.count > 0; }
+        // `visible` would hide the child too; an empty first half draws nothing.
+        mesh.visible = lo > 0;
+      }
+    }
+  }
+
+  _updateGrass(carS, untilT) {
     if (!this.grass) return;
     const center = Math.floor(carS / CHUNK.length);
 
@@ -2019,27 +2267,42 @@ export class ChunkManager {
 
       for (const [i, chunk] of this.chunks) {
         const wanted = i >= lo && i <= hi;
-        if (wanted && !chunk[tier.key] && !chunk[emptyKey] && !tier.queue.includes(i)) {
+        if (wanted && chunk.sheet && !chunk[tier.key] && !chunk[emptyKey] && !tier.queue.includes(i)) {
           tier.queue.push(i);
         } else if (!wanted && chunk[tier.key]) {
           const mesh = chunk[tier.key];
           this.scene.remove(mesh);
-          mesh.dispose();
-          if (mesh.userData.ownsGeometry) mesh.geometry.dispose();
+          this._disposeGrass(mesh);
           const at = chunk.objects.indexOf(mesh);
           if (at >= 0) chunk.objects.splice(at, 1);
           chunk[tier.key] = null;
         }
       }
 
-      // Nearest first, at most `budget` a frame.
+      // Nearest first; one chunk's grass at a time, resumed until `untilT`
+      // (a performance.now() deadline; 0 = eviction only this frame).
       tier.queue.sort((a, b) => Math.abs(a - center) - Math.abs(b - center));
-      while (tier.queue.length && budget > 0) {
-        const i = tier.queue.shift();
-        const chunk = this.chunks.get(i);
-        if (!chunk || chunk[tier.key] || i < lo || i > hi) continue;
-        const s0 = i * CHUNK.length;
-        const mesh = this._buildGrass(i, s0, s0 + CHUNK.length, chunk.origin, tier);
+      while (performance.now() < untilT) {
+        if (!tier.job) {
+          let i = -1, chunk = null;
+          while (tier.queue.length) {
+            i = tier.queue.shift();
+            chunk = this.chunks.get(i);
+            if (chunk && chunk.sheet && !chunk[tier.key] && i >= lo && i <= hi) break;
+            chunk = null;
+          }
+          if (!chunk) break;
+          const s0 = i * CHUNK.length;
+          tier.job = { i, gen: this._grassJob(i, s0, s0 + CHUNK.length, chunk.origin, tier),
+                       box: this._scatterBox(s0, s0 + CHUNK.length, tier.halfExtent) };
+        }
+        const job = tier.job;
+        const chunk = this.chunks.get(job.i);
+        if (!chunk || chunk[tier.key] || job.i < lo || job.i > hi) { tier.job = null; continue; }
+        const r = this._drive(job, untilT);
+        if (!r.done) break;
+        tier.job = null;
+        const mesh = r.value;
         if (mesh) {
           mesh.position.copy(chunk.origin);
           mesh.matrixAutoUpdate = false;
@@ -2052,7 +2315,6 @@ export class ChunkManager {
           chunk[tier.key] = null;
           chunk[emptyKey] = true;
         }
-        budget--;
       }
     }
   }

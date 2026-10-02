@@ -105,11 +105,22 @@ export class WorldTiles {
     }
     missing.sort((a, b) => a.d - b.d || a.l - b.l);
 
-    const t0 = performance.now();
+    // Build nearest-first, resuming the tile in progress (if it is still
+    // wanted) and stopping at the time budget — mid-tile if need be.
+    const deadline = performance.now() + budgetMs;
     let n = 0;
-    for (const t of missing) {
-      if (n >= budget || (n > 0 && performance.now() - t0 > budgetMs)) break;
-      this._build(t.l, t.i, t.j);
+    // Drop the job if it is no longer wanted, or a preload built that tile.
+    if (this._job && (!wantKeys.has(this._job.key) || this.tiles.has(this._job.key))) this._job = null;
+    while (n < budget && performance.now() < deadline) {
+      if (!this._job) {
+        const t = missing.find((m) => !this.tiles.has(m.key));
+        if (!t) break;
+        this._job = { key: t.key, gen: this._buildJob(t.l, t.i, t.j) };
+      }
+      let r;
+      do { r = this._job.gen.next(); } while (!r.done && performance.now() < deadline);
+      if (!r.done) break;
+      this._job = null;
       n++;
     }
 
@@ -135,6 +146,9 @@ export class WorldTiles {
     }
     return missing.length - n;
   }
+
+  /** True while a tile is half built or any wanted tile is missing. */
+  get busy() { return !!this._job; }
 
   /** True when every wanted tile overlapping `tile` exists. */
   _covered(tile, want) {
@@ -171,7 +185,22 @@ export class WorldTiles {
     }
   }
 
+  /** One tile at once (preload, probes). */
   _build(l, i, j) {
+    const gen = this._buildJob(l, i, j);
+    let r;
+    do { r = gen.next(); } while (!r.done);
+    return r.value;
+  }
+
+  /**
+   * One tile as a RESUMABLE job: yields after every apron row, so a tile —
+   * up to ~30 ms for a 2 km one — spreads over frames under `update`'s budget.
+   * Each row samples inside its OWN thin field region: one region for a 2 km
+   * tile drags in every road segment within 650 m of it, and every sample
+   * then walks that whole list.
+   */
+  *_buildJob(l, i, j) {
     const s = WorldTiles.size(l);
     const step = s / N;
     const x0 = i * s, z0 = j * s;
@@ -181,14 +210,20 @@ export class WorldTiles {
     // Heights on the apron grid (G × G), road distance on the tile grid.
     const H = new Float32Array(G * G);
     const D = new Float32Array(V * V);
+    // One spatial lookup per row, not one per sample: without a region every
+    // sample re-collected ~50 hash cells of road segments, and that was three
+    // quarters of a sample's cost (probe/stream.mjs).
     for (let gj = 0; gj < G; gj++) {
       const z = z0 + (gj - 1) * step;
+      f.beginRegion(x0 - step, z, x0 + s + step, z);
       for (let gi = 0; gi < G; gi++) {
         const x = x0 + (gi - 1) * step;
         f.sample(x, z, smp);
         H[gj * G + gi] = smp.y;
         if (gi >= 1 && gi <= V && gj >= 1 && gj <= V) D[(gj - 1) * V + (gi - 1)] = smp.d;
       }
+      f.endRegion();
+      yield;
     }
 
     // Main grid + skirt ring (4 × V verts).

@@ -263,6 +263,9 @@ for (let i = 2; i < 20; i++) {
   const origin = chunk.origin;
   // Chunk-lifetime tier (far trees and shrubs). Timed on its own — the
   // verification below rays every instance and costs far more than the scatter.
+  // The sheet is built over several frames in the game (chunks._stepSheets);
+  // finish it here so the timing is the scatter alone.
+  chunks._ensureSheet(i);
   const t0 = performance.now();
   const objs = chunks._buildProps(i, s0, s1, origin);
   scatterMs += performance.now() - t0;

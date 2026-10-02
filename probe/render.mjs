@@ -185,7 +185,7 @@ for (let i = 0; i < 3; i++) {
   console.log('  ' + await js(`(()=>{const g=window.__highroads;
     return \`\${Math.round(Math.abs(g.vehicle.forwardSpeed)*3.6)} km/h, s=\${Math.round(g.carS)}, \` +
       \`\${g.chunks.chunks.size} chunks, grass \${[...g.chunks.chunks.values()]
-        .filter(c=>c.grass).reduce((a,c)=>a+c.grass.count,0).toLocaleString()} tufts\`;})()`));
+        .filter(c=>c.grass).reduce((a,c)=>a+(c.grass.userData.total??c.grass.count),0).toLocaleString()} tufts\`;})()`));
 }
 /**
  * Optional burnout, for looking at the tyre effects. `SKID=1` stops the car
