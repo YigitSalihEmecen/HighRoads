@@ -1046,6 +1046,8 @@ class Game {
     // Camera first: follow() re-centres the sky dome on this frame's position.
     if (this.active) this._feedSurroundings(dt);
     this.cam.update(dt, this.vehicle);
+    // Trees, shrubs and rocks: draw only the instances in (or near) the view.
+    this.chunks.culler.update(this.gfx.camera);
     // Use the interpolated pose: the shadow frustum is centred here, and
     // 8.3 ms steps would crawl the shadows across everything.
     this.gfx.follow(this.vehicle.renderPos, dt);

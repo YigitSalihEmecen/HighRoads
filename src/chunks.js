@@ -22,6 +22,7 @@ import { createTreeAssets } from './env/trees.js';
 import { createBushAssets } from './env/bushes.js';
 import { TerrainField, ROAD_SINK } from './terrainfield.js';
 import { PERF } from './perf.js';
+import { InstanceCuller } from './instcull.js';
 import { WorldTiles } from './worldtiles.js';
 import { WaterSystem } from './env/water.js';
 
@@ -268,6 +269,8 @@ export class ChunkManager {
     this.rockQueue = [];
     this.canopyQueue = [];
     this.sheetQueue = [];
+    /** Per-instance view culling for trees, shrubs and rocks (instcull.js). */
+    this.culler = new InstanceCuller();
     this.grassTiers = [];
     if (this.grass) {
       this.grassTiers.push({
@@ -626,8 +629,9 @@ export class ChunkManager {
       // and materials are shared and must survive.
       if (obj.userData.ownsGeometry) obj.geometry.dispose();
       if (obj.isInstancedMesh) obj.dispose();
-      const half = obj.userData.half;
-      if (half) { half.geometry.dispose(); half.dispose(); }
+      for (const part of obj.userData.parts || []) {
+        if (part.mesh !== obj) { part.mesh.geometry.dispose(); part.mesh.dispose(); }
+      }
     }
     if (chunk.collider && this.world) this.world.removeCollider(chunk.collider, false);
     if (chunk.extraColliders) {
@@ -755,6 +759,7 @@ export class ChunkManager {
       obj.updateMatrix();
       this.scene.add(obj);
       chunk.objects.push(obj);
+      if (obj.isInstancedMesh) this.culler.add(obj);
     }
     chunk.props = true;
     return true;
@@ -1663,6 +1668,7 @@ export class ChunkManager {
         this.scene.add(mesh);
         chunk.objects.push(mesh);
         meshes.push(mesh);
+        this.culler.add(mesh);
       }
       chunk.canopy = meshes;
       budget--;
@@ -1806,10 +1812,14 @@ export class ChunkManager {
     const blooms = new Float32Array(samples * 3);
     // Arc length of each tuft, for the per-frame distance cull (sorted below).
     const sOf = new Float32Array(samples);
-    // Bounds per HALF of the chunk (rows before / after the middle): each half
-    // is drawn as its own mesh so the one behind the camera can be culled.
-    const bb = [[Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity],
-                [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]];
+    // The chunk is drawn as PARTS: four 30 m segments along the road × the
+    // two sides of it, each its own mesh with its own bounds, so the parts
+    // behind or beside the camera cull. (Whole-chunk and half-chunk meshes
+    // were measured drawing ~80 % of their tufts out of view.)
+    const SEGS = 4, PARTS = SEGS * 2;
+    const keyOf = new Uint8Array(samples);
+    const bb = [];
+    for (let q = 0; q < PARTS; q++) bb.push([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
     const p = this._cA;
     let placed = 0;
 
@@ -1922,7 +1932,9 @@ export class ChunkManager {
       kinds[placed] = kind;
       sOf[placed] = s0 + (Math.floor(a / nv) + 1) * rowLen;   // the row's far edge: conservative
       // Bounds as we go (the cull spheres), instead of a pass over every matrix.
-      const B = bb[Math.floor(a / nv) < (nu >> 1) ? 0 : 1];
+      const key = Math.min(SEGS - 1, Math.floor(Math.floor(a / nv) * SEGS / nu)) * 2 + (lat[col] < 0 ? 0 : 1);
+      keyOf[placed] = key;
+      const B = bb[key];
       if (p.x < B[0]) B[0] = p.x; if (p.x > B[3]) B[3] = p.x;
       if (p.y < B[1]) B[1] = p.y; if (p.y + height > B[4]) B[4] = p.y + height;
       if (p.z < B[2]) B[2] = p.z; if (p.z > B[5]) B[5] = p.z;
@@ -1934,14 +1946,29 @@ export class ChunkManager {
 
     // A per-chunk clone of the 8-vertex tuft: the per-instance kind and bloom
     // attributes live on the geometry, so it cannot be shared.
-    // Split at the middle row: the first half is `mesh`, which holds ALL the
-    // chunk's instances in its buffers (probes and eviction see one object),
-    // and draws only its own range; the second half is a child drawing a view
-    // of the same arrays. Instances are in road order, so both are prefixes.
+    // Group the instances by part (a stable counting sort keeps road order
+    // inside each part, so the fade-reach cull is still a prefix per part).
+    const start = new Uint32Array(PARTS + 1);
+    for (let k = 0; k < placed; k++) start[keyOf[k] + 1]++;
+    for (let q = 0; q < PARTS; q++) start[q + 1] += start[q];
+    const ranges = [];
+    for (let q = 0; q < PARTS; q++) ranges.push([start[q], start[q + 1]]);
+    {
+      const m2 = new Float32Array(placed * 16), c2 = new Float32Array(placed * 3);
+      const k2 = new Float32Array(placed), b2 = new Float32Array(placed * 3), s2 = new Float32Array(placed);
+      const at = start.slice(0, PARTS);
+      for (let k = 0; k < placed; k++) {
+        if ((k & 4095) === 4095) yield;
+        const d = at[keyOf[k]]++;
+        const ks = k * 16, ds = d * 16;
+        for (let e = 0; e < 16; e++) m2[ds + e] = mats[ks + e];
+        c2[d * 3] = colours[k * 3]; c2[d * 3 + 1] = colours[k * 3 + 1]; c2[d * 3 + 2] = colours[k * 3 + 2];
+        b2[d * 3] = blooms[k * 3]; b2[d * 3 + 1] = blooms[k * 3 + 1]; b2[d * 3 + 2] = blooms[k * 3 + 2];
+        k2[d] = kinds[k]; s2[d] = sOf[k];
+      }
+      mats.set(m2); colours.set(c2); kinds.set(k2); blooms.set(b2); sOf.set(s2);
+    }
     const sArr = sOf.subarray(0, placed);
-    const sMid = s0 + (nu >> 1) * rowLen;
-    let split = 0;
-    { let lo = 0, hi = placed; while (lo < hi) { const m = (lo + hi) >> 1; if (sArr[m] <= sMid + 1e-3) lo = m + 1; else hi = m; } split = lo; }
     const sphere = (B) => new THREE.Sphere(
       new THREE.Vector3((B[0] + B[3]) / 2, (B[1] + B[4]) / 2, (B[2] + B[5]) / 2),
       0.5 * Math.hypot(B[3] - B[0], B[4] - B[1], B[5] - B[2]) + 2);
@@ -1967,20 +1994,33 @@ export class ChunkManager {
       m.userData.grass = true;
       return m;
     };
-    const mesh = make(0, placed);
-    mesh.boundingSphere = sphere(bb[0].every(Number.isFinite) ? bb[0] : bb[1]);
+    // The first non-empty part is `mesh` — it holds ALL the chunk's instances
+    // in its buffers (probes and eviction see one object) and draws its own
+    // range; the other parts are children drawing views of the same arrays.
+    const parts = [];
+    let mesh = null;
+    for (let q = 0; q < PARTS; q++) {
+      const [from, to] = ranges[q];
+      if (to <= from) continue;
+      if (!mesh) {
+        mesh = make(0, placed);
+        mesh.boundingSphere = sphere(bb[q]);
+        parts.push({ mesh, from, to, off: 0 });
+        continue;
+      }
+      const part = make(from, to);
+      part.boundingSphere = sphere(bb[q]);
+      part.matrixAutoUpdate = false;
+      mesh.add(part);
+      parts.push({ mesh: part, from, to, off: from });
+    }
+    // The parent's range starts at 0, so its buffers must hold its own part
+    // first: they do (parts are in order and the first non-empty one starts
+    // at 0).
     mesh.userData.sSorted = sArr;
     mesh.userData.total = placed;
-    mesh.userData.split = split;
-    if (split < placed) {
-      const half = make(split, placed);
-      half.boundingSphere = sphere(bb[1]);
-      half.matrixAutoUpdate = false;
-      mesh.add(half);
-      mesh.userData.half = half;
-    }
-    mesh.count = split > 0 ? split : placed;
-    if (split === 0) { mesh.boundingSphere = sphere(bb[1]); mesh.userData.split = placed; mesh.userData.half = null; if (mesh.children.length) mesh.remove(mesh.children[0]); }
+    mesh.userData.parts = parts;
+    mesh.count = parts[0].to - parts[0].from;
     return mesh;
   }
 
@@ -2014,8 +2054,9 @@ export class ChunkManager {
 
   /** Releases a grass mesh and the half it carries. */
   _disposeGrass(mesh) {
-    const half = mesh.userData.half;
-    if (half) { half.geometry.dispose(); half.dispose(); }
+    for (const part of mesh.userData.parts || []) {
+      if (part.mesh !== mesh) { part.mesh.geometry.dispose(); part.mesh.dispose(); }
+    }
     mesh.geometry.dispose();
     mesh.dispose();
   }
@@ -2217,6 +2258,7 @@ export class ChunkManager {
           mesh.updateMatrix();
           this.scene.add(mesh);
           chunk.objects.push(mesh);
+          this.culler.add(mesh);
         }
         chunk.rocks = meshes;
       } else {
@@ -2244,14 +2286,18 @@ export class ChunkManager {
         const mesh = chunk[tier.key];
         if (!mesh || !mesh.userData.sSorted) continue;
         const sArr = mesh.userData.sSorted;
-        let lo = 0, hi = sArr.length;
-        while (lo < hi) { const m = (lo + hi) >> 1; if (sArr[m] <= reach) lo = m + 1; else hi = m; }
-        // Two halves, each its own prefix of the drawable range.
-        const split = mesh.userData.split, half = mesh.userData.half;
-        mesh.count = Math.min(lo, split);
-        if (half) { half.count = Math.max(0, lo - split); half.visible = half.count > 0; }
-        // `visible` would hide the child too; an empty first half draws nothing.
-        mesh.visible = lo > 0;
+        // Each part draws the prefix of its own range within the fade reach.
+        let any = false;
+        for (const part of mesh.userData.parts) {
+          let lo = part.from, hi = part.to;
+          while (lo < hi) { const m = (lo + hi) >> 1; if (sArr[m] <= reach) lo = m + 1; else hi = m; }
+          part.mesh.count = lo - part.from;
+          if (part.mesh !== mesh) part.mesh.visible = part.mesh.count > 0;
+          if (lo > part.from) any = true;
+        }
+        // `visible` on the parent would hide its children too: only when
+        // nothing in any part is in reach.
+        mesh.visible = any;
       }
     }
   }
