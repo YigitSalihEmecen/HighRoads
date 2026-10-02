@@ -19,6 +19,10 @@ function asphaltTexture(size) {
   if (!target) return null;
 
   const rnd = rng(0x5eed4a5f);
+  const repairs = [];
+  for (let i = 0; i < 5; i++) {
+    repairs.push({ u: rnd(), v: rnd(), w: 0.04 + rnd() * 0.10, h: 0.03 + rnd() * 0.08, tone: 0.78 + rnd() * 0.1 });
+  }
   // Speckle pre-baked into a lattice, so it is a function of position not frame.
   const CHIPS = 512;
   const chip = new Float32Array(CHIPS * CHIPS);
@@ -37,12 +41,25 @@ function asphaltTexture(size) {
     const patch = tileFbm(u, v, 5, 3, 0.5, 71.9);
     const mottle = tileFbm(u, v, 17, 2, 0.5, 22.1);
     out[1] = 1 + (patch - 0.5) * 0.30 + (mottle - 0.5) * 0.14;
+    // Patch repairs: rectangles of newer, darker asphalt with a crisp edge —
+    // the single most "used road" detail there is.
+    for (const r of repairs) {
+      const du = Math.abs(((u - r.u + 1.5) % 1) - 0.5), dv = Math.abs(((v - r.v + 1.5) % 1) - 0.5);
+      if (du < r.w && dv < r.h) {
+        const edge = Math.min(r.w - du, r.h - dv) * size;
+        out[1] *= edge < 1.5 ? 0.86 : r.tone;
+      }
+    }
 
     // Ridged noise is ~1 along its ridges; threshold to a thin network, not a wash.
     const r = tileRidged(u, v, 9, 4, 0.6, 44.7);
     const crack = Math.max(0, r - ROAD_SURFACE.crackThreshold) /
       Math.max(0.01, 1 - ROAD_SURFACE.crackThreshold);
-    out[2] = 1 - crack * ROAD_SURFACE.crackDepth;
+    // Tar snakes: sealed cracks on a coarser network — wider, darker bands of
+    // crack sealant that wander across the lane.
+    const sr = tileRidged(u, v, 3, 3, 0.6, 9.3);
+    const snake = Math.max(0, sr - 0.86) / 0.14;
+    out[2] = 1 - crack * ROAD_SURFACE.crackDepth - Math.min(1, snake * 1.6) * 0.38;
   });
 
   const tex = new THREE.CanvasTexture(target.canvas);

@@ -136,7 +136,7 @@ export const CHUNK = {
 
   /** Chunks kept behind / ahead — keyed to the far grass tier's fade-out. */
   behind: 2,
-  ahead: 6,
+  ahead: 7,
 
   /** Chunks built per frame once running — keeps frame spikes bounded. */
   buildPerFrame: 1,
@@ -156,8 +156,10 @@ export const CHUNK = {
   /** Offsets over which the sheet's lateral direction rotates toward the relaxed heading. */
   relaxBand: [78, 260],
 
-  /** Lateral extent of generated terrain — matched against ATMOSPHERE.fogDensity. */
+  /** Legacy: lateral extent of the old road-space sheet. Still the far-tree band's outer limit. */
   halfExtent: 700,
+  /** How far the (undrawn) scatter grid reaches either side of the road, metres. */
+  scatterExtent: 200,
   /**
    * How close to the centreline anything may be planted, metres. Read by
    * `foliage.js:vegetation`; wider than `chunks.js:EDGE`.
@@ -210,14 +212,20 @@ export const TREES = {
   lodFade: [260, 420],
   farFadeIn: [260, 420],
   /** Where the far tier stops. */
-  farFade: [620, 720],
+  farFade: [700, 880],
 
   /** Fade-in for a far tree with NO near mesh behind it, metres. */
   loneFadeIn: [480, 660],
 
   /** Scatter attempts per chunk, and the caps on what survives. */
   samples: 2000,
-  nearCap: 120,
+  nearCap: 110,
+  /** The distant woodland (far tier only) beyond the near band — see chunks.js. */
+  distantExtent: 650,
+  distantSamples: 500,
+  distantCap: 160,
+  /** Acceptance against the canopy field; lower than the near band's 1. */
+  distantDensity: 0.55,
   farCap: 760,
 
   /** Chunks either side of the car that carry the NEAR canopy. */
@@ -225,8 +233,8 @@ export const TREES = {
   ahead: 4,
 
   /** Vegetation is placed around cluster seeds rather than independently. */
-  clusterCount: 9,
-  clusterShare: 0.72,
+  clusterCount: 6,
+  clusterShare: 0.78,
   clusterSpecies: 0.8,
 
   /** What weight a guild-mate keeps inside another species' stand. */
@@ -256,7 +264,7 @@ export const TREES = {
   groundTint: 0.16,
   instanceVary: 0.14,
   /** Sharpens stand edges — density squared, then scaled by this. */
-  standBias: 2.7,
+  standBias: 2.3,
 
   /** The tree line, as relief above the local continental surface, metres. */
   treeLine: [190, 430],
@@ -381,7 +389,7 @@ export const GRASS = {
     /** Density, as a fraction of what would preserve ground cover at that scale. */
     coverage: 0.05,
     /** Grows in over this camera-distance window, behind the near tier's fade. */
-    fadeIn: [190, 260],
+    fadeIn: [110, 200],
     /** And shrinks out again here — the grass's own far edge, up against the fog. */
     fadeOut: [420, 630],
     /** Steepest ground it will stand on, looser than the near tier. */
@@ -435,6 +443,11 @@ export const GROUND = {
 
   /** Distance over which the near tile fades out, metres. */
   nearFade: [45, 130],
+
+  /** Metres per tile of the macro (lush/parched) variation. */
+  macroTile: 371,
+  /** Strength of the screen-space detail bump. */
+  bump: 0.045,
 };
 
 /**
@@ -761,7 +774,7 @@ export const CAMERA = {
   fov: 62,
   near: 0.4,
   /** `far` pulled in to match the fog wall for depth precision; nothing exists past ~700 m. */
-  far: 1500,
+  far: 3200,
   /**
    * Chase rig: distance / height / look-ahead, metres. `zoom` scales how much
    * the rig opens out with speed; the close camera stays put.
@@ -787,6 +800,23 @@ export const CAMERA = {
   heightGain: 0.08,
   /** Degrees of extra field of view at full speed — most of the speed cue. */
   fovSpeedGain: 12,
+
+  // ---- cinematic terms (camera.js) ---------------------------------------
+  /** Metres the camera falls back per m/s² of acceleration, and the cap. */
+  accelLag: 0.075,
+  accelLagMax: 1.5,
+  /** Lateral aim lead per (rad/s × m/s) of turn. */
+  cornerLead: 0.055,
+  /** Roll into the turn per rad/s of yaw rate at full speed. */
+  lean: 0.09,
+  /** How far the camera drops at full speed, metres. */
+  speedDrop: 0.35,
+  /** Trauma shake: amplitude at trauma 1, decay per second, noise rate. */
+  shakeTrauma: 0.55,
+  traumaDecay: 1.6,
+  shakeFreq: 21,
+  /** Speed rumble amplitude at full speed. */
+  shakeSpeed: 0.05,
 };
 
 /**
@@ -822,7 +852,7 @@ export const ATMOSPHERE = {
   /** Overcast-bright: sun well up, close to white, strong hemisphere fill. */
   fogColor: 0xd6dbdb,
   /** Haze, not a fog wall: world readable to ~150 m, half-lost by ~380 m. */
-  fogDensity: 0.0022,
+  fogDensity: 0.0015,
 
   skyTop: 0x7ba4ce,
   skyZenith: 0x3f6ea8,
@@ -852,6 +882,8 @@ export const ATMOSPHERE = {
    */
   speedBlur: 0.055,
   speedBlurInner: 0.17,
+  /** Lateral chromatic aberration at full speed (UV fraction at the corners). */
+  speedAberration: 0.012,
   /** Speed, m/s, at which the blur reaches full strength. */
   speedBlurRef: 68,
 
@@ -899,6 +931,65 @@ export const TERRAIN_COLORS = {
   dirt: 0x9d8e75,
   peak: 0xa9a29a,
   snow: 0xe8ebee,
+  /** Lake beach and lake bed. */
+  sand: 0xcdbb8f,
+  mud: 0x5d5446,
+};
+
+/**
+ * World-space terrain tiles (`worldtiles.js`). A quadtree: each level doubles
+ * the tile and its cell size. 64 m / 2 m cells beside the car, 2 km / 64 m at
+ * the horizon.
+ */
+export const TILES = {
+  /** Side of a level-0 tile, metres (32 cells of 2 m). */
+  base: 64,
+  levels: 6,
+  /** A tile splits while the focus is within `split` × its own size. */
+  split: 1.6,
+  /** How far tiles are built from the focus, metres. */
+  radius: 2600,
+  /** Tiles nearer than this carry a trimesh collider. */
+  colliderRadius: 170,
+  /** Skirt depth in cells (plus 1.5 m). */
+  skirt: 2.0,
+  buildPerFrame: 2,
+  msPerFrame: 7,
+};
+
+/** Biome regions (`biomes.js`). */
+export const BIOME = {
+  /** Worley cell size, metres — the typical span of one biome patch. */
+  cell: 1300,
+  /** Cross-fade band at a border, metres of F2 − F1. */
+  border: 260,
+  /** Domain-warp amplitude on the cell lattice, metres. */
+  warp: 700,
+  /** Random score added per cell, so similar climates still vary. */
+  variety: 0.9,
+};
+
+/** Lakes (`terrainfield.js:Lakes`, `env/water.js`). */
+export const WATER = {
+  enabled: true,
+  /** One candidate lake per cell of this size, metres. */
+  cell: 900,
+  /** Fallback chance per cell when no biome is wired in. */
+  chance: 0.35,
+  /** Shoreline radius range, metres. */
+  radius: [55, 190],
+  /** Depth at the centre below the waterline, metres. */
+  depth: 7,
+  /** Width of the shelving beach, metres. */
+  beach: 26,
+  /** Closest any road may come to a shore, metres. */
+  roadClear: 60,
+  /** Highest the ground just outside the shore may stand over the water, metres. */
+  maxRim: 16,
+  /** Colours: deep water, shallows, and the sky tint the Fresnel term mixes toward. */
+  deep: 0x1d4a5a,
+  shallow: 0x4f8c86,
+  foam: 0xe8f0ee,
 };
 
 /* =============================================================== graphics == */
@@ -940,13 +1031,17 @@ function applyGraphics() {
   if (level === 'medium') {
     // Half the draw distance, thickened fog to hide the closer seam.
     CHUNK.ahead = 4;
-    ATMOSPHERE.fogDensity = 0.0034;
+    ATMOSPHERE.fogDensity = 0.0024;
     CAMERA.far = 1000;
+    TILES.radius = 1500;
+    TILES.levels = 5;
 
     // A thinner wood: `farCap` falls further than `nearCap` (a far tree is
     // fifty triangles to a near one's five, over two more chunks).
     TREES.samples = 1200;
-    TREES.nearCap = 76;
+    TREES.nearCap = 70;   // two thirds of high (trap 39a)
+    TREES.distantCap = 80;
+    TREES.distantExtent = 480;
     TREES.farCap = 380;
     TREES.picks = 4;
     TREES.ahead = 3;
@@ -963,8 +1058,11 @@ function applyGraphics() {
   } else if (level === 'low') {
     // The shortest draw distance, and a fog that ends it invisibly.
     CHUNK.ahead = 3;
-    ATMOSPHERE.fogDensity = 0.0044;
+    ATMOSPHERE.fogDensity = 0.0034;
     CAMERA.far = 700;
+    TILES.radius = 1000;
+    TILES.levels = 5;
+    TILES.split = 1.3;
 
     // No grass, no shrubs, no stone.
     GRASS.enabled = false;
@@ -975,6 +1073,8 @@ function applyGraphics() {
     TREES.samples = 900;
     TREES.nearCap = 0;
     TREES.farCap = 300;
+    TREES.distantCap = 40;
+    TREES.distantExtent = 400;
     TREES.picks = 4;
     TREES.behind = 1;
     TREES.ahead = 0;

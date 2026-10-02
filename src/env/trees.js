@@ -112,7 +112,10 @@ function branch(F, from, dir, len, radius, level, L, bark, sway, rnd, tips) {
     ], L.sides, bark, sway,
     // Capped at the far end: terminal tips are buried in their lump, but a fork
     // is an open ring unless closed — `capTips` closes the no-lump species.
-    !last || L.capTips ? { end: true } : null);
+    // `capRoots`: on a wide-flung limb the root ring, though centred inside
+    // the parent, tilts far enough to show a sliver of open rim.
+    (!last || L.capTips || L.capRoots)
+      ? { start: !!L.capRoots, end: !last || !!L.capTips } : null);
   }
 
   // Children leave along the bowed tip direction, not the launch one, or they fan out of plane.
@@ -268,7 +271,10 @@ export function growTree(form, seed, variant = 0, far = false) {
       blob(F, {
         c: p.c, r: p.r, detail: p.detail, warpFn: p.warp, rnd,
         sway: (x, y) => sway(y),
-        hide: plans.slice(0, i),
+        // Interior culling assumes the occluder's measured sag (FACET[detail])
+        // for a round lump; a lump squashed to a plate sags differently and
+        // the cull opens holes. Species with flat crowns opt out.
+        hide: cfg.noCull ? [] : plans.slice(0, i),
         colour: (nx, ny, nz, j) => crown(ny, clamp01(p.c[1] / Math.max(0.2, stemTop + 0.6)), j),
       });
     }

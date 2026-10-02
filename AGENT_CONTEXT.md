@@ -50,7 +50,12 @@ engine_sim/     vendored sibling — DO NOT EDIT
 | `noise.js` | gradient noise, fBm, erosion, warping, landforms, continent |
 | `fx.js` | tyre smoke (GPU pool) and rubber (quad ring) |
 | `cars.js` | 9-car roster, colours, engines, physics synthesis |
-| `scene.js` | renderer, lights, sky, fog, post chain |
+| `scene.js` | renderer, lights, fog, post chain (speed blur + aberration, grade) |
+| `terrainfield.js` | **the ground as a pure function** `height(x, z)`: natural terrain carved by the road's distance field; also `Lakes` (§3b) |
+| `worldtiles.js` | world-space chunked-LOD quadtree tiles drawing that function, plus near colliders (§3b) |
+| `biomes.js` | climate + Worley-cell biome map, ten biomes (§4.20) |
+| `sky.js` | the sky shader (stars, moon, clouds) and the five sky presets (§4.22) |
+| `speedlines.js` | air streaks past the camera at speed (§4.23) |
 | `camera.js` `input.js` `hud.js` `settings.js` `score.js` `wind.js` `util.js` | as named |
 
 `src/env/` — one factory per module returning shared geometry + one shared
@@ -67,17 +72,16 @@ road, the sheet and the streaming window.
 | `rocks.js` | fractured convex boulders, slabs, scree | 20–80 |
 | `ground.js` | terrain detail texture + material patch | — |
 | `road.js` | asphalt mask + material patch | — |
+| `water.js` | lake surfaces: polar mesh + water shader (§4.21) | — |
 
-### ⚠ `engine_sim/` is a broken submodule
+### `engine_sim/` is a submodule — bump the pointer, never edit inside it
 
-Parent tracks a **gitlink** (`461ad03`) with **no `.gitmodules`**. A fresh clone
-gets an empty directory and `powertrain.js`'s import 404s — the game does not
-boot from a clean checkout. Three-way drift: parent pins `461ad03`, upstream
-`main` is `188c19a` (2 ahead), local tree is `461ad03` + uncommitted edits.
-Upstream is API-compatible **except**: `sim.comp` became `sim.dynamics` (guarded,
-so the high-rpm taming silently stops applying), and `cars.js:ENGINE_OPTIONS`
-lacks five new engines. Left alone deliberately — fixing it needs a decision
-about the local edits.
+`.gitmodules` points at `YigitSalihEmecen/Engine_Sim`. Clone with
+`--recurse-submodules`. To take a new engine build: check the wanted commit
+out inside `engine_sim/`, run `node probe/engine.mjs` (the bridge contract),
+and commit the new gitlink. `powertrain.js` uses the newer API where present:
+`sim.setInputs` (live inputs — `setSurroundings`, §4.24) and `sim.getEvents`
+(camera trauma, §4.23), both guarded so an older build still boots.
 
 ---
 
@@ -102,6 +106,14 @@ differently at 60 and 144 Hz.
 ---
 
 ## 3. Road space — the central idea
+
+> **Superseded for the GROUND (see §3b).** The road ribbon, the scatter and
+> everything placed relative to the road still use road space `(s, v)`, so
+> this section still explains `path.js`, `lateralAt` and the guards. But the
+> drawn terrain, its colliders and the apron are gone: the ground is now a
+> pure function of world `(x, z)` drawn by world-space LOD tiles, which is
+> what made it one cohesive surface — no sheets, no seams between chunk
+> sheets and an apron, no wrong planes where two sheets overlapped.
 
 Terrain is generated in **road space** and mapped out, not draped over world
 space. Every sample is `(u, v)` = arc length along the centreline, signed
@@ -152,6 +164,61 @@ first: **segments not control points** (46 m apart → 23 m error → 2.7 m stan
 columns draw the CHORD across the V — 17 m of error); **one smooth minimum with
 `k` tied to the gap** (smoothing in the loop compounds; a fixed width concedes
 k/4 on the carriageway = a 0.875 m trench, bug #57).
+
+---
+
+## 3b. The ground is a function of (x, z) — `terrainfield.js` + `worldtiles.js`
+
+**Why.** Every terrain defect of the road-space design (holes at folds, the
+apron disagreeing with the sheets, a doubled-back road's sheet covering another
+road as uncarved hillside, seams every 120 m) came from the same place: the
+same ground point was owned by more than one parameterisation. A height field
+`y = f(x, z)` has exactly one answer per point, so it cannot fold, overlap or
+leave a hole. That is the whole idea.
+
+**`TerrainField.sample(x, z)`** → `{ y, natural, d, s, v }`:
+1. `natural` = `terrain.height(x, z)` (noise.js, unchanged).
+2. The road distance field: a spatial hash of dense spline samples (32 m
+   cells) and of the control polyline (200 m cells) gives the nearest road
+   passes. Each pass contributes its own cut/fill target; passes are blended by
+   `exp(−Δd/12)` on their distance, so where the road doubles back the ground
+   is the smooth compromise of both, never a step.
+3. Under the lanes the ground sits `ROAD_SINK` (0.16 m) under the ribbon, so
+   the ribbon (still road-space, with its own collider) is always on top.
+4. `Lakes.carve` (below) last.
+
+The hash grows with the road (`sync()` → `onGrow` listeners). Results are
+cached per region (`beginRegion`/`endRegion`) while a tile builds. The right
+vector everywhere is `(−tan.z, tan.x)`.
+
+**`WorldTiles`**: a quadtree of square tiles, base 64 m, `TILES.levels` 6,
+32×32 cells each, split while distance < `split`·size, out to `TILES.radius`
+2600 m. Each tile: heights on an apron grid one cell wider (so normals at the
+edge match the neighbour exactly), a vertical **skirt** of `skirt` cells under
+every edge (double-sided — which side is "out" depends on the edge) to hide
+the T-junction gap where levels meet, vertex colours from `chunks._groundColor`.
+A tile is retired only once everything replacing it is built — **never a hole
+during a split or merge**. Trimesh colliders exist only within
+`colliderRadius` (170 m) of the focus, which is the CAR, not the road, so
+off-road driving is covered. When the road grows through a built tile it is
+invalidated and rebuilt in place, the old mesh kept until the new one exists.
+
+`chunks.js` still streams per-120 m chunks, but a chunk now holds only the
+road ribbon (with skirt columns and wear tone), its collider and the scatter.
+`sampleGround` is `field.height`; `groundAt` returns the ribbon on the
+carriageway.
+
+**`Lakes`** — one candidate per `WATER.cell` (900 m) hashed cell, radius
+55–190 m, wobbly outline from a few harmonics. A candidate is **kept** only if
+it is a basin (`maxRim`: the rim may not rise more than 16 m above the level,
+or a hillside gets a crater), clears the road by `roadClear` + radius, and its
+biome allows water (`biomeChance`). Kept lakes carve a bed (`depth`) with a
+beach band, and the scatter checks `lake` to keep trees out of the water.
+About 25–30% of candidates survive.
+
+Verified by `probe/ground.mjs` (§10): 0 holes over the tile radius, 0
+poke-through under the ribbon, 0 collider misses within 150 m of the focus,
+seam gaps inside their skirts, faceting p99 at 420–700 m 9.3° (was 26.9°).
 
 ---
 
@@ -581,6 +648,15 @@ space where columns run 2.4 m to 34 m, so a UV map would stretch thirty-fold
 across one hillside. Planar lines up across seams by construction. Both are
 `NoColorSpace`: they are modulation masks, not colours.
 
+**Since the ground rewrite** `ground.js` adds three things: **triplanar rock**
+on steep faces (projected on the dominant axis, so cliffs no longer smear the
+planar map), a separate 128 px **macro texture** sampled at `GROUND.macroTile`
+(371 m) that tints dry/lush patches (a separate texture because packing it in
+the detail map's alpha degraded the RGB through premultiplied mips), and a
+**derivative bump** (`dFdx/dFdy` of the detail luminance, Mikkelsen's surface
+gradient, `GROUND.bump`) — relief without tangents. `road.js` adds patch
+repairs in G and tar snakes (sealed cracks, darker and glossy) in B.
+
 ### 4.14 Stone (`env/rocks.js` + `chunks.js`)
 
 Not scenery — **texture**. Chips along the shoulder, scree out of a cutting, the
@@ -702,13 +778,108 @@ desktop 400 px of empty floor); and the landscape override must come **after**
 without either layout knowing the other exists. `--edge-*` folds the safe-area
 insets into the ordinary gutters.
 
+### 4.20 Biomes (`biomes.js`)
+
+Two layers, because either alone is wrong. **Climate** decides what is
+*possible*: temperature falls with altitude (a lapse rate on
+`terrain.continent`-relative height) and with a slow noise; moisture is a
+second slow noise, wetter in low ground. A Whittaker-style table maps
+(T, M, relief) to a weight per biome. **Worley cells** (`BIOME.cell` 1300 m,
+domain-warped by `warp` 700 m) decide what is *there*: each cell picks one
+biome from the climate weights at its seed point, so a region is a coherent
+wood or a coherent meadow instead of a per-metre average of everything. Cell
+borders blend over `BIOME.border` (260 m) on F2 − F1, so the change is a
+transition, not a line.
+
+Ten biomes: meadow, broadleaf, autumn, boreal, birchwood, savanna,
+mediterranean, alpine (needs relief ≥ 110 m), wetland (moisture ≥ 0.82),
+blossom (rare, 0.10). Each sets species weights (`trees`, `shrubs`,
+normalised), canopy multiplier, lone-tree share, understorey, grass density
+and kinds, flowers and bloom colour, a ground tint, lake chance and rock
+share. `biomeAt(x, z)` returns the two strongest and their blend; `foliage.js
+vegetation()` consumes it (`canMul`, `lone`, `underMul`, `grassMul`,
+`flowers`, `shore`), and `suitability` keeps a 0.02 floor so a biome edge
+never empties to bare ground.
+
+Species added: beech, fir, larch, cypress, acacia (flat crown — `noCull`,
+`capTips`, `capRoots`), willow, cherry, olive; shrubs fern, juniper, rosebush,
+lavender (third palette entry is the bloom), boxwood, reeds (lake shores
+only). Grass is a 2×2 atlas — meadow, seed-head, flower, clover — chosen per
+instance (`aKind`, `aBloom`).
+
+### 4.21 Water (`env/water.js`)
+
+One mesh per kept lake within the tile radius (≤ 1 built per frame), a polar
+grid reaching 14% past the shoreline. Every vertex carries **depth** (level −
+ground, from the same field the tiles draw), and the shader does everything
+from it: shallow→deep tint, a soft alpha edge (so the waterline is a blend into
+the beach, not a polygon), calmer waves near shore, and a broken foam band.
+Normals are four analytic travelling waves plus a value-noise ripple — no
+normal map. Schlick Fresnel mixes toward the current sky's horizon/zenith, a
+tight specular lobe follows the sun or moon. Sky presets call `setSky`.
+
+### 4.22 Sky presets (`sky.js`)
+
+`SKY_PRESETS`: **day, golden, dawn, overcast, night** (full moon). A preset is
+the whole look: sky gradient, sun/moon direction and colour, hemisphere and
+fill, fog colour and density, grade (warm/cool vignette tint), cloud cover,
+star field, water reflection and whether headlights start on. `applySky(gfx,
+name, {water})` applies it — including `ATMOSPHERE.sunDir`, which the shadow
+camera reads. Chosen by `?sky=`, the Settings "Sky" button, or **K**; the choice
+is saved in `localStorage` (`highroads.sky`). At night the headlights are
+boosted ×24 (`vehicle.headlightBoost`) — real lamps against moonlight.
+
+The sky shader: stars on a cube-mapped hash lattice (no swimming at the cube
+seams, twinkle by a per-star phase), a moon disc with procedural maria and a
+soft halo, and cloud cover from fBm. **Trap**: the grade's S-curve must be
+computed on the clamped value plus the overflow — on the raw HDR value it went
+negative and the golden-hour sun disc rendered green.
+
+### 4.23 Camera feel and speed (`camera.js`, `speedlines.js`, `scene.js`)
+
+Chase and close gain the terms a broadcast or a game camera uses to sell pace:
+- **acceleration lag** (`accelLag`): under throttle the camera falls back from
+  the car, under braking it closes; smoothed acceleration, capped.
+- **corner look-ahead** (`cornerLead`): the aim leads into the turn by yaw rate
+  × speed.
+- **lean** into the turn, **lower at speed** (`speedDrop`).
+- **trauma shake** (Eiserloh: amplitude ∝ trauma², trauma decays linearly)
+  plus a cubic speed rumble, applied after aiming so it never feeds the damped
+  rig. `main.js:_feedTrauma` adds trauma on engine_sim's `cut`/`lash`/`pop`
+  events (edges, not levels), hard landings (a vertical-velocity snap) and
+  traffic impacts.
+
+`cinematic` (the 4th mode on **C**) cuts between shots: **trackside**
+(telephoto on the verge ahead, FOV solved to hold the car's size, so the
+background compresses), **tracking** (low, alongside) and **heli** (high,
+behind). Trackside stands on the shoulder and checks line of sight to the road
+behind it against `field.height`, trying the other verge and then raising the
+camera. A telephoto at 800 m sees heavy fog — that is aerial perspective, not
+a fog bug (it was diagnosed as one; see §9).
+
+Post: the radial speed blur also does lateral **chromatic aberration**
+(`ATMOSPHERE.speedAberration`, ∝ speed²). `SpeedLines`: 90 additive segments
+in camera space in a hollow cylinder, invisible below ~90 km/h, fainter at
+night. The camera is added to the scene so its children draw.
+
+### 4.24 Engine live inputs from the world (`powertrain.setSurroundings`)
+
+engine_sim exposes normalised live inputs (`strain`, `aggression`,
+`roughness`, `distance`, `environment`). `main.js:_feedSurroundings` drives
+three from the world each frame: **distance** from the camera-to-car distance
+(the trackside shot sounds distant), **environment** (enclosure) when the
+ground rises ≥ 2–7 m on both sides of the road (a cutting), **strain** from
+uphill grade × load. Smoothed in `setSurroundings`; ignored by an older
+engine_sim.
+
 ---
 
 ## 5. The config contract
 
-`config.js` exports **19** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `TREES`,
+`config.js` exports **22** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `TREES`,
 `BUSHES`, `GRASS`, `ROAD_SURFACE`, `GROUND`, `ROCKS`, `WIND`, `FX`, `VEHICLE`,
-`TRAFFIC`, `CAMERA`, `TITLE`, `ATMOSPHERE`, `SCORE`, `TERRAIN_COLORS` — plus
+`TRAFFIC`, `CAMERA`, `TITLE`, `ATMOSPHERE`, `SCORE`, `TERRAIN_COLORS`, `TILES`,
+`BIOME`, `WATER` — plus
 `GRAPHICS_LEVELS` and `graphicsLevel`/`setGraphicsLevel`.
 
 **THE TRAP.** A key in the wrong block reads `undefined`. Then `undefined * 0 →
@@ -730,7 +901,7 @@ const files=[...fs.readdirSync('src').map(f=>'src/'+f),
              ...fs.readdirSync('src/env').map(f=>'src/env/'+f)];
 for(const f of files){ if(!f.endsWith('.js'))continue;
   const t=fs.readFileSync(f,'utf8');
-  for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|TREES|BUSHES|GRASS|ROAD_SURFACE|GROUND|ROCKS|VEHICLE|TRAFFIC|CAMERA|TITLE|ATMOSPHERE|SCORE)\.(\w+)/g)){
+  for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|TREES|BUSHES|GRASS|ROAD_SURFACE|GROUND|ROCKS|VEHICLE|TRAFFIC|CAMERA|TITLE|ATMOSPHERE|SCORE|TILES|WATER|BIOME|TERRAIN_COLORS|WIND|FX)\.(\w+)/g)){
     if(blocks[m[1]]&&!blocks[m[1]].has(m[2])){console.log('MISSING '+m[0]+' in '+f);bad++;}}}
 console.log(bad?bad+' missing':'config audit clean');"
 ```
@@ -824,6 +995,11 @@ Every one was real, diagnosed by measurement, and is re-introducible.
 | 80 | **Still see-through after #76 and #77** — winding was half the answer | four independent holes, none visible to any count. (a) Only the LOWEST conifer skirt was floored, on the reasoning that the others have a skirt beneath them — but a skirt's rim is its widest point and the cone below has already tapered past it, so every upper tier was a hollow cone. (b) A FORK left the parent's end ring open and the children, thinner by `limbs.radius`, started on that plane half in and half out. (c) A hazel's stems were capped at neither end. (d) Interior culling dropped a face without leaving anything behind it — three separate mechanisms, below | floor every tier; cap every fork and root the children **back inside** the parent by 1.7 tip radii; cap the shrub stems; and the culling fixes in #81. **1,668 see-through rims → 0** |
 | 81 | Interior culling was opening the holes it was meant to save triangles on | three compounding mistakes. **Centroid-only**: a detail-1 face is half a radius across, so a face whose centre is deep inside its neighbour still has corners in the air. **Mutual**: A drops a face buried in B while B drops the very faces that would have covered the rim left behind. **Smooth-surface**: a subdivided icosahedron is inscribed and its faces sag to 0.93 (0.79 at detail 0) of the radius, so a point "inside" the lump can be outside the mesh | all three corners inside; culling is **one-way, biggest lump first**, so every escape route ends on a surface that is still there; and the test runs against `FACET[detail]`, the measured sag |
 | 82 | Medium graphics quietly drew MORE shrubs than high | `applyGraphics` sets absolute numbers. `nearCap` came down 150 → 120 and `BUSHES.cap` 115 → 78 to pay for the closed crowns, and medium's stale 95 / 110 went from two thirds of high to four fifths and 141% | re-derived: 76 and 72. **Any change to a cap in `TREES`/`BUSHES` has to be carried into `applyGraphics`** |
+| 83 | Holes, wrong planes and seams in the terrain | the same ground point was owned by several parameterisations — chunk sheets (road space), the world apron, a doubled-back road's sheet — and they disagreed | the ground is a pure height field `f(x, z)` drawn by world-space LOD tiles (§3b). `probe/ground.mjs`: 0 holes, 0 poke-through, 0 collider misses |
+| 84 | Lakes punched craters into hillsides | a lake level below one side of its rim and far above the other is still "a basin" to a centre test | `maxRim`: the whole rim must lie within 16 m above the level |
+| 85 | Grass invisible at distance, dark up close | (a) mipmaps premultiplied by coverage darkened the atlas toward black; (b) the back face of a card was lit from below | un-premultiply by alpha; normal kept up on both faces (`normal_fragment_begin` override) |
+| 86 | Golden-hour sun disc green | grade S-curve evaluated on HDR values went negative | evaluate on the clamped value, add the overflow back |
+| 87 | Vista shots radially smeared, FOV 997° | loop `dt` went negative after a tab stall; FOV damping extrapolated | clamp `dt ≥ 0` |
 
 ### Harness bugs that masqueraded as game bugs
 
@@ -1072,6 +1248,13 @@ moving — at one frame per second through SwiftShader it is a still image.
 41. **A field's numbers must be against its MEASURED range.** `terrain.mask` is
     two octaves and spans 0.25–0.72, not 0–1. Getting this wrong makes a field
     that looks wired up and does nothing. (#73, and `TREES.barePatch`)
+42. **A telephoto shot of haze is not a fog bug.** The cinematic trackside lens
+    goes down to 14°, so a hill 800 m away fills the frame and is correctly
+    ~75% fogged, while grass on a crest 150 m away is not. Ray-march the
+    pixel against `field.height` before touching the fog (§4.23).
+43. **`tiles.surfaceAt` reads the FINEST built tile**, not what is drawn. A
+    coarse tile still on screen while its children build is invisible to it.
+    Probe coverage with it; probe the picture with `render.mjs`.
 
 ---
 
@@ -1093,22 +1276,21 @@ npm run probe
 | `env.mjs` | everything else in `src/env/` plus `fx.js`: far grass, rock geometry and scatter, tyre effects against a stub |
 | `engine.mjs` | does the bridge still match `engine_sim`'s API |
 | `surface.mjs` | is the carriageway drivable end to end (non-zero on any step > 30 cm) |
-| `offroad.mjs` | is there ground everywhere the player may drive? #64/#70's regression test |
-| `cliff.mjs` | longitudinal terrain steps |
+| `ground.mjs` | the world-space ground: coverage, LOD seams vs skirts, no poke-through under the ribbon, colliders near the car, faceting by distance. Replaces `offroad`/`terrain`/`cliff` |
 | `traffic.mjs` | spawn distance, stalls, overlaps, lane error, population, Δv |
 | `score.mjs` | the near-miss mechanic, without physics |
 | `props.mjs` | canopy and understorey: per-species counts both tiers, determinism, **whether the far tier is the same tree**, caps, batches, cost, clearance, float, and that the scatter is LUMPY |
 | `handling.mjs` | steering by speed, slide recovery, drift, rollover safety |
 | `smooth.mjs` | is the car smooth **on screen** under jitter and hitches |
-| `terrain.mjs` | faceting by distance band |
 | `drive.mjs` | end to end: real car, physics, `engine_sim`, traffic |
 | `route.mjs` | shelf share, earthwork, curvature, grade, self-clearance |
 | `xsec.mjs` | cross-sections — the fastest way to read an alignment |
 | `canopy.mjs` | **what the canopy looks like** — contact sheet, both tiers at true size. Needs Chrome |
 | `uishot.mjs` | **what the interface looks like**, 17 viewports + overflow report. Needs Chrome |
-| `render.mjs` | **what the GAME looks like**, through SwiftShader. Needs Chrome |
+| `render.mjs` | **what the GAME looks like**, through SwiftShader. Needs Chrome. `SKY=night`, `CAM=cinematic`, `TAG=prefix-`, `EVAL='js'` |
+| `vista.mjs` | aerial views of the world: `[seed] [s] [sky]`. Needs Chrome |
 
-The last three are not in `npm run probe`. `render.mjs` takes
+The Chrome scripts are not in `npm run probe` (`CHROME=/path/to/chromium`; as root they pass `--no-sandbox`). `render.mjs` takes
 `[seed] [seconds] [teleport]`; `SKID=1` stops the car and floors it (see §8 for
 why that produces no smoke here). Each other script takes an optional seed.
 

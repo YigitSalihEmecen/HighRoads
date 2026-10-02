@@ -30,7 +30,14 @@ const server = await new Promise((res) => {
       'content-type': TYPES[path.extname(file)] || 'application/octet-stream',
       'cache-control': 'no-store',
     });
-    res2.end(fs.readFileSync(file));
+    let body = fs.readFileSync(file);
+    // Local three when installed (npm run probe:deps): no CDN route needed.
+    if (file.endsWith('.html') && fs.existsSync(path.join(ROOT, 'node_modules/three/build/three.module.js'))) {
+      body = Buffer.from(body.toString()
+        .replace('https://unpkg.com/three@0.169.0/build/three.module.js', '/node_modules/three/build/three.module.js')
+        .replace('https://unpkg.com/three@0.169.0/examples/jsm/', '/node_modules/three/examples/jsm/'));
+    }
+    res2.end(body);
   });
   s.listen(PORT, () => res(s));
 });
@@ -39,7 +46,8 @@ fs.mkdirSync(OUT, { recursive: true });
 const chrome = spawn(CHROME, [
   '--headless=new',
   '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-  '--disable-gpu-sandbox', '--mute-audio',
+  '--disable-gpu-sandbox', '--mute-audio', '--ignore-certificate-errors',
+  ...(process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
   `--remote-debugging-port=${CDP}`, `--user-data-dir=${path.join(OUT, '.chrome-canopy')}`,
   '--no-first-run', '--no-default-browser-check', 'about:blank',
 ], { stdio: 'ignore' });

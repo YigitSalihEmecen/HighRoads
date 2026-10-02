@@ -21,7 +21,7 @@ const driveFor = Number(process.argv[3] || 25);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The whole project, statically. No build step, so this is the whole server. */
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.png': 'image/png',
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.png': 'image/png',
   '.fbx': 'application/octet-stream', '.obj': 'text/plain', '.mtl': 'text/plain' };
 const server = await new Promise((res) => {
   const s = http.createServer((req, res2) => {
@@ -30,8 +30,25 @@ const server = await new Promise((res) => {
     if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       res2.writeHead(404); res2.end(); return;
     }
-    res2.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream' });
-    res2.end(fs.readFileSync(file));
+    let body = fs.readFileSync(file);
+    // Serve three and rapier from node_modules (npm run probe:deps) when they
+    // are there: a sandbox with no route to the CDN — or a proxy Chrome does
+    // not trust — otherwise boots a page whose every import fails.
+    if (rel === '/' || rel === '/index.html') {
+      const local = (p) => fs.existsSync(path.join(ROOT, p));
+      let html = body.toString();
+      if (local('node_modules/three/build/three.module.js')) {
+        html = html.replace('https://unpkg.com/three@0.169.0/build/three.module.js', '/node_modules/three/build/three.module.js')
+                   .replace('https://unpkg.com/three@0.169.0/examples/jsm/', '/node_modules/three/examples/jsm/');
+      }
+      if (local('node_modules/@dimforge/rapier3d-compat/rapier.es.js')) {
+        html = html.replace('https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/+esm', '/node_modules/@dimforge/rapier3d-compat/rapier.es.js');
+      }
+      body = Buffer.from(html);
+    }
+    res2.writeHead(200, { 'content-type': TYPES[path.extname(file)] || (rel === '/' ? 'text/html' : 'application/octet-stream'),
+      'cache-control': 'no-store' });
+    res2.end(body);
   });
   s.listen(PORT, () => res(s));
 });
@@ -41,7 +58,9 @@ const chrome = spawn(CHROME, [
   '--headless=new',
   // Software GL: without these the page never gets a WebGL context at all.
   '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-  '--disable-gpu-sandbox', '--mute-audio',
+  '--disable-gpu-sandbox', '--mute-audio', '--ignore-certificate-errors',
+  // Chrome refuses to start sandboxed as root (containers, CI).
+  ...(process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
   `--remote-debugging-port=${CDP}`, `--user-data-dir=${path.join(OUT, '.chrome-gl')}`,
   '--no-first-run', '--no-default-browser-check', 'about:blank',
 ], { stdio: 'ignore' });
@@ -75,7 +94,7 @@ const js = async (expr) =>
     .result.value;
 const shot = async (name) => {
   const { data } = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(path.join(OUT, `${name}.png`), Buffer.from(data, 'base64'));
+  fs.writeFileSync(path.join(OUT, `${process.env.TAG || ""}${name}.png`), Buffer.from(data, 'base64'));
   console.log(`  wrote probe/shots/${name}.png`);
 };
 
@@ -95,7 +114,10 @@ ws.addEventListener('message', (e) => {
 });
 await send('Emulation.setDeviceMetricsOverride',
   { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
-await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}` });
+// SKY=night (any sky.js preset) and CAM=cinematic (any CAM_MODES entry)
+// pick the look to shoot.
+const skyQ = process.env.SKY ? `&sky=${encodeURIComponent(process.env.SKY)}` : '';
+await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}${skyQ}` });
 
 console.log(`\nseed "${seed}" — rendering through SwiftShader\n`);
 let booted = false;
@@ -144,6 +166,11 @@ if (jumpTo > 0) {
     g.respawn(${jumpTo});
     g.carS = ${jumpTo};})()`);
   await sleep(6000);
+}
+
+if (process.env.CAM) {
+  await js(`(()=>{const c=window.__highroads.cam;
+    for(let i=0;i<8&&c.cycle()!==${JSON.stringify(process.env.CAM)};i++);})()`);
 }
 
 const rig = `(()=>{const g=window.__highroads, c=g.cam, v=g.vehicle;
@@ -199,7 +226,15 @@ if (process.env.SKID === '1') {
 }
 
 console.log('  rig: ' + await js(rig));
+if (process.env.EVAL) console.log('  eval: ' + await js(process.env.EVAL));
+await sleep(1500);
 await shot('game-drive');
+// Extra looks, for checking the world rather than the car: SHOTS=n takes n
+// more frames a few seconds apart while it keeps driving.
+for (let i = 0; i < Number(process.env.SHOTS || 0); i++) {
+  await sleep(4000);
+  await shot('game-drive-' + (i + 1));
+}
 
 // The pause menu, over a real frame of the road rather than the flat backdrop
 // `probe/uishot.mjs` stands in for the scene.
