@@ -881,6 +881,7 @@ What was found and done, heaviest first:
 | Terrain past the fog | tiles to 2600 m, far plane 3200 m, yet the thinnest preset fog is 99.6 % by ~1770 m (medium/low built past their own far plane) | radius 1850 / 1050 / 720, far 2300 / 1100 / 760 |
 | Post | speed blur and grade were two passes, the blur's nine taps running at a standstill; bloom at half resolution for a 0.10-strength glow | one FINISH pass with the blur behind a uniform branch; bloom at quarter resolution |
 | Terrain noise | all six landform fBms evaluated at every sample | skip weights < 1e-4 (≤ 5 cm change; `height()` −20 %) |
+| 60 fps at the start, 20-30 fps ten seconds later | the full world streaming in — and tree/shrub/rock batches had `frustumCulled = false` (the wind shader "moves vertices"), so every batch in every loaded chunk drew every frame, shadow map included. Measured: of the instances drawn, ~11 % of trees and ~15 % of grass were actually in view | `instcull.js`: per-instance culling of tree/shrub/rock batches against the camera frustum grown by 25 m (so shadows cast into view from just outside survive), packed to the front of the instance buffers each frame; grass chunks split into 8 parts (4 × 30 m along the road × either side), each with its own bounds. Trees drawn 3130 → ~450-520 instances (408k → ~60k tris); grass 43k → 30k |
 | Fill on weak / high-DPI GPUs | fixed pixel ratio | `gfx.adapt`: dynamic resolution, down after ~1 s over budget, back after ~4 s of headroom, floor 75 % of the device ratio (≥ 1.0) |
 
 Measured, same harness before and after:
