@@ -243,6 +243,8 @@ export class ChunkManager {
      * and the apron under them — see terrainfield.js for why.
      */
     this.field = new TerrainField(terrain, path, hashInt(Math.round(terrain.continent(0, 0) * 1000)));
+    // The road carve changes the field near new road: drop cached scatter heights.
+    this.field.onGrow.push(() => { if (this._gyCache) this._gyCache.clear(); });
     this.tiles = new WorldTiles({
       scene, field: this.field, material: this.matTerrain, world, RAPIER,
       color: (x, z, y, ny, d, out) => this._groundColor(x, z, y, ny, d, out),
@@ -390,6 +392,35 @@ export class ChunkManager {
     const z = frame.pos.z + _latDir.z * v;
     out.set(x, this.field.height(x, z), z);
     return out;
+  }
+
+  /**
+   * Terrain height for scatter, from a 2 m world-aligned lattice of
+   * `field.height` samples — the same spacing and alignment as the finest
+   * terrain tiles, so near the car a prop stands on the drawn surface. Each
+   * lattice point is evaluated once and cached: grass alone plants tens of
+   * thousands of tufts a chunk, and a full field evaluation per tuft cost
+   * ~390 ms. The cache is dropped when it grows past a few chunks' worth,
+   * and whenever the road grows (the carve changes the field near it).
+   * `G` is the lattice spacing: callers pass a coarser one far from the road,
+   * where the tiles drawing the ground are coarse too.
+   */
+  _groundY(x, z, G = 2) {
+    const fx = x / G, fz = z / G;
+    const ix = Math.floor(fx), iz = Math.floor(fz);
+    const u = fx - ix, w = fz - iz;
+    const caches = this._gyCache || (this._gyCache = new Map());
+    let c = caches.get(G);
+    if (!c) { c = new Map(); caches.set(G, c); }
+    if (c.size > 200000) c.clear();
+    const at = (i, k) => {
+      const key = i * 4194304 + k;
+      let y = c.get(key);
+      if (y === undefined) { y = this.field.height(i * G, k * G); c.set(key, y); }
+      return y;
+    };
+    const a = at(ix, iz), b = at(ix + 1, iz), d = at(ix, iz + 1), e = at(ix + 1, iz + 1);
+    return (a * (1 - u) + b * u) * (1 - w) + (d * (1 - u) + e * u) * w;
   }
 
   /**
@@ -1153,6 +1184,11 @@ export class ChunkManager {
       /** One tree, already sited and sized. Shared by the scatter and coppicing. */
       const plant = (name, height, wobble, yaw, wx, wz, wy, av, paired) => {
         const variant = this.trees.library.get(name)[chosen.get(name)];
+        // Stand on the terrain field, not the sheet `look()` interpolates: the
+        // scatter sheet is a coarse road-space grid that is no longer drawn,
+        // and its chords sat metres off the world-space tiles — every tree
+        // floated (or sank). Done here, for accepted trees only.
+        wy = this._groundY(wx, wz, 2);
 
         // Per-instance modulation near 1.0 (hue is baked into the geometry), so
         // individual variation and a hint of the ground's own colour.
@@ -1165,6 +1201,7 @@ export class ChunkManager {
 
         // Both tiers take the same matrix, so the cross-fade is one tree at one
         // size, drawn at two subdivisions.
+        p.set(wx - origin.x, wy - origin.y, wz - origin.z);
         this._setLocalMatrix(p, height * wobble, height, height * wobble, yaw);
 
         if (paired) {
@@ -1422,8 +1459,9 @@ export class ChunkManager {
         this._color.g = ((1 - gk) + gk * this._color.g * 2) * (1 + (rng() - 0.5) * gv);
         this._color.b = ((1 - gk) + gk * this._color.b * 2) * (1 + (rng() - 0.5) * gv);
 
-        // Sunk a little, so no shrub is ever seen standing on a stalk.
-        p.y -= height * 0.05;
+        // On the terrain field (see plant()), sunk a little so no shrub is
+        // ever seen standing on a stalk.
+        p.y = this._groundY(wx, wz, 2) - origin.y - height * 0.05;
         this._setLocalMatrix(p, height * wobble * 1.6, height,
           height * wobble * 1.6, rng() * Math.PI * 2);
         push(`b:${name}`, variant.geometry, this.bushes.material,
@@ -1675,6 +1713,10 @@ export class ChunkManager {
         positions[i0 * 3 + 1] * w0 + positions[i1 * 3 + 1] * w1 + positions[i2 * 3 + 1] * w2,
         positions[i0 * 3 + 2] * w0 + positions[i1 * 3 + 2] * w1 + positions[i2 * 3 + 2] * w2
       );
+      // Height from the terrain field, not the sheet: the scatter sheet is a
+      // coarse road-space grid that is no longer drawn, and its chords sat
+      // metres off the world-space tiles — every prop floated (or sank).
+      p.y = this._groundY(p.x + origin.x, p.z + origin.z, 4) - origin.y;
 
       // Slope straight from the cell's own corners — the gradient of the very
       // triangle the tuft is standing on, for four subtractions.
@@ -1845,6 +1887,10 @@ export class ChunkManager {
         positions[i0 * 3 + 1] * w0 + positions[i1 * 3 + 1] * w1 + positions[i2 * 3 + 1] * w2,
         positions[i0 * 3 + 2] * w0 + positions[i1 * 3 + 2] * w1 + positions[i2 * 3 + 2] * w2
       );
+      // Height from the terrain field, not the sheet: the scatter sheet is a
+      // coarse road-space grid that is no longer drawn, and its chords sat
+      // metres off the world-space tiles — every prop floated (or sank).
+      p.y = this._groundY(p.x + origin.x, p.z + origin.z) - origin.y;
 
       // The band is in sheet columns; on a bend the interpolated point can land
       // nearer the road than its column says. Ask the field.

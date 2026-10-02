@@ -23,7 +23,6 @@ const SPEED_BLUR_SHADER = {
     tDiffuse: { value: null },
     uStrength: { value: 0 },
     uInner: { value: 0.16 },
-    uCA: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -36,7 +35,6 @@ const SPEED_BLUR_SHADER = {
     uniform sampler2D tDiffuse;
     uniform float uStrength;
     uniform float uInner;
-    uniform float uCA;
     varying vec2 vUv;
 
     void main() {
@@ -46,18 +44,13 @@ const SPEED_BLUR_SHADER = {
       float falloff = smoothstep(uInner, 0.72, r);
       float amount = uStrength * falloff * falloff;
 
-      // Lateral chromatic aberration grows with the same falloff: red pushed
-      // out, blue pulled in, a lens straining at the edge of the frame.
-      vec2 ca = toCentre * uCA * falloff;
-      vec4 sum = vec4(0.0);
-      float weight = 0.0;
-      for (int i = 0; i <= 8; i++) {
+      vec4 sum = texture2D(tDiffuse, vUv);
+      float weight = 1.0;
+      for (int i = 1; i <= 8; i++) {
         float t = float(i) / 8.0;
-        vec2 uv = vUv - toCentre * amount * t;
+        vec2 off = toCentre * amount * t;
         float w = 1.0 - t * 0.55;
-        sum.r += texture2D(tDiffuse, uv + ca).r * w;
-        sum.ga += texture2D(tDiffuse, uv).ga * w;
-        sum.b += texture2D(tDiffuse, uv - ca).b * w;
+        sum += texture2D(tDiffuse, vUv - off) * w;
         weight += w;
       }
       gl_FragColor = sum / weight;
@@ -258,9 +251,7 @@ export async function createScene(container) {
   // How hard the periphery streaks. `t` is 0..1 across the speed range.
   function setSpeedBlur(t) {
     if (!speedBlur) return;
-    const k = Math.max(0, Math.min(1, t));
-    speedBlur.uniforms.uStrength.value = ATMOSPHERE.speedBlur * k;
-    speedBlur.uniforms.uCA.value = (ATMOSPHERE.speedAberration ?? 0.012) * k * k;
+    speedBlur.uniforms.uStrength.value = ATMOSPHERE.speedBlur * Math.max(0, Math.min(1, t));
   }
 
   const gfx = {

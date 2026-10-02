@@ -55,7 +55,6 @@ engine_sim/     vendored sibling — DO NOT EDIT
 | `worldtiles.js` | world-space chunked-LOD quadtree tiles drawing that function, plus near colliders (§3b) |
 | `biomes.js` | climate + Worley-cell biome map, ten biomes (§4.20) |
 | `sky.js` | the sky shader (stars, moon, clouds) and the five sky presets (§4.22) |
-| `speedlines.js` | air streaks past the camera at speed (§4.23) |
 | `camera.js` `input.js` `hud.js` `settings.js` `score.js` `wind.js` `util.js` | as named |
 
 `src/env/` — one factory per module returning shared geometry + one shared
@@ -835,32 +834,13 @@ soft halo, and cloud cover from fBm. **Trap**: the grade's S-curve must be
 computed on the clamped value plus the overflow — on the raw HDR value it went
 negative and the golden-hour sun disc rendered green.
 
-### 4.23 Camera feel and speed (`camera.js`, `speedlines.js`, `scene.js`)
+### 4.23 Camera — the cinematic rework was REVERTED
 
-Chase and close gain the terms a broadcast or a game camera uses to sell pace:
-- **acceleration lag** (`accelLag`): under throttle the camera falls back from
-  the car, under braking it closes; smoothed acceleration, capped.
-- **corner look-ahead** (`cornerLead`): the aim leads into the turn by yaw rate
-  × speed.
-- **lean** into the turn, **lower at speed** (`speedDrop`).
-- **trauma shake** (Eiserloh: amplitude ∝ trauma², trauma decays linearly)
-  plus a cubic speed rumble, applied after aiming so it never feeds the damped
-  rig. `main.js:_feedTrauma` adds trauma on engine_sim's `cut`/`lash`/`pop`
-  events (edges, not levels), hard landings (a vertical-velocity snap) and
-  traffic impacts.
-
-`cinematic` (the 4th mode on **C**) cuts between shots: **trackside**
-(telephoto on the verge ahead, FOV solved to hold the car's size, so the
-background compresses), **tracking** (low, alongside) and **heli** (high,
-behind). Trackside stands on the shoulder and checks line of sight to the road
-behind it against `field.height`, trying the other verge and then raising the
-camera. A telephoto at 800 m sees heavy fog — that is aerial perspective, not
-a fog bug (it was diagnosed as one; see §9).
-
-Post: the radial speed blur also does lateral **chromatic aberration**
-(`ATMOSPHERE.speedAberration`, ∝ speed²). `SpeedLines`: 90 additive segments
-in camera space in a hollow cylinder, invisible below ~90 km/h, fainter at
-night. The camera is added to the scene so its children draw.
+A pass added acceleration lag, corner look-ahead, lean, trauma shake, a
+`cinematic` auto-cut mode, chromatic aberration and speed lines. The user
+preferred the previous camera, so `camera.js`, the speed blur and the
+`CAMERA` block are back to what they were before it; `speedlines.js` is gone.
+Do not reintroduce those without asking.
 
 ### 4.24 Engine live inputs from the world (`powertrain.setSurroundings`)
 
@@ -1000,6 +980,7 @@ Every one was real, diagnosed by measurement, and is re-introducible.
 | 85 | Grass invisible at distance, dark up close | (a) mipmaps premultiplied by coverage darkened the atlas toward black; (b) the back face of a card was lit from below | un-premultiply by alpha; normal kept up on both faces (`normal_fragment_begin` override) |
 | 86 | Golden-hour sun disc green | grade S-curve evaluated on HDR values went negative | evaluate on the clamped value, add the overflow back |
 | 87 | Vista shots radially smeared, FOV 997° | loop `dt` went negative after a tab stall; FOV damping extrapolated | clamp `dt ≥ 0` |
+| 88 | All foliage floated (or sank) over the terrain, following its shape | after the ground rewrite (#83) trees, shrubs, grass and rocks still interpolated the old road-space scatter sheet, whose columns are up to tens of metres wide: median +1.5 m (grass) to +3 m (trees), spread −3..+4 m against the drawn tiles | height from `field.height` via `_groundY`, a cached 2 m world lattice (matches the finest tiles) applied to accepted props only, so scatter cost stays in budget. Now within a few cm of the drawn surface |
 
 ### Harness bugs that masqueraded as game bugs
 
@@ -1248,10 +1229,15 @@ moving — at one frame per second through SwiftShader it is a still image.
 41. **A field's numbers must be against its MEASURED range.** `terrain.mask` is
     two octaves and spans 0.25–0.72, not 0–1. Getting this wrong makes a field
     that looks wired up and does nothing. (#73, and `TREES.barePatch`)
-42. **A telephoto shot of haze is not a fog bug.** The cinematic trackside lens
-    goes down to 14°, so a hill 800 m away fills the frame and is correctly
-    ~75% fogged, while grass on a crest 150 m away is not. Ray-march the
-    pixel against `field.height` before touching the fog (§4.23).
+42. **A telephoto shot of haze is not a fog bug.** At a narrow FOV a hill
+    800 m away fills the frame and is correctly ~75% fogged, while grass on a
+    crest 150 m away is not. Ray-march the pixel against `field.height`
+    before touching the fog.
+44. **Scatter must take its height from the FIELD, not the sheet.** The
+    chunk "sheet" is a coarse road-space grid that is no longer drawn; its
+    chords sit metres off the world-space tiles. `chunks._groundY(x, z, G)`
+    reads `field.height` on a cached G-metre world lattice (2 m = the finest
+    tile spacing). Bug #88.
 43. **`tiles.surfaceAt` reads the FINEST built tile**, not what is drawn. A
     coarse tile still on screen while its children build is invisible to it.
     Probe coverage with it; probe the picture with `render.mjs`.
@@ -1287,7 +1273,7 @@ npm run probe
 | `xsec.mjs` | cross-sections — the fastest way to read an alignment |
 | `canopy.mjs` | **what the canopy looks like** — contact sheet, both tiers at true size. Needs Chrome |
 | `uishot.mjs` | **what the interface looks like**, 17 viewports + overflow report. Needs Chrome |
-| `render.mjs` | **what the GAME looks like**, through SwiftShader. Needs Chrome. `SKY=night`, `CAM=cinematic`, `TAG=prefix-`, `EVAL='js'` |
+| `render.mjs` | **what the GAME looks like**, through SwiftShader. Needs Chrome. `SKY=night`, `CAM=chase`, `TAG=prefix-`, `EVAL='js'` |
 | `vista.mjs` | aerial views of the world: `[seed] [s] [sky]`. Needs Chrome |
 
 The Chrome scripts are not in `npm run probe` (`CHROME=/path/to/chromium`; as root they pass `--no-sandbox`). `render.mjs` takes
