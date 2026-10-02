@@ -139,22 +139,34 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             float fr_flat = smoothstep( 0.55, 0.88, abs( fr_n.y ) );
             // World-XZ planar, at two scales whose ratio is not a round number
             // so the tiles beat against each other instead of lining up.
-            vec2 fr_uvA = fr_wpos.xz / uTile.x;
             vec2 fr_uvB = fr_wpos.xz / uTile.y;
-            vec3 fr_a = texture2D( uDetail, fr_uvA ).rgb;
             vec3 fr_b = texture2D( uDetail, fr_uvB ).rgb;
-
-            // Rock on a steep face is sampled TRIPLANAR: a planar XZ map
-            // smears into vertical streaks on a cliff. The two side planes
-            // are blended by how much the face looks along X or Z.
-            vec3 fr_w3 = pow( abs( fr_n ), vec3( 4.0 ) );
-            fr_w3 /= ( fr_w3.x + fr_w3.y + fr_w3.z + 1e-4 );
-            float fr_rockA = texture2D( uDetail, fr_wpos.zy / uTile.x ).g * fr_w3.x
-                           + fr_a.g * fr_w3.y
-                           + texture2D( uDetail, fr_wpos.xy / uTile.x ).g * fr_w3.z;
 
             float fr_sward = fr_flat;
             float fr_rock  = 1.0 - fr_flat;
+
+            // The near tile and the triplanar rock only matter inside the
+            // near-fade distance (and the rock only off the flat), so most of
+            // the screen — the far ground — skips three of the five samples.
+            // Both branches are spatially coherent, so they cost nothing.
+            float fr_dist = length( fr_wpos - cameraPosition );
+            fr_nearW = 1.0 - smoothstep( uNearFade.x, uNearFade.y, fr_dist );
+            vec3 fr_a = vec3( 1.0 );
+            float fr_rockA = 1.0;
+            if ( fr_nearW > 0.0 ) {
+              fr_a = texture2D( uDetail, fr_wpos.xz / uTile.x ).rgb;
+              fr_rockA = fr_a.g;
+              // Rock on a steep face is sampled TRIPLANAR: a planar XZ map
+              // smears into vertical streaks on a cliff. The two side planes
+              // are blended by how much the face looks along X or Z.
+              if ( fr_rock > 0.01 ) {
+                vec3 fr_w3 = pow( abs( fr_n ), vec3( 4.0 ) );
+                fr_w3 /= ( fr_w3.x + fr_w3.y + fr_w3.z + 1e-4 );
+                fr_rockA = texture2D( uDetail, fr_wpos.zy / uTile.x ).g * fr_w3.x
+                         + fr_a.g * fr_w3.y
+                         + texture2D( uDetail, fr_wpos.xy / uTile.x ).g * fr_w3.z;
+              }
+            }
             float fr_gravel = 0.30;
             float fr_dA = ( fr_a.r * fr_sward + fr_rockA * fr_rock ) * ( 1.0 - fr_gravel )
                         + fr_a.b * fr_gravel;
@@ -163,8 +175,6 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
 
             // The near tile carries the grain and has to go before it aliases;
             // the far tile is the one that survives to the horizon.
-            float fr_dist = length( fr_wpos - cameraPosition );
-            fr_nearW = 1.0 - smoothstep( uNearFade.x, uNearFade.y, fr_dist );
             float fr_mod = 1.0
               + ( fr_dA - 1.0 ) * uContrast.x * fr_nearW
               + ( fr_dB - 1.0 ) * uContrast.y;

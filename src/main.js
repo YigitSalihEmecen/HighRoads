@@ -16,6 +16,7 @@ import {
   carById, colorById, trimColorById, buildCarParams
 } from './cars.js';
 import { smoothstep, clamp } from './util.js';
+import { PERF } from './perf.js';
 import { applySky, saveSky, SKY_PRESETS, SKY_NAMES } from './sky.js';
 import { createTerrain } from './noise.js';
 import { RoadPath, makeFrame } from './path.js';
@@ -925,6 +926,8 @@ class Game {
     // and unpause, and the next rAF timestamp is the frame's START, which can be
     // earlier. A negative dt makes every exponential damper extrapolate — the
     // FOV was measured at 997° after a slow respawn.
+    // Dynamic resolution reads the true frame time, before the clamp.
+    if (this.active && !this.paused) this.gfx.adapt(now - this.lastTime);
     const dt = clamp((now - this.lastTime) / 1000, 0, maxFrame);
     this.lastTime = now;
 
@@ -938,6 +941,7 @@ class Game {
       return;
     }
 
+    PERF.begin();
     this.input.update(dt);
     if (this.active) this._handleActions();
 
@@ -970,6 +974,7 @@ class Game {
     this.vehicle.headlightBoost = (SKY_PRESETS[this.gfx.skyName] || SKY_PRESETS.day).night ? 24 : 1;
     this.vehicle.setHeadlights(this.headlights, this.flashing);
 
+    PERF.lap('input');
     this.vehicle.setDriveForce(
       this.powertrain.update(dt, {
         wheelSpeed: this.vehicle.forwardSpeed,
@@ -980,6 +985,7 @@ class Game {
       })
     );
 
+    PERF.lap('powertrain');
     // ---- fixed-step physics ---------------------------------------------
     const h = WORLD.fixedStep;
     this.accumulator += dt;
@@ -998,6 +1004,7 @@ class Game {
     // Draw where the car actually is *between* steps, not at the last one.
     this.vehicle.syncVisuals(this.accumulator / h);
 
+    PERF.lap('physics');
     // ---- world streaming -------------------------------------------------
     this.carS = this.path.projectPoint(this.vehicle.pos, this.carS);
     // The wind runs on wall time, not simulation time; it is scenery.
@@ -1005,12 +1012,14 @@ class Game {
     // Terrain tiles follow the CAR, which may be well off the road.
     this.chunks.focus = this.vehicle && this.active ? this.vehicle.pos : null;
     this.chunks.update(this.carS);
+    PERF.lap('streaming');
 
     // Tyre effects read the wheel state just written by the substeps, so they
     // come after the loop and before anything renders.
     this.fx.update(dt, this.vehicle);
     this.wind.update(dt, this.active ? this.vehicle.forwardSpeed : 0);
 
+    PERF.lap('fx+wind');
     if (this.active && this.traffic) {
       this.traffic.update(dt, {
         s: this.carS,
@@ -1028,6 +1037,7 @@ class Game {
 
     if (this.active) this.trip += this.vehicle.speed * dt;
     this._checkRecovery(dt);
+    PERF.lap('traffic');
 
     // ---- presentation ----------------------------------------------------
     // The title screen and the road share one presentation path.
@@ -1046,6 +1056,7 @@ class Game {
         : 0
     );
 
+    PERF.lap('camera');
     if (this.active && this.mode === 'traffic') this.hud.updateRun(dt, this.run);
 
     if (this.active) {
@@ -1061,7 +1072,10 @@ class Game {
       });
     }
 
+    PERF.lap('hud');
     this.gfx.render();
+    PERF.lap('render');
+    PERF.end();
 
     // Any one-shot press not consumed this frame is lost.
     this.input.endFrame();

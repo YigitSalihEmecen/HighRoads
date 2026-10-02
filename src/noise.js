@@ -287,13 +287,20 @@ export function createTerrain(seed) {
     const wx = p.x, wy = p.y;
     const w = archetypes(x, z);
 
+    // Only the landforms that actually contribute: the archetype weights are
+    // an exponential kernel, so at most places three or four of the six are
+    // under 1e-4 — each worth < 3 cm of height — yet each generator is a full
+    // multi-octave fBm. Skipping them is the single biggest saving in a
+    // terrain sample (probe/stream.mjs: tile builds were ~19 % of the main
+    // thread at 144 km/h).
+    const E = 1e-4;
     const h = (
-      w.plains * plainsH(wx, wy) +
-      w.hills * hillsH(wx, wy) +
-      w.valley * valleyH(wx, wy) +
-      w.mountain * mountainH(wx, wy) +
-      w.canyon * canyonH(wx, wy) +
-      w.plateau * plateauH(wx, wy)
+      (w.plains > E ? w.plains * plainsH(wx, wy) : 0) +
+      (w.hills > E ? w.hills * hillsH(wx, wy) : 0) +
+      (w.valley > E ? w.valley * valleyH(wx, wy) : 0) +
+      (w.mountain > E ? w.mountain * mountainH(wx, wy) : 0) +
+      (w.canyon > E ? w.canyon * canyonH(wx, wy) : 0) +
+      (w.plateau > E ? w.plateau * plateauH(wx, wy) : 0)
     ) + continent(x, z);
     lodOct = 99;
     return h;

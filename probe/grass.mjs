@@ -31,7 +31,13 @@ console.log(`\nseed "${seed}" — ground cover\n`);
 
 // Build the chunks the car would have around it, then scatter grass into them.
 chunks.preload(CHUNK.length * 2);
-for (let i = 0; i < 40; i++) chunks.update(CHUNK.length * 2);
+// Until streaming is idle: it now runs under a per-frame time budget
+// (CHUNK.frameBudgetMs), so a fixed 40 frames no longer finishes it.
+for (let i = 0; i < 3000; i++) {
+  chunks.update(CHUNK.length * 2);
+  if (i > 40 && !chunks.pending.length && !chunks.sheetQueue.length && !chunks.propQueue.length
+      && !chunks.propJob && !chunks.rockQueue.length && chunks.grassTiers.every((t) => !t.queue.length && !t.job)) break;
+}
 
 const times = [];
 const counts = [];
@@ -39,10 +45,13 @@ for (let i = 1; i <= 6; i++) {
   const s0 = i * CHUNK.length;
   const chunk = chunks.chunks.get(i);
   if (!chunk) continue;
+  // The sheet is built over several frames in the game (chunks._stepSheets);
+  // finish it here so the timing is the scatter alone.
+  chunks._ensureSheet(i);
   const t0 = performance.now();
   const mesh = chunks._buildGrass(i, s0, s0 + CHUNK.length, chunk.origin);
   times.push(performance.now() - t0);
-  counts.push(mesh ? mesh.count : 0);
+  counts.push(mesh ? (mesh.userData.total ?? mesh.count) : 0);
   if (mesh) mesh.dispose();
 }
 
@@ -76,7 +85,7 @@ check('density matches config', actual <= GRASS.density * 1.05,
   let onRoad = 0, outside = 0, minLat = Infinity, maxLat = 0, sHint = 2 * CHUNK.length;
   let minH = Infinity, maxH = 0;
   const scl = new THREE.Vector3();
-  for (let i = 0; i < mesh.count; i++) {
+  for (let i = 0; i < (mesh.userData.total ?? mesh.count); i++) {
     mesh.getMatrixAt(i, m);
     p.setFromMatrixPosition(m).add(chunk.origin);
     scl.setFromMatrixScale(m);
@@ -89,7 +98,7 @@ check('density matches config', actual <= GRASS.density * 1.05,
     if (lat > GRASS.halfExtent + 1) outside++;
   }
   check('none on the carriageway', onRoad === 0,
-    `${onRoad} of ${mesh.count}, closest ${minLat.toFixed(2)} m (road half-width ${ROAD.halfWidth})`);
+    `${onRoad} of ${(mesh.userData.total ?? mesh.count)}, closest ${minLat.toFixed(2)} m (road half-width ${ROAD.halfWidth})`);
   check('none beyond the band', outside === 0,
     `${outside}, furthest ${maxLat.toFixed(1)} m of ${GRASS.halfExtent}`);
   // Cards grow with lateral distance (GRASS.farScale), so the ceiling is the

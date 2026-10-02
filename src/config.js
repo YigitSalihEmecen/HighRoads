@@ -156,6 +156,11 @@ export const CHUNK = {
   /** Offsets over which the sheet's lateral direction rotates toward the relaxed heading. */
   relaxBand: [78, 260],
 
+  /**
+   * Main-thread budget for world streaming per frame, ms. Once a frame has
+   * spent this, remaining builds wait (the sheet always gets a 1.5 ms sliver).
+   */
+  frameBudgetMs: 5,
   /** Legacy: lateral extent of the old road-space sheet. Still the far-tree band's outer limit. */
   halfExtent: 700,
   /** How far the (undrawn) scatter grid reaches either side of the road, metres. */
@@ -774,7 +779,7 @@ export const CAMERA = {
   fov: 62,
   near: 0.4,
   /** `far` pulled in to match the fog wall for depth precision; nothing exists past ~700 m. */
-  far: 3200,
+  far: 2300,   // past the fogged-out terrain (TILES.radius); was 3200
   /**
    * Chase rig: distance / height / look-ahead, metres. `zoom` scales how much
    * the rig opens out with speed; the close camera stays put.
@@ -929,14 +934,20 @@ export const TILES = {
   levels: 6,
   /** A tile splits while the focus is within `split` × its own size. */
   split: 1.6,
-  /** How far tiles are built from the focus, metres. */
-  radius: 2600,
+  /**
+   * How far tiles are built from the focus, metres. Matched to the FOG, not
+   * the far plane: at the thinnest preset fog (golden, 0.0013) the ground is
+   * 99.6 % fogged by ~1770 m, so terrain past that was built, kept and drawn
+   * for nothing (2600 m before; 215 tiles → see probe/perf.mjs).
+   */
+  radius: 1850,
   /** Tiles nearer than this carry a trimesh collider. */
   colliderRadius: 170,
   /** Skirt depth in cells (plus 1.5 m). */
   skirt: 2.0,
   buildPerFrame: 2,
-  msPerFrame: 7,
+  /** A tile is ~6 ms; past this no second tile starts in the same frame. */
+  msPerFrame: 4,
 };
 
 /** Biome regions (`biomes.js`). */
@@ -1014,8 +1025,8 @@ function applyGraphics() {
     // Half the draw distance, thickened fog to hide the closer seam.
     CHUNK.ahead = 4;
     ATMOSPHERE.fogDensity = 0.0024;
-    CAMERA.far = 1000;
-    TILES.radius = 1500;
+    CAMERA.far = 1100;
+    TILES.radius = 1050;    // fog 0.0024 is 99 % by ~900 m; was 1500, past the far plane
     TILES.levels = 5;
 
     // A thinner wood: `farCap` falls further than `nearCap` (a far tree is
@@ -1041,8 +1052,8 @@ function applyGraphics() {
     // The shortest draw distance, and a fog that ends it invisibly.
     CHUNK.ahead = 3;
     ATMOSPHERE.fogDensity = 0.0034;
-    CAMERA.far = 700;
-    TILES.radius = 1000;
+    CAMERA.far = 760;
+    TILES.radius = 720;     // fog 0.0034 is 99 % by ~630 m; was 1000, past the far plane
     TILES.levels = 5;
     TILES.split = 1.3;
 

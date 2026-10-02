@@ -5,6 +5,7 @@
  * so distant geometry ends in the fog instead of at a visible edge.
  */
 
+import { PERF } from './perf.js';
 import * as THREE from 'three';
 import { ATMOSPHERE, CAMERA } from './config.js';
 import { SKY_VERT, SKY_FRAG, skyUniforms, applySky, chosenSky } from './sky.js';
@@ -18,49 +19,19 @@ import { SKY_VERT, SKY_FRAG, skyUniforms, applySky, chosenSky } from './sky.js';
  *
  * GLSL ES 1.00 only — no const arrays, no in/out.
  */
-const SPEED_BLUR_SHADER = {
+
+/**
+ * The FINISH pass: radial speed blur and the grade (split tone, S-curve,
+ * vignette) in one full-screen pass. They were two, and the blur's nine taps
+ * ran even with the car standing still — measured, the pair cost ~130 ms of a
+ * SwiftShader 720p frame. The blur is a uniform branch, so at zero strength
+ * it costs nothing.
+ */
+const FINISH_SHADER = {
   uniforms: {
     tDiffuse: { value: null },
     uStrength: { value: 0 },
     uInner: { value: 0.16 },
-  },
-  vertexShader: /* glsl */ `
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse;
-    uniform float uStrength;
-    uniform float uInner;
-    varying vec2 vUv;
-
-    void main() {
-      vec2 toCentre = vUv - vec2(0.5);
-      float r = length(toCentre);
-      // Sharp core, then the smear grows quadratically toward the corners.
-      float falloff = smoothstep(uInner, 0.72, r);
-      float amount = uStrength * falloff * falloff;
-
-      vec4 sum = texture2D(tDiffuse, vUv);
-      float weight = 1.0;
-      for (int i = 1; i <= 8; i++) {
-        float t = float(i) / 8.0;
-        vec2 off = toCentre * amount * t;
-        float w = 1.0 - t * 0.55;
-        sum += texture2D(tDiffuse, vUv - off) * w;
-        weight += w;
-      }
-      gl_FragColor = sum / weight;
-    }
-  `,
-};
-
-const VIGNETTE_SHADER = {
-  uniforms: {
-    tDiffuse: { value: null },
     uAmount: { value: 0.16 },
     uWarm: { value: new THREE.Color(0xffd9ac) },
     uCool: { value: new THREE.Color(0xa8bcd8) },
@@ -74,6 +45,8 @@ const VIGNETTE_SHADER = {
   `,
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
+    uniform float uStrength;
+    uniform float uInner;
     uniform float uAmount;
     uniform vec3 uWarm;
     uniform vec3 uCool;
@@ -81,6 +54,21 @@ const VIGNETTE_SHADER = {
 
     void main() {
       vec4 c = texture2D(tDiffuse, vUv);
+      vec2 toCentre = vUv - vec2(0.5);
+      if (uStrength > 0.0005) {
+        // Sharp core, then the smear grows quadratically toward the corners.
+        float falloff = smoothstep(uInner, 0.72, length(toCentre));
+        float amount = uStrength * falloff * falloff;
+        vec4 sum = c;
+        float weight = 1.0;
+        for (int i = 1; i <= 8; i++) {
+          float t = float(i) / 8.0;
+          float w = 1.0 - t * 0.55;
+          sum += texture2D(tDiffuse, vUv - toCentre * amount * t) * w;
+          weight += w;
+        }
+        c = sum / weight;
+      }
 
       // Split tone: warm the highlights, cool the shadows, for depth.
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
@@ -197,23 +185,24 @@ export async function createScene(container) {
     composer = new EffectComposer(renderer);
     renderPass = new RenderPass(scene, camera);
     composer.addPass(renderPass);
-    composer.addPass(
-      new UnrealBloomPass(
-        new THREE.Vector2(window.innerWidth, window.innerHeight),
-        ATMOSPHERE.bloomStrength,
-        0.7,
-        ATMOSPHERE.bloomThreshold
-      )
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      ATMOSPHERE.bloomStrength,
+      0.7,
+      ATMOSPHERE.bloomThreshold
     );
-    vignette = new ShaderPass(VIGNETTE_SHADER);
+    // Quarter resolution (the pass halves what it is given): at strength 0.1
+    // the bloom is a soft glow, and its dozen blur passes were ~90 ms of a
+    // SwiftShader 720p frame at half resolution.
+    const bloomSize = bloom.setSize.bind(bloom);
+    bloom.setSize = (w, h) => bloomSize(Math.max(2, w / 2), Math.max(2, h / 2));
+    composer.addPass(bloom);
+    vignette = new ShaderPass(FINISH_SHADER);
     // Drive the config value instead of the shader's hard-coded default.
     vignette.uniforms.uAmount.value = ATMOSPHERE.vignette;
+    vignette.uniforms.uInner.value = ATMOSPHERE.speedBlurInner;
     composer.addPass(vignette);
-    if (ATMOSPHERE.speedBlur > 0) {
-      speedBlur = new ShaderPass(SPEED_BLUR_SHADER);
-      speedBlur.uniforms.uInner.value = ATMOSPHERE.speedBlurInner;
-      composer.addPass(speedBlur);
-    }
+    if (ATMOSPHERE.speedBlur > 0) speedBlur = vignette;
     composer.addPass(new OutputPass()); // tone mapping + sRGB happen here
     composer.setSize(window.innerWidth, window.innerHeight);
   } catch (err) {
@@ -244,8 +233,41 @@ export async function createScene(container) {
   }
 
   function render() {
+    // With ?perf, count the whole frame's draw calls (shadow pass, scene and
+    // every post pass) rather than only the last render() the info saw.
+    if (PERF.on) { renderer.info.autoReset = false; renderer.info.reset(); }
     if (composer) composer.render();
     else renderer.render(scene, camera);
+    if (PERF.on) {
+      PERF.add('.calls', renderer.info.render.calls);
+      PERF.add('.tris', renderer.info.render.triangles / 1000);
+    }
+  }
+
+  /**
+   * Dynamic resolution. The frame's wall time (rAF to rAF) is smoothed; if it
+   * stays over budget for ~1 s the render pixel ratio steps down, and after
+   * ~4 s of clear headroom it steps back up. Bounded to [75 % of the device
+   * ratio (never under 1.0), the device ratio capped at 2]. On a fill-bound
+   * GPU — a high-DPI laptop or phone — this is the difference between a
+   * steady 60 and a stutter at 40, for a softening few notice in motion.
+   */
+  const baseRatio = Math.min(window.devicePixelRatio, 2);
+  const minRatio = Math.min(baseRatio, Math.max(1, baseRatio * 0.75));
+  let ratio = baseRatio, ema = 16.7, over = 0, under = 0;
+  function adapt(frameMs) {
+    if (!(frameMs > 0) || frameMs > 250) return;      // a tab switch, not load
+    ema += (frameMs - ema) * 0.08;
+    over = ema > 19.5 ? over + 1 : 0;
+    under = ema < 15.5 ? under + 1 : 0;
+    let next = ratio;
+    if (over > 60 && ratio > minRatio) next = Math.max(minRatio, ratio * 0.88);
+    else if (under > 240 && ratio < baseRatio) next = Math.min(baseRatio, ratio / 0.88);
+    if (next !== ratio) {
+      ratio = next; over = 0; under = 0;
+      renderer.setPixelRatio(ratio);
+      if (composer) { composer.setPixelRatio(ratio); composer.setSize(window.innerWidth, window.innerHeight); }
+    }
   }
 
   // How hard the periphery streaks. `t` is 0..1 across the speed range.
@@ -256,7 +278,8 @@ export async function createScene(container) {
 
   const gfx = {
     renderer, scene, camera, sun, hemi, fill, sky, sunDir, composer, follow, render, resize,
-    setSpeedBlur, grade: vignette, baseFogDensity: ATMOSPHERE.fogDensity, speedBlur,
+    setSpeedBlur, grade: vignette, baseFogDensity: ATMOSPHERE.fogDensity, speedBlur, adapt,
+    get pixelRatio() { return ratio; },
   };
   // The sky preset (sky.js): the URL's `?sky=`, else the saved choice, else day.
   applySky(gfx, chosenSky());
