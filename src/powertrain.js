@@ -262,6 +262,22 @@ export class Powertrain {
     p.launchFlareRpm = Math.max(900, (eng.redlineRpm - eng.idleRpm) * 0.45);
   }
 
+  /**
+   * The world around the engine, for engine_sim's live inputs (inputs.js):
+   * listener distance, enclosure and strain, all 0..1. Smoothed here so a
+   * camera cut or a crest does not step the sound. Older engine_sim builds
+   * without `setInputs` simply ignore it.
+   */
+  setSurroundings(dt, { distance = 0, environment = 0, strain = 0 }) {
+    if (!this.sim || !this.sim.setInputs) return;
+    const s = this._surr || (this._surr = { distance, environment, strain });
+    const k = 1 - Math.exp(-4 * dt);
+    s.distance += (distance - s.distance) * k;
+    s.environment += (environment - s.environment) * k * 0.5;
+    s.strain += (strain - s.strain) * k;
+    this.sim.setInputs(s);
+  }
+
   // One simulator step per rendered frame, then the torque is held across the
   // physics substeps that follow. The drivetrain sub-steps at 0.5 ms internally.
   update(dt, state) {

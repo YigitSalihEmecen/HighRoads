@@ -10,14 +10,16 @@ No build step, no bundlers, no dependencies — pure modern ES modules running s
 
 ## Features & What's Implemented
 
-- **Infinite Procedural World** — Seamless road and terrain generation in road space with cut-and-fill carving, dynamic tunnels, and 6 blended biomes (plains, hills, valleys, mountains, canyons, and plateaus) seeded from any string.
+- **Infinite Procedural World** — A routed road carved into a single cohesive height field (no holes, no seams), drawn by world-space LOD tiles out to 2.6 km, with six blended landforms seeded from any string.
+- **Biomes & Water** — Ten ecological biomes (meadow, broadleaf, autumn, boreal, birchwood, savanna, mediterranean, alpine, wetland, blossom) laid out by climate and warped Voronoi cells, with soft borders; occasional lakes in natural basins with a Fresnel water shader, shore foam and beaches.
 - **Raycast Vehicle Physics** — Rigid-body dynamics powered by Rapier3D (WebAssembly) with 4-wheel independent raycast suspension, Magic Formula tyre friction, anti-roll coupling, downforce, aerodynamic drag, and counter-steer assists.
 - **Physical Engine Simulation & Acoustics** — Directly bridged with [`Engine_Sim`](https://github.com/YigitSalihEmecen/Engine_Sim); the engine simulator *is* the actual drivetrain calculating propshaft torque, clutch slip, gearing, and procedural sound synthesis across 16 engine configurations.
 - **Vehicle Roster & Swaps** — 9 vehicle types (Sport, Muscle, Classic, Hatchback, Police, Pickup, Van, Military, Monster Truck) with custom paint swatches, engine swaps, and automatic/manual transmissions.
-- **Procedural Environment** — Multi-tier ground cover, rock scatter, and biome-aware foliage generation.
+- **Procedural Environment** — 16 faceted low-poly tree species (pine, oak, beech, fir, larch, cypress, acacia, willow, cherry, olive…), 10 shrubs from ferns to lavender and reeds, four kinds of grass and flowers, rock scatter, and triplanar ground with macro variation and bump.
 - **Traffic & Game Modes** — Choose between a relaxing **Zen** cruise or high-stakes **Traffic** mode with near-miss scoring, multiplier chains, and impact physics.
 - **Desktop & Mobile Optimized** — Responsive layouts supporting keyboard, gamepad, and touch controls with safe-area support for mobile portrait and landscape.
-- **Atmospheric Visuals** — Procedural sky with animated clouds, golden-hour lighting, exponential fog, bloom, and speed blur.
+- **Atmospheric Visuals** — Five sky presets (day, golden hour, dawn, overcast, and a full-moon night with stars), each setting light, fog, grade and water reflections.
+- **Cinematic Camera** — Acceleration lag, corner look-ahead, lean, trauma shake from shifts, landings and impacts, chromatic aberration and air streaks at speed, plus an auto-directed cinematic mode (telephoto trackside, tracking and heli shots).
 
 ---
 
@@ -33,7 +35,8 @@ No build step, no bundlers, no dependencies — pure modern ES modules running s
 | `G` | Toggle Auto / Manual Gearbox |
 | `L` | Headlights |
 | `F` *(hold)* | Flash Headlights (Traffic yields) |
-| `C` | Cycle Camera (Chase / Close / Hood) |
+| `C` | Cycle Camera (Close / Chase / Hood / Cinematic) |
+| `K` | Cycle Sky (Day / Golden / Dawn / Overcast / Night) |
 | `R` | Respawn / Reset |
 | `M` | Mute Audio |
 
@@ -56,4 +59,4 @@ npx serve .
 python3 -m http.server 8080
 ```
 
-Open `http://localhost:8080` in your browser.
+Open `http://localhost:8080` in your browser. Add `?sky=night` (or `golden`, `dawn`, `overcast`) to start under a different sky.

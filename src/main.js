@@ -18,7 +18,7 @@ import {
 import { smoothstep, clamp } from './util.js';
 import { applySky, saveSky, SKY_PRESETS, SKY_NAMES } from './sky.js';
 import { createTerrain } from './noise.js';
-import { RoadPath } from './path.js';
+import { RoadPath, makeFrame } from './path.js';
 import { ChunkManager } from './chunks.js';
 import { Traffic } from './traffic.js';
 import { RaycastVehicle } from './vehicle.js';
@@ -576,6 +576,7 @@ class Game {
     this.cam.groundAt = (s, v, out) => this.chunks.groundAt(s, v, out);
     this.cam.groundHeight = (x, z) => this.chunks.field.height(x, z);
     this._evMark = { cut: 0, lash: 0, pop: 0 };
+    this._sFrame = makeFrame();
     // Air streaks are children of the camera, so the camera must be in the
     // scene graph for them to draw.
     if (!gfx.camera.parent) gfx.scene.add(gfx.camera);
@@ -1046,7 +1047,10 @@ class Game {
 
     // Camera first: follow() re-centres the sky dome on this frame's position.
     this.cam.carS = this.carS;
-    if (this.active) this._feedTrauma(dt);
+    if (this.active) {
+      this._feedTrauma(dt);
+      this._feedSurroundings(dt);
+    }
     this.cam.update(dt, this.vehicle);
     // Use the interpolated pose: the shadow frustum is centred here, and
     // 8.3 ms steps would crawl the shadows across everything.
@@ -1105,6 +1109,31 @@ class Game {
       if (this._traumaImpacts !== undefined) this.cam.addTrauma(0.8);
       this._traumaImpacts = this.traffic.impacts;
     }
+  }
+
+  /**
+   * What engine_sim hears: how far the lens is from the car (the cinematic
+   * trackside shot is 50 m off), whether the road is in a cutting with walls
+   * both sides, and how hard the engine is pulling uphill.
+   */
+  _feedSurroundings(dt) {
+    const v = this.vehicle;
+    const d = this.gfx.camera.position.distanceTo(v.renderPos);
+    const f = this.path.frameAt(this.carS, this._sFrame);
+    const rx = -f.tan.z, rz = f.tan.x, rl = Math.hypot(rx, rz) || 1;
+    const field = this.chunks.field;
+    let wall = 1;
+    for (const side of [-1, 1]) {
+      const x = f.pos.x + (rx / rl) * side * (ROAD.halfWidth + 6);
+      const z = f.pos.z + (rz / rl) * side * (ROAD.halfWidth + 6);
+      wall = Math.min(wall, smoothstep(2, 7, field.height(x, z) - f.pos.y));
+    }
+    const climb = clamp(v.fwd.y * 8, 0, 1);
+    this.powertrain.setSurroundings(dt, {
+      distance: smoothstep(8, 70, d),
+      environment: wall * 0.55,
+      strain: climb * (this.powertrain.load || 0),
+    });
   }
 
   _handleActions() {
