@@ -111,6 +111,7 @@ export class TerrainField {
     }
     if (upTo > this._denseUpTo) {
       this._denseUpTo = upTo;
+      this.lakes.recheck(minX, minZ, maxX, maxZ);
       for (const fn of this.onGrow) fn(minX, minZ, maxX, maxZ);
     }
     const ctrl = path.ctrl;
@@ -404,6 +405,15 @@ export class Lakes {
       lo = Math.min(lo, t.height(lake.cx + Math.cos(a) * rr, lake.cz + Math.sin(a) * rr, 400));
     }
     lake.level = lo - 0.6;
+    // A lake needs a BASIN. On a hillside the ring's uphill side stands tens
+    // of metres over the level, and carving to it leaves a crater wall.
+    let hi = -Infinity;
+    for (let k = 0; k < 10; k++) {
+      const a = (k / 10) * Math.PI * 2 + 0.3;
+      const rr = this.radiusAt(lake, a) * 1.25;
+      hi = Math.max(hi, t.height(lake.cx + Math.cos(a) * rr, lake.cz + Math.sin(a) * rr, 400));
+    }
+    if (hi - lake.level > WATER.maxRim) { lake.ok = false; return false; }
     lake.ok = true;
     return true;
   }
@@ -424,6 +434,27 @@ export class Lakes {
       }
     }
     return null;
+  }
+
+  /** Distance from the centre of the lake at (x, z) over its shoreline radius; Infinity if none. */
+  shoreU(x, z) {
+    const lake = this.at(x, z);
+    if (!lake) return Infinity;
+    const dx = x - lake.cx, dz = z - lake.cz;
+    return Math.sqrt(dx * dx + dz * dz) / this.radiusAt(lake, Math.atan2(dz, dx));
+  }
+
+  /**
+   * New road was generated in this box: any lake near it must be re-checked
+   * against it (it may now be too close and has to go).
+   */
+  recheck(x0, z0, x1, z1) {
+    for (const lake of this.cache.values()) {
+      if (!lake || !lake.checked) continue;
+      const m = lake.r * 1.45 + WATER.roadClear + WATER.beach;
+      if (lake.cx + m < x0 || lake.cx - m > x1 || lake.cz + m < z0 || lake.cz - m > z1) continue;
+      lake.checked = false;
+    }
   }
 
   /**

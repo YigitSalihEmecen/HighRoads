@@ -136,7 +136,7 @@ export const CHUNK = {
 
   /** Chunks kept behind / ahead — keyed to the far grass tier's fade-out. */
   behind: 2,
-  ahead: 6,
+  ahead: 7,
 
   /** Chunks built per frame once running — keeps frame spikes bounded. */
   buildPerFrame: 1,
@@ -212,14 +212,20 @@ export const TREES = {
   lodFade: [260, 420],
   farFadeIn: [260, 420],
   /** Where the far tier stops. */
-  farFade: [620, 720],
+  farFade: [700, 880],
 
   /** Fade-in for a far tree with NO near mesh behind it, metres. */
   loneFadeIn: [480, 660],
 
   /** Scatter attempts per chunk, and the caps on what survives. */
   samples: 2000,
-  nearCap: 120,
+  nearCap: 110,
+  /** The distant woodland (far tier only) beyond the near band — see chunks.js. */
+  distantExtent: 650,
+  distantSamples: 500,
+  distantCap: 160,
+  /** Acceptance against the canopy field; lower than the near band's 1. */
+  distantDensity: 0.55,
   farCap: 760,
 
   /** Chunks either side of the car that carry the NEAR canopy. */
@@ -227,8 +233,8 @@ export const TREES = {
   ahead: 4,
 
   /** Vegetation is placed around cluster seeds rather than independently. */
-  clusterCount: 9,
-  clusterShare: 0.72,
+  clusterCount: 6,
+  clusterShare: 0.78,
   clusterSpecies: 0.8,
 
   /** What weight a guild-mate keeps inside another species' stand. */
@@ -258,7 +264,7 @@ export const TREES = {
   groundTint: 0.16,
   instanceVary: 0.14,
   /** Sharpens stand edges — density squared, then scaled by this. */
-  standBias: 2.7,
+  standBias: 2.3,
 
   /** The tree line, as relief above the local continental surface, metres. */
   treeLine: [190, 430],
@@ -824,7 +830,7 @@ export const ATMOSPHERE = {
   /** Overcast-bright: sun well up, close to white, strong hemisphere fill. */
   fogColor: 0xd6dbdb,
   /** Haze, not a fog wall: world readable to ~150 m, half-lost by ~380 m. */
-  fogDensity: 0.0022,
+  fogDensity: 0.0015,
 
   skyTop: 0x7ba4ce,
   skyZenith: 0x3f6ea8,
@@ -901,6 +907,9 @@ export const TERRAIN_COLORS = {
   dirt: 0x9d8e75,
   peak: 0xa9a29a,
   snow: 0xe8ebee,
+  /** Lake beach and lake bed. */
+  sand: 0xcdbb8f,
+  mud: 0x5d5446,
 };
 
 /**
@@ -924,6 +933,18 @@ export const TILES = {
   msPerFrame: 7,
 };
 
+/** Biome regions (`biomes.js`). */
+export const BIOME = {
+  /** Worley cell size, metres — the typical span of one biome patch. */
+  cell: 1300,
+  /** Cross-fade band at a border, metres of F2 − F1. */
+  border: 260,
+  /** Domain-warp amplitude on the cell lattice, metres. */
+  warp: 700,
+  /** Random score added per cell, so similar climates still vary. */
+  variety: 0.9,
+};
+
 /** Lakes (`terrainfield.js:Lakes`, `env/water.js`). */
 export const WATER = {
   enabled: true,
@@ -939,6 +960,8 @@ export const WATER = {
   beach: 26,
   /** Closest any road may come to a shore, metres. */
   roadClear: 60,
+  /** Highest the ground just outside the shore may stand over the water, metres. */
+  maxRim: 16,
   /** Colours: deep water, shallows, and the sky tint the Fresnel term mixes toward. */
   deep: 0x1d4a5a,
   shallow: 0x4f8c86,
@@ -984,7 +1007,7 @@ function applyGraphics() {
   if (level === 'medium') {
     // Half the draw distance, thickened fog to hide the closer seam.
     CHUNK.ahead = 4;
-    ATMOSPHERE.fogDensity = 0.0034;
+    ATMOSPHERE.fogDensity = 0.0024;
     CAMERA.far = 1000;
     TILES.radius = 1500;
     TILES.levels = 5;
@@ -992,7 +1015,9 @@ function applyGraphics() {
     // A thinner wood: `farCap` falls further than `nearCap` (a far tree is
     // fifty triangles to a near one's five, over two more chunks).
     TREES.samples = 1200;
-    TREES.nearCap = 76;
+    TREES.nearCap = 70;   // two thirds of high (trap 39a)
+    TREES.distantCap = 80;
+    TREES.distantExtent = 480;
     TREES.farCap = 380;
     TREES.picks = 4;
     TREES.ahead = 3;
@@ -1009,7 +1034,7 @@ function applyGraphics() {
   } else if (level === 'low') {
     // The shortest draw distance, and a fog that ends it invisibly.
     CHUNK.ahead = 3;
-    ATMOSPHERE.fogDensity = 0.0044;
+    ATMOSPHERE.fogDensity = 0.0034;
     CAMERA.far = 700;
     TILES.radius = 1000;
     TILES.levels = 5;
@@ -1024,6 +1049,8 @@ function applyGraphics() {
     TREES.samples = 900;
     TREES.nearCap = 0;
     TREES.farCap = 300;
+    TREES.distantCap = 40;
+    TREES.distantExtent = 400;
     TREES.picks = 4;
     TREES.behind = 1;
     TREES.ahead = 0;
