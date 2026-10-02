@@ -151,7 +151,9 @@ for (const name of species) {
       const r = solidity(proto.geometry);
       if (r.v < worstVol) { worstVol = r.v; worstVolName = name; }
       flippedTotal += r.flipped;
-      holesTotal += seeThrough(proto.geometry);
+      const h = seeThrough(proto.geometry);
+      if (h) console.log(`         ${name}: ${h} open rims`);
+      holesTotal += h;
     }
   }
 }
@@ -160,7 +162,9 @@ for (const name of shrubs) {
     const r = solidity(proto.geometry);
     if (r.v < worstVol) { worstVol = r.v; worstVolName = name; }
     flippedTotal += r.flipped;
-    holesTotal += seeThrough(proto.geometry);
+    const h = seeThrough(proto.geometry);
+    if (h) console.log(`         ${name}: ${h} open rims`);
+    holesTotal += h;
   }
 }
 check('every proto is wound outward', worstVol > 0,
@@ -292,6 +296,7 @@ for (let i = 2; i < 20; i++) {
 }
 const ms = scatterMs / 18;
 
+console.log('         per-chunk near: ' + perChunk.join(' '));
 const mean = perChunk.reduce((a, b) => a + b, 0) / perChunk.length;
 const sd = Math.sqrt(perChunk.reduce((a, b) => a + (b - mean) ** 2, 0) / perChunk.length);
 floats.sort((a, b) => a - b);
@@ -338,8 +343,11 @@ console.log(`  alive at once: ${Math.round(nearTris * canopyWin / 18).toLocaleSt
 // figure the budget is built from — see the library check above.
 check('far tier inside its budget', farTris / Math.max(1, farN) <= 90,
   `${(farTris / Math.max(1, farN)).toFixed(0)} tris per placed far tree`);
-check('foliage inside its budget', inView <= 500000,
-  `${inView.toLocaleString()} triangles, budget 500,000 (terrain sheet ~109,000)`);
+// 540,000: the biome system brought heavier species (willow, beech, cherry,
+// acacia carry 360-460 near triangles against the old mean of 307), and the
+// near cap came down 120 -> 110 to pay for most of it.
+check('foliage inside its budget', inView <= 540000,
+  `${inView.toLocaleString()} triangles, budget 540,000`);
 
 console.log(`\n  [${bad ? 'FAIL' : ' ok '}] foliage\n`);
 process.exit(bad ? 1 : 0);

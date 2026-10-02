@@ -47,10 +47,39 @@ function detailTexture(size) {
   return tex;
 }
 
+/**
+ * The MACRO field: broad and slow, tiled every few hundred metres, to break
+ * the ground into lush and parched stretches. Its own small texture rather
+ * than the detail map's alpha — a canvas premultiplies, and an alpha channel
+ * would quantise the detail's RGB wherever it ran low.
+ *   R  lush (low) ↔ parched (high)
+ *   G  brightness drift
+ */
+function macroTexture(size) {
+  const target = makeCanvas(size);
+  if (!target) return null;
+  paint(target, (u, v, out) => {
+    out[0] = tileFbm(u, v, 3, 4, 0.55, 97) * 1.25 - 0.12;
+    out[1] = tileFbm(u, v, 5, 3, 0.5, 131);
+    out[2] = 0;
+    out[3] = 1;
+    return out;
+  });
+  const tex = new THREE.CanvasTexture(target.canvas);
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
+
 /** Terrain material with the detail overlay multiplied onto diffuseColor after colour. */
 export function createGroundAssets({ anisotropy = 1 } = {}) {
   const map = GROUND.enabled ? detailTexture(GROUND.textureSize) : null;
   if (map) map.anisotropy = anisotropy;
+  const macro = GROUND.enabled ? macroTexture(128) : null;
 
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
@@ -66,9 +95,12 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
     uTile: { value: new THREE.Vector2(GROUND.tileNear, GROUND.tileFar) },
     uContrast: { value: new THREE.Vector2(GROUND.contrastNear, GROUND.contrastFar) },
     uNearFade: { value: new THREE.Vector2(GROUND.nearFade[0], GROUND.nearFade[1]) },
+    uMacro: { value: GROUND.macroTile },
+    uMacroMap: { value: macro },
+    uBump: { value: GROUND.bump },
   };
 
-  if (map) {
+  if (map && macro) {
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
 
@@ -91,10 +123,15 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           uniform vec2 uTile;
           uniform vec2 uContrast;
           uniform vec2 uNearFade;
+          uniform float uMacro;
+          uniform float uBump;
+          uniform sampler2D uMacroMap;
         `)
         // After colour_fragment, before lighting: the overlay is albedo, not light.
         .replace('#include <color_fragment>', /* glsl */`
           #include <color_fragment>
+          float fr_height = 0.0;      // detail relief for the bump, metres-ish
+          float fr_nearW = 0.0;
           {
             vec3 fr_n = normalize( vNormal );
             // Which of the three grounds is this? Same two cues the palette
@@ -107,12 +144,19 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             vec3 fr_a = texture2D( uDetail, fr_uvA ).rgb;
             vec3 fr_b = texture2D( uDetail, fr_uvB ).rgb;
 
-            // Sward on flat ground, rock on steep; gravel rides underneath both
-            // and is what keeps a verge from looking like a lawn.
+            // Rock on a steep face is sampled TRIPLANAR: a planar XZ map
+            // smears into vertical streaks on a cliff. The two side planes
+            // are blended by how much the face looks along X or Z.
+            vec3 fr_w3 = pow( abs( fr_n ), vec3( 4.0 ) );
+            fr_w3 /= ( fr_w3.x + fr_w3.y + fr_w3.z + 1e-4 );
+            float fr_rockA = texture2D( uDetail, fr_wpos.zy / uTile.x ).g * fr_w3.x
+                           + fr_a.g * fr_w3.y
+                           + texture2D( uDetail, fr_wpos.xy / uTile.x ).g * fr_w3.z;
+
             float fr_sward = fr_flat;
             float fr_rock  = 1.0 - fr_flat;
-            float fr_gravel = 0.34;
-            float fr_dA = ( fr_a.r * fr_sward + fr_a.g * fr_rock ) * ( 1.0 - fr_gravel )
+            float fr_gravel = 0.30;
+            float fr_dA = ( fr_a.r * fr_sward + fr_rockA * fr_rock ) * ( 1.0 - fr_gravel )
                         + fr_a.b * fr_gravel;
             float fr_dB = ( fr_b.r * fr_sward + fr_b.g * fr_rock ) * ( 1.0 - fr_gravel )
                         + fr_b.b * fr_gravel;
@@ -120,11 +164,39 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             // The near tile carries the grain and has to go before it aliases;
             // the far tile is the one that survives to the horizon.
             float fr_dist = length( fr_wpos - cameraPosition );
-            float fr_nearW = 1.0 - smoothstep( uNearFade.x, uNearFade.y, fr_dist );
+            fr_nearW = 1.0 - smoothstep( uNearFade.x, uNearFade.y, fr_dist );
             float fr_mod = 1.0
               + ( fr_dA - 1.0 ) * uContrast.x * fr_nearW
               + ( fr_dB - 1.0 ) * uContrast.y;
             diffuseColor.rgb *= clamp( fr_mod, 0.55, 1.5 );
+
+            // MACRO: lush and parched stretches hundreds of metres across — the
+            // thing a flat-coloured hillside lacks most when seen from afar.
+            vec4 fr_m = texture2D( uMacroMap, fr_wpos.xz / uMacro );
+            float fr_dry = smoothstep( 0.45, 0.85, fr_m.r ) * fr_flat;
+            float fr_lush = smoothstep( 0.45, 0.15, fr_m.r ) * fr_flat;
+            diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 1.16, 1.07, 0.80 ), fr_dry * 0.45 );
+            diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.86, 1.02, 0.88 ), fr_lush * 0.40 );
+            diffuseColor.rgb *= 0.93 + 0.14 * fr_m.g;
+
+            fr_height = ( fr_sward * fr_a.r + fr_rock * fr_rockA * 1.6 ) * uBump;
+          }
+        `)
+        // Screen-space derivative bump (Mikkelsen 2010, "Bump mapping
+        // unparametrized surfaces"): the detail texture's own relief tilts
+        // the normal, so clumps and creases catch the low sun. Faded with
+        // the near tile, before it can shimmer.
+        .replace('#include <normal_fragment_maps>', /* glsl */`
+          #include <normal_fragment_maps>
+          if ( fr_nearW > 0.001 ) {
+            vec3 fr_dpx = dFdx( -vViewPosition );
+            vec3 fr_dpy = dFdy( -vViewPosition );
+            float fr_hx = dFdx( fr_height ), fr_hy = dFdy( fr_height );
+            vec3 fr_r1 = cross( fr_dpy, normal );
+            vec3 fr_r2 = cross( normal, fr_dpx );
+            float fr_det = dot( fr_dpx, fr_r1 );
+            vec3 fr_grad = sign( fr_det ) * ( fr_hx * fr_r1 + fr_hy * fr_r2 );
+            normal = normalize( mix( normal, abs( fr_det ) * normal - fr_grad, fr_nearW ) );
           }
         `);
     };
@@ -136,6 +208,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
     dispose() {
       material.dispose();
       if (map) map.dispose();
+      if (macro) macro.dispose();
     },
   };
 }
