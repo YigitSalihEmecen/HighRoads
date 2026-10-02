@@ -10,8 +10,9 @@ import * as THREE from 'three';
 import { CHUNK, ROAD, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, TERRAIN_COLORS } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
-  FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity,
+  FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
 } from './foliage.js';
+import { createBiomes, BIOMES } from './biomes.js';
 import { makeFrame } from './path.js';
 import { createGrassAssets } from './env/grass.js';
 import { createGroundAssets } from './env/ground.js';
@@ -21,6 +22,7 @@ import { createTreeAssets } from './env/trees.js';
 import { createBushAssets } from './env/bushes.js';
 import { TerrainField, ROAD_SINK } from './terrainfield.js';
 import { WorldTiles } from './worldtiles.js';
+import { WaterSystem } from './env/water.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const ROAD_LIFT = 0.035;
@@ -225,6 +227,16 @@ export class ChunkManager {
     });
     /** Where the tiles are centred. main.js points this at the car; null = the road at carS. */
     this.focus = null;
+
+    /** What kind of country each place is (biomes.js) — read by every scatter. */
+    this.biomes = createBiomes(terrain, this.field.seed);
+    this.field.lakes.biomeChance = (x, z) => this.biomes.mix(this.biomes.biomeAt(x, z), 'lake');
+    setEcology(this.biomes, (x, z) => this.field.lakes.shoreU(x, z));
+    this._tint = [1, 1, 1];
+    /** Lake surfaces (env/water.js). */
+    this.water = new WaterSystem({ scene, field: this.field });
+    this._sand = new THREE.Color(TERRAIN_COLORS.sand);
+    this._mud = new THREE.Color(TERRAIN_COLORS.mud);
 
     // A tier is a plain descriptor; everything that differs is a number, so
     // `_buildGrass` is one function.
@@ -437,6 +449,7 @@ export class ChunkManager {
     {
       const fp = this.focus || this.path.frameAt(carS, this._frame).pos;
       this.tiles.update(fp.x, fp.z);
+      this.water.update(fp.x, fp.z, this.time);
     }
     const center = Math.floor(carS / CHUNK.length);
     // The spline is undefined before s = 0, so a negative chunk would collapse
@@ -543,6 +556,7 @@ export class ChunkManager {
     this.canopyQueue.length = 0;
 
     this.tiles.dispose();
+    this.water.dispose();
     this.road.dispose();
     if (this.trees) this.trees.dispose();
     if (this.bushes) this.bushes.dispose();
@@ -736,6 +750,22 @@ export class ChunkManager {
     // Peak and snow only where the ground is flat enough to hold them.
     out.lerp(this._peak, smoothstep(300, 520, rel) * 0.8);
     out.lerp(this._snow, smoothstep(430, 640, rel) * smoothstep(0.52, 0.86, ny));
+
+    // The biome's own cast: straw in savanna, cold blue-green in the boreal
+    // forest. Blended across a border like everything else biome-driven.
+    {
+      const B = this.biomes.biomeAt(x, z);
+      const ta = BIOMES[B.a].tint, tb = BIOMES[B.b].tint, t = B.t;
+      out.r *= ta[0] + (tb[0] - ta[0]) * t;
+      out.g *= ta[1] + (tb[1] - ta[1]) * t;
+      out.b *= ta[2] + (tb[2] - ta[2]) * t;
+    }
+    // Lakes: wet mud under the water, a pale beach around it.
+    const u = this.field.lakes.shoreU(x, z);
+    if (u < 1.5) {
+      out.lerp(this._mud, 1 - smoothstep(0.75, 1.0, u));
+      out.lerp(this._sand, smoothstep(0.86, 1.0, u) * (1 - smoothstep(1.08, 1.32, u)) * 0.85);
+    }
 
     out.lerp(this._dirt, (1 - smoothstep(EDGE - 0.4, EDGE + 4.5, av)) * 0.9);
 
@@ -1023,7 +1053,17 @@ export class ChunkManager {
       }
       const chosen = commit(TREE_NAMES, this.trees.library, TREES.picks,
         (n) => (0.15 + guildAffinity(FOLIAGE[n], field)) * FOLIAGE[n].weight);
+      // The near cap follows the country: open meadow and savanna chunks hold
+      // a fraction of a forest's grown trees. Without this nearly every chunk
+      // ran into the same cap and the world's density evened out.
+      // The local stand mask modulates it again, so a forest biome still has
+      // its thin stretches.
+      const nearCap = Math.round(TREES.nearCap *
+        Math.min(1, Math.max(0.3, 0.25 + 0.6 * (field.canMul ?? 1))) *
+        (0.5 + 0.5 * Math.min(1, (field.stand ?? 1) * 1.6)));
       const kinds = [...chosen.keys()];
+      this._lastPicks = kinds;
+      this._lastChosen = chosen;
 
       // Cluster seeds where the field is already strong; each commits to one
       // species. Radius on a power law: mostly thickets with the odd wood.
@@ -1126,7 +1166,7 @@ export class ChunkManager {
       };
 
       for (let n = 0; n < TREES.samples; n++) {
-        if (placed >= TREES.nearCap && far >= TREES.farCap) break;
+        if (placed >= nearCap && far >= TREES.farCap) break;
 
         let s, v, home = null, edgeness = 0;
         if (clusters.length && rng() < TREES.clusterShare) {
@@ -1202,7 +1242,7 @@ export class ChunkManager {
         if (!roomFor(s, v, crownR)) continue;
         claim(s, v, crownR);
 
-        const paired = placed < TREES.nearCap;
+        const paired = placed < nearCap;
         plant(name, height, wobble, yaw, wx, wz, wy, av, paired);
 
         // Coppicing: a second/third stem from the same stool, always the same
@@ -1217,8 +1257,65 @@ export class ChunkManager {
             look(cs, cv);
             plant(name, height * (0.62 + rng() * 0.26), 0.9 + rng() * 0.2,
               rng() * Math.PI * 2, p.x + origin.x, p.z + origin.z,
-              p.y + origin.y, Math.abs(cv), placed < TREES.nearCap);
+              p.y + origin.y, Math.abs(cv), placed < nearCap);
           }
+        }
+      }
+    }
+
+    // ---- the distant woodland --------------------------------------------
+    //
+    // Everything above stays within 165 m of the road, because that is where
+    // trees are SEEN up close and need a near tier. Past it the land was bare,
+    // which from a crest or across a valley read as an empty world. This band
+    // plants far-tier trees only, out to `TREES.distantExtent`, at the same
+    // biome-driven density, on the analytic ground (`this.field`) — the scatter
+    // grid stops at 200 m. They are never seen nearer than ~165 m, where the
+    // far tier is already what the near tree would have faded to.
+    if (this.trees && TREES.distantSamples > 0) {
+      const kinds = [...(this._lastPicks || [])];
+      if (kinds.length) {
+        const drng = mulberry32(hashInt(index) ^ 0x5bd1e995);
+        const f0 = this._propFrame, rf = this._propRight;
+        let n = 0;
+        for (let k = 0; k < TREES.distantSamples && n < TREES.distantCap; k++) {
+          const s = lerp(s0, s1, drng());
+          const side = drng() < 0.5 ? -1 : 1;
+          const v = side * lerp(175, TREES.distantExtent, Math.sqrt(drng()));
+          this.path.frameAt(s, f0);
+          rf.crossVectors(f0.tan, WORLD_UP).normalize();
+          const wx = f0.pos.x + rf.x * v, wz = f0.pos.z + rf.z * v;
+          const smp = this._distSample || (this._distSample = {});
+          const wy = this.field.sample(wx, wz, smp);
+          if (smp.d < 165) continue;           // another pass of the road is near
+          // Slope off the natural surface: this far out the carve does nothing,
+          // and the natural height alone is a third of the cost.
+          const n0 = this.terrain.height(wx, wz, smp.d);
+          const slope = Math.hypot(this.terrain.height(wx + 3, wz, smp.d) - n0,
+            this.terrain.height(wx, wz + 3, smp.d) - n0) / 3;
+          const relief = wy - this.terrain.continent(wx, wz);
+          vegetation(this.terrain, wx, wz, relief, slope, smp.d, field);
+          if (drng() > field.canopy * TREES.distantDensity) continue;
+          let total = 0, pick = null;
+          for (const name of kinds) {
+            const w = suitability(FOLIAGE[name], field, relief, slope, 100) * FOLIAGE[name].weight;
+            total += w;
+            if (w > 0 && drng() * total < w) pick = name;
+          }
+          if (!pick) continue;
+          const kind = FOLIAGE[pick];
+          const height = lerp(kind.height[0], kind.height[1], drng() * drng() + 0.15);
+          p.set(wx - origin.x, wy - origin.y - 0.2, wz - origin.z);
+          this._groundColor(wx, wz, wy, 1, smp.d, this._color);
+          const gk = TREES.groundTint;
+          this._color.r = (1 - gk) + gk * this._color.r * 2;
+          this._color.g = (1 - gk) + gk * this._color.g * 2;
+          this._color.b = (1 - gk) + gk * this._color.b * 2;
+          const wob = 0.88 + drng() * 0.24;
+          this._setLocalMatrix(p, height * wob, height, height * wob, drng() * Math.PI * 2);
+          const variant = this.trees.far.get(pick)[this._lastChosen.get(pick)];
+          push(`f:${pick}`, variant.geometry, this.trees.farMaterial, this._mat, this._color, false, false);
+          n++;
         }
       }
     }
@@ -1226,7 +1323,14 @@ export class ChunkManager {
     // ---- the understorey -------------------------------------------------
 
     if (this.bushes) {
-      const chosen = commit(SHRUB_NAMES, this.bushes.library, BUSHES.picks);
+      // Ranked by what the biome here wants, like the trees.
+      look(lerp(s0, s1, 0.5), 50);
+      {
+        const mx = p.x + origin.x, mz = p.z + origin.z;
+        vegetation(this.terrain, mx, mz, p.y + origin.y - this.terrain.continent(mx, mz), 0.1, 50, field);
+      }
+      const chosen = commit(SHRUB_NAMES, this.bushes.library, BUSHES.picks,
+        (n) => (0.08 + guildAffinity(SHRUBS[n], field)) * SHRUBS[n].weight);
       const kinds = [...chosen.keys()];
       const weights = new Array(kinds.length);
       let placed = 0;
@@ -1437,10 +1541,14 @@ export class ChunkManager {
     // sampling was paying for resolution the field does not have.
     const memo = this._coverMemo;
     memo.clear();
-    const coverAt = (j, a, mid, width) => {
-      const key = (j >> 2) * 512 + Math.round(mid / 6);
+    // The memo also remembers the bloom share and the biome, for flowers.
+    let cFlower = 0, cBiome = null;
+    const coverAt = (j, a, mid, width, signed) => {
+      // Keyed on the SIGNED offset: the two sides of the road are different
+      // ground (the key used |v| and gave both sides the same cover).
+      const key = (j >> 2) * 1024 + Math.round(signed / 6) + 512;
       const hit = memo.get(key);
-      if (hit !== undefined) return hit;
+      if (hit !== undefined) { cFlower = hit[1]; cBiome = hit[2]; return hit[0]; }
       // Sheet data is origin-relative; put the origin back on (trap #19).
       const wx = positions[a * 3] + origin.x;
       const wy = positions[a * 3 + 1] + origin.y;
@@ -1449,9 +1557,13 @@ export class ChunkManager {
       const gu = (positions[(a + nv) * 3 + 1] - positions[a * 3 + 1]) / rowLen;
       vegetation(this.terrain, wx, wz,
         wy - this.terrain.continent(wx, wz), Math.hypot(gu, gv), mid, field);
-      memo.set(key, field[tier.cover]);
+      cFlower = tier.cover === 'ground' ? (field.flowers || 0) : 0;
+      cBiome = field.biomeA;
+      memo.set(key, [field[tier.cover], cFlower, cBiome]);
       return field[tier.cover];
     };
+    const cellFlower = [];
+    const cellBiome = [];
 
     for (let j = 0; j < nu; j++) {
       for (let i = 0; i < nv - 1; i++) {
@@ -1474,7 +1586,7 @@ export class ChunkManager {
         const mid = (lo + hi) * 0.5;
         const bz = boost(mid);
 
-        const cover = coverAt(j, a, mid, width);
+        const cover = coverAt(j, a, mid, width, (lat[i] + lat[i + 1]) * 0.5);
         if (cover <= 0.02) { bare++; continue; }
 
         const w = (rowLen * usable * thin(mid) * cover) / (bz * bz);
@@ -1482,6 +1594,8 @@ export class ChunkManager {
 
         total += w;
         cells.push(a, i, width);            // vertex index, column, cell width
+        cellFlower.push(cFlower);
+        cellBiome.push(cBiome);
         cum.push(total);
       }
     }
@@ -1569,9 +1683,19 @@ export class ChunkManager {
       // Lift: meadow brighter than soil; the woodland floor darker (in shade).
       const lift = lerp(tier.lift[0], tier.lift[1], rng());
       const o = placed * 3;
-      colours[o] = (colors[i0 * 3] * w0 + colors[i1 * 3] * w1 + colors[i2 * 3] * w2) * lift;
-      colours[o + 1] = (colors[i0 * 3 + 1] * w0 + colors[i1 * 3 + 1] * w1 + colors[i2 * 3 + 1] * w2) * lift;
-      colours[o + 2] = (colors[i0 * 3 + 2] * w0 + colors[i1 * 3 + 2] * w1 + colors[i2 * 3 + 2] * w2) * lift;
+      const fl = cellFlower[lo2];
+      if (fl > 0 && rng() < fl) {
+        // In bloom: the card is luminance-only, so a tuft takes its flower
+        // colour from the instance — the biome's palette (biomes.js `bloom`).
+        const pal = (BIOMES[cellBiome[lo2]] || BIOMES.meadow).bloom;
+        const bc = pal[Math.floor(rng() * pal.length)];
+        const k = 0.85 + rng() * 0.3;
+        colours[o] = bc[0] * k * 1.35; colours[o + 1] = bc[1] * k * 1.35; colours[o + 2] = bc[2] * k * 1.35;
+      } else {
+        colours[o] = (colors[i0 * 3] * w0 + colors[i1 * 3] * w1 + colors[i2 * 3] * w2) * lift;
+        colours[o + 1] = (colors[i0 * 3 + 1] * w0 + colors[i1 * 3 + 1] * w1 + colors[i2 * 3 + 1] * w2) * lift;
+        colours[o + 2] = (colors[i0 * 3 + 2] * w0 + colors[i1 * 3 + 2] * w1 + colors[i2 * 3 + 2] * w2) * lift;
+      }
       placed++;
     }
 

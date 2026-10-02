@@ -42,8 +42,72 @@ export function growBush(form, seed, pal) {
   };
 
   const yaw0 = rnd() * Math.PI * 2;
+  // Optional third palette entry: a blossom / seed-head colour.
+  const bloom = pal[2] || null;
+  const blooms = [];
 
-  if (form === 'low') {
+  if (form === 'fern') {
+    // Fronds: long, flat, arching lumps fanned out from one crown — a fern
+    // reads by its spread, not its height.
+    const n = 5;
+    for (let q = 0; q < n; q++) {
+      const a = yaw0 + (q / n) * Math.PI * 2 + (rnd() - 0.5) * 0.5;
+      const d = 0.34 + rnd() * 0.10;
+      // One long flattened lump per frond, its far end dipping.
+      lump(Math.cos(a) * d, 0.24 + rnd() * 0.08, Math.sin(a) * d,
+        0.26 + rnd() * 0.05, 0.08 + rnd() * 0.02, 0.12 + rnd() * 0.03, 0, 0.10);
+    }
+    lump(0, 0.30, 0, 0.22, 0.22, 0.22, 0, 0.12);
+  } else if (form === 'conical') {
+    // Juniper: a narrow, slightly irregular cone of stacked lumps.
+    const n = 4;
+    for (let q = 0; q < n; q++) {
+      const t = q / (n - 1);
+      const r = 0.34 * (1 - t * 0.78) + rnd() * 0.04;
+      lump((rnd() - 0.5) * 0.06, 0.22 + t * 0.70, (rnd() - 0.5) * 0.06,
+        r, 0.22 + rnd() * 0.04, r, q === 0 ? 1 : 0, 0.18);
+    }
+  } else if (form === 'flower') {
+    lump(0, 0.38 + rnd() * 0.05, 0,
+      0.40 + rnd() * 0.06, 0.34 + rnd() * 0.06, 0.40 + rnd() * 0.06, 1, 0.16);
+    for (let q = 0; q < 2; q++) {
+      const a = yaw0 + q * Math.PI + (rnd() - 0.5) * 1.0;
+      const d = 0.24 + rnd() * 0.10;
+      lump(Math.cos(a) * d, 0.28 + rnd() * 0.12, Math.sin(a) * d,
+        0.22 + rnd() * 0.06, 0.20 + rnd() * 0.06, 0.22 + rnd() * 0.06);
+    }
+    // Blossom clusters sitting in the top of the mass.
+    const n = 7 + Math.floor(rnd() * 4);
+    for (let q = 0; q < n; q++) {
+      const a = rnd() * Math.PI * 2, el = 0.35 + rnd() * 0.9;
+      const R = 0.40;
+      blooms.push([Math.cos(a) * Math.cos(el) * R, 0.40 + Math.sin(el) * R * 0.85, Math.sin(a) * Math.cos(el) * R,
+        0.07 + rnd() * 0.04]);
+    }
+  } else if (form === 'dome') {
+    // Clipped box: one dense, smooth, slightly squat dome.
+    lump(0, 0.46, 0, 0.50 + rnd() * 0.05, 0.44 + rnd() * 0.04, 0.50 + rnd() * 0.05, 1, 0.08);
+  } else if (form === 'reeds') {
+    // A clump of tall stems with seed heads: thin tubes, not lumps.
+    const n = 7 + Math.floor(rnd() * 3);
+    const head = bloom || [0.36, 0.24, 0.14];
+    for (let q = 0; q < n; q++) {
+      const a = rnd() * Math.PI * 2, d = rnd() * 0.22;
+      const h = 0.65 + rnd() * 0.35;
+      const lx = Math.cos(a) * (d + 0.10 * h), lz = Math.sin(a) * (d + 0.10 * h);
+      tube(F, [
+        { x: Math.cos(a) * d, y: 0, z: Math.sin(a) * d, r: 0.018 },
+        { x: lx, y: h, z: lz, r: 0.010 },
+      ], 3, (t) => colour(0.2 + t, 0.5), sway, { start: true, end: true });
+      if (rnd() < 0.55) {
+        tube(F, [
+          { x: lx, y: h - 0.02, z: lz, r: 0.026 },
+          { x: lx * 1.02, y: h + 0.13, z: lz * 1.02, r: 0.022 },
+        ], 4, () => head, sway, { start: true, end: true });
+      }
+    }
+    lump(0, 0.10, 0, 0.26, 0.12, 0.26, 0, 0.12);
+  } else if (form === 'low') {
     lump(0, 0.36 + rnd() * 0.06, 0,
       0.46 + rnd() * 0.09, 0.34 + rnd() * 0.07, 0.46 + rnd() * 0.09, 1, 0.18);
     for (let q = 0; q < 3; q++) {

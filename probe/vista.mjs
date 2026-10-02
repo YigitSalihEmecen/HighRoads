@@ -151,6 +151,8 @@ console.log('  state: ' + await js(`(()=>{const g=window.__highroads, v=g.vehicl
 /** Camera at (along, side, up) metres in the road frame at s, looking at (along2, side2, up2). */
 const views = [
   ['aerial',   [-120, 0, 140], [220, 0, 0]],
+  ['aerial-l', [-80, -60, 110], [160, 260, 0]],
+  ['aerial-r', [-80, 60, 110], [160, -260, 0]],
   ['high-side',[0, -260, 120], [80, 120, 0]],
   ['low-side', [0, -40, 6], [60, 220, 10]],
   ['ahead',    [-14, 0, 6], [120, 0, 2]],
