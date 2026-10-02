@@ -443,6 +443,11 @@ export const GROUND = {
 
   /** Distance over which the near tile fades out, metres. */
   nearFade: [45, 130],
+
+  /** Metres per tile of the macro (lush/parched) variation. */
+  macroTile: 371,
+  /** Strength of the screen-space detail bump. */
+  bump: 0.045,
 };
 
 /**
@@ -795,6 +800,23 @@ export const CAMERA = {
   heightGain: 0.08,
   /** Degrees of extra field of view at full speed — most of the speed cue. */
   fovSpeedGain: 12,
+
+  // ---- cinematic terms (camera.js) ---------------------------------------
+  /** Metres the camera falls back per m/s² of acceleration, and the cap. */
+  accelLag: 0.075,
+  accelLagMax: 1.5,
+  /** Lateral aim lead per (rad/s × m/s) of turn. */
+  cornerLead: 0.055,
+  /** Roll into the turn per rad/s of yaw rate at full speed. */
+  lean: 0.09,
+  /** How far the camera drops at full speed, metres. */
+  speedDrop: 0.35,
+  /** Trauma shake: amplitude at trauma 1, decay per second, noise rate. */
+  shakeTrauma: 0.55,
+  traumaDecay: 1.6,
+  shakeFreq: 21,
+  /** Speed rumble amplitude at full speed. */
+  shakeSpeed: 0.05,
 };
 
 /**
@@ -860,6 +882,8 @@ export const ATMOSPHERE = {
    */
   speedBlur: 0.055,
   speedBlurInner: 0.17,
+  /** Lateral chromatic aberration at full speed (UV fraction at the corners). */
+  speedAberration: 0.012,
   /** Speed, m/s, at which the blur reaches full strength. */
   speedBlurRef: 68,
 

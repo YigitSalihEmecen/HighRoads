@@ -16,12 +16,14 @@ import {
   carById, colorById, trimColorById, buildCarParams
 } from './cars.js';
 import { smoothstep, clamp } from './util.js';
+import { applySky, saveSky, SKY_PRESETS, SKY_NAMES } from './sky.js';
 import { createTerrain } from './noise.js';
 import { RoadPath } from './path.js';
 import { ChunkManager } from './chunks.js';
 import { Traffic } from './traffic.js';
 import { RaycastVehicle } from './vehicle.js';
 import { ChaseCamera } from './camera.js';
+import { SpeedLines } from './speedlines.js';
 import { Powertrain } from './powertrain.js';
 import { Input, TiltSteering } from './input.js';
 import { HUD } from './hud.js';
@@ -111,6 +113,9 @@ export async function boot() {
   world.step();
 
   const game = new Game({ gfx, world, path, terrain, chunks, models, roster });
+  // Re-apply the sky now the lakes exist, so they reflect it; and let the
+  // preset decide the lamps (a full-moon night starts with them on).
+  game.setSky(gfx.skyName || 'day', false);
   game.seed = startSeed;
   game.input.bindTouch(document);
   // No world, no RAPIER: traffic owns no physics objects at all. See traffic.js.
@@ -566,6 +571,16 @@ class Game {
       anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
     });
     this.cam = new ChaseCamera(gfx.camera);
+    // The cinematic mode places trackside shots along the road.
+    this.cam.path = this.path;
+    this.cam.groundAt = (s, v, out) => this.chunks.groundAt(s, v, out);
+    this.cam.groundHeight = (x, z) => this.chunks.field.height(x, z);
+    this._evMark = { cut: 0, lash: 0, pop: 0 };
+    // Air streaks are children of the camera, so the camera must be in the
+    // scene graph for them to draw.
+    if (!gfx.camera.parent) gfx.scene.add(gfx.camera);
+    this.speedLines = new SpeedLines(gfx.camera);
+    this._prevVy = 0;
 
     this.active = false;
     this.accumulator = 0;
@@ -854,6 +869,28 @@ class Game {
   // -------------------------------------------------------------- respawn --
 
   /**
+   * Switch the sky preset (sky.js): light, fog, grade, lakes and lamps.
+   * `save` remembers it for the next session.
+   */
+  setSky(name, save = true) {
+    const P = applySky(this.gfx, name, { water: this.chunks.water });
+    if (save) saveSky(name);
+    this.headlights = !!P.headlights;
+    if (this.vehicle) this.vehicle.headlightBoost = P.night ? 24 : 1;
+    if (this.speedLines) this.speedLines.night = !!P.night;
+    return P;
+  }
+
+  /** The next preset in the list, for the settings button and the K key. */
+  cycleSky() {
+    const i = SKY_NAMES.indexOf(this.gfx.skyName || 'day');
+    const name = SKY_NAMES[(i + 1) % SKY_NAMES.length];
+    this.setSky(name);
+    if (this.hud) this.hud.toast('sky: ' + SKY_PRESETS[name].label.toLowerCase());
+    return name;
+  }
+
+  /**
    * Puts the car back on the road and cuts the camera there. See `camera.snap`.
    *
    * `startRun` respawns BEFORE `beginIntro`; a snap after the fly-in starts
@@ -939,6 +976,9 @@ class Game {
     // Brake lights follow the pedal, so they come on in reverse too.
     this.vehicle.setBrakeLight(this.active ? control.brake : 0);
     this.flashing = this.active && this.input.flashHeld;
+    // The sky decides how hard the lamps have to work (a new car per setCar
+    // would otherwise lose it).
+    this.vehicle.headlightBoost = (SKY_PRESETS[this.gfx.skyName] || SKY_PRESETS.day).night ? 24 : 1;
     this.vehicle.setHeadlights(this.headlights, this.flashing);
 
     this.vehicle.setDriveForce(
@@ -1005,6 +1045,8 @@ class Game {
     if (this.inGarage) this._frameTitle();
 
     // Camera first: follow() re-centres the sky dome on this frame's position.
+    this.cam.carS = this.carS;
+    if (this.active) this._feedTrauma(dt);
     this.cam.update(dt, this.vehicle);
     // Use the interpolated pose: the shadow frustum is centred here, and
     // 8.3 ms steps would crawl the shadows across everything.
@@ -1015,6 +1057,8 @@ class Game {
         ? smoothstep(6, ATMOSPHERE.speedBlurRef, Math.abs(this.vehicle.forwardSpeed))
         : 0
     );
+
+    this.speedLines.update(dt, this.active ? this.vehicle.forwardSpeed : 0);
 
     if (this.active && this.mode === 'traffic') this.hud.updateRun(dt, this.run);
 
@@ -1035,6 +1079,32 @@ class Game {
 
     // Any one-shot press not consumed this frame is lost.
     this.input.endFrame();
+  }
+
+  /**
+   * Camera trauma from what the car is doing: a shift cut or driveline lash,
+   * an exhaust pop, a hard landing, a traffic hit. Each is an edge, so a
+   * held event is felt once.
+   */
+  _feedTrauma(dt) {
+    const sim = this.powertrain && this.powertrain.sim;
+    if (sim && sim.getEvents) {
+      const ev = sim.getEvents();
+      const m = this._evMark;
+      if (ev.cut > 0 && !(m.cut > 0)) this.cam.addTrauma(0.16);
+      if (ev.lash > 0.2 && !(m.lash > 0.2)) this.cam.addTrauma(0.12 * Math.min(1, ev.lash));
+      if (ev.pop > 0 && !(m.pop > 0)) this.cam.addTrauma(0.05);
+      m.cut = ev.cut; m.lash = ev.lash; m.pop = ev.pop;
+    }
+    const vy = this.vehicle.linvel.y;
+    // A landing: the vertical velocity snaps back toward zero in a frame.
+    const dv = vy - this._prevVy;
+    if (this._prevVy < -3 && dv > 2.5) this.cam.addTrauma(Math.min(0.7, dv * 0.07));
+    this._prevVy = vy;
+    if (this.traffic && this.traffic.impacts !== this._traumaImpacts) {
+      if (this._traumaImpacts !== undefined) this.cam.addTrauma(0.8);
+      this._traumaImpacts = this.traffic.impacts;
+    }
   }
 
   _handleActions() {
@@ -1073,6 +1143,7 @@ class Game {
         this.hud.toast('tilt centred');
       }
     }
+    if (this.input.consume('KeyK')) this.cycleSky();
     if (this.input.consume('KeyL')) {
       this.headlights = !this.headlights;
       this.hud.toast(this.headlights ? 'headlights on' : 'headlights off');

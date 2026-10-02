@@ -94,7 +94,7 @@ const js = async (expr) =>
     .result.value;
 const shot = async (name) => {
   const { data } = await send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(path.join(OUT, `${name}.png`), Buffer.from(data, 'base64'));
+  fs.writeFileSync(path.join(OUT, `${process.env.TAG || ""}${name}.png`), Buffer.from(data, 'base64'));
   console.log(`  wrote probe/shots/${name}.png`);
 };
 
@@ -114,7 +114,10 @@ ws.addEventListener('message', (e) => {
 });
 await send('Emulation.setDeviceMetricsOverride',
   { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
-await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}` });
+// SKY=night (any sky.js preset) and CAM=cinematic (any CAM_MODES entry)
+// pick the look to shoot.
+const skyQ = process.env.SKY ? `&sky=${encodeURIComponent(process.env.SKY)}` : '';
+await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}${skyQ}` });
 
 console.log(`\nseed "${seed}" — rendering through SwiftShader\n`);
 let booted = false;
@@ -163,6 +166,11 @@ if (jumpTo > 0) {
     g.respawn(${jumpTo});
     g.carS = ${jumpTo};})()`);
   await sleep(6000);
+}
+
+if (process.env.CAM) {
+  await js(`(()=>{const c=window.__highroads.cam;
+    for(let i=0;i<8&&c.cycle()!==${JSON.stringify(process.env.CAM)};i++);})()`);
 }
 
 const rig = `(()=>{const g=window.__highroads, c=g.cam, v=g.vehicle;
@@ -218,6 +226,8 @@ if (process.env.SKID === '1') {
 }
 
 console.log('  rig: ' + await js(rig));
+if (process.env.EVAL) console.log('  eval: ' + await js(process.env.EVAL));
+await sleep(1500);
 await shot('game-drive');
 // Extra looks, for checking the world rather than the car: SHOTS=n takes n
 // more frames a few seconds apart while it keeps driving.

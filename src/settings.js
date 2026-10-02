@@ -9,6 +9,7 @@
 import { TiltSteering } from './input.js';
 import { CAM_MODES } from './camera.js';
 import { GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel } from './config.js';
+import { SKY_PRESETS } from './sky.js';
 
 /**
  * One line per level; keep them true to config.js:applyGraphics.
@@ -170,6 +171,12 @@ export class Settings {
     this.gfxNote.className = 'row-hint';
     this.body.appendChild(this.gfxNote);
 
+    // Sky preset: cycles day → golden hour → dawn → overcast → full moon.
+    this.skyBtn = this._button('Sky: day', () => {
+      this.game.cycleSky();
+      this.refresh();
+    });
+
     this._section('Driving');
     this.autoBtn = this._button('Gearbox: auto', () => {
       this.game.setAutoShift(!pt.autoShift);
@@ -226,6 +233,10 @@ export class Settings {
       seg.dataset.active = String(GRAPHICS_LEVELS.indexOf(lvl));
       for (const g of this.gfxBtns) g.el.setAttribute('aria-pressed', String(g.lvl === lvl));
       if (this.gfxNote) this.gfxNote.textContent = GFX_NOTES[lvl] || '';
+    }
+    if (this.skyBtn) {
+      const n = this.game.gfx.skyName || 'day';
+      this.skyBtn.textContent = 'Sky: ' + (SKY_PRESETS[n] ? SKY_PRESETS[n].label.toLowerCase() : n);
     }
     if (this.autoBtn) {
       this.autoBtn.textContent = 'Gearbox: ' + (pt.autoShift ? 'auto' : 'manual');

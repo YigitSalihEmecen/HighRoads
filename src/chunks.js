@@ -108,6 +108,28 @@ function buildRoadColumns() {
   push(hw, PAINT);
   cols.push({ v: hw, kind: ASPHALT, drop: 0.45 });
 
+  // Wear across each lane, as geometry columns so the vertex colour carries
+  // it: the two wheel paths polished a little lighter, and a dark oil strip
+  // down the middle where engines drip. Lane centres are at ±lane/2 and
+  // ±lane·1.5; none of these offsets lands on a painted line.
+  const tones = [];
+  for (const c of [lane * 0.5, lane * 1.5]) {
+    for (const sgn of [-1, 1]) {
+      tones.push({ v: sgn * c, tone: 0.80 });            // oil strip
+      tones.push({ v: sgn * c - 0.42, tone: 0.97 });
+      tones.push({ v: sgn * c + 0.42, tone: 0.97 });
+      tones.push({ v: sgn * c - 0.86, tone: 1.08 });     // wheel paths
+      tones.push({ v: sgn * c + 0.86, tone: 1.08 });
+    }
+  }
+  for (const t of tones) {
+    if (Math.abs(t.v) > hw - w - 0.05) continue;
+    let i = 0;
+    while (i < cols.length && cols[i].v <= t.v) i++;
+    // Never split a painted stripe: only insert between asphalt columns.
+    if (i > 0 && cols[i - 1].kind !== ASPHALT) continue;
+    cols.splice(i, 0, { v: t.v, kind: ASPHALT, tone: t.tone });
+  }
   return cols;
 }
 
@@ -837,7 +859,7 @@ export class ChunkManager {
         positions[k * 3 + 2] = frame.pos.z + rightFlat.z * col.v - origin.z;
 
         if (col.kind === PAINT || (col.kind === CENTER && dash)) c.copy(paint);
-        else c.copy(asphalt).multiplyScalar(0.85 + wear * 0.32);
+        else c.copy(asphalt).multiplyScalar((0.85 + wear * 0.32) * (col.tone || 1));
 
         colors[k * 3 + 0] = c.r;
         colors[k * 3 + 1] = c.g;
