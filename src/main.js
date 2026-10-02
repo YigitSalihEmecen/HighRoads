@@ -23,7 +23,6 @@ import { ChunkManager } from './chunks.js';
 import { Traffic } from './traffic.js';
 import { RaycastVehicle } from './vehicle.js';
 import { ChaseCamera } from './camera.js';
-import { SpeedLines } from './speedlines.js';
 import { Powertrain } from './powertrain.js';
 import { Input, TiltSteering } from './input.js';
 import { HUD } from './hud.js';
@@ -571,17 +570,7 @@ class Game {
       anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
     });
     this.cam = new ChaseCamera(gfx.camera);
-    // The cinematic mode places trackside shots along the road.
-    this.cam.path = this.path;
-    this.cam.groundAt = (s, v, out) => this.chunks.groundAt(s, v, out);
-    this.cam.groundHeight = (x, z) => this.chunks.field.height(x, z);
-    this._evMark = { cut: 0, lash: 0, pop: 0 };
     this._sFrame = makeFrame();
-    // Air streaks are children of the camera, so the camera must be in the
-    // scene graph for them to draw.
-    if (!gfx.camera.parent) gfx.scene.add(gfx.camera);
-    this.speedLines = new SpeedLines(gfx.camera);
-    this._prevVy = 0;
 
     this.active = false;
     this.accumulator = 0;
@@ -878,7 +867,6 @@ class Game {
     if (save) saveSky(name);
     this.headlights = !!P.headlights;
     if (this.vehicle) this.vehicle.headlightBoost = P.night ? 24 : 1;
-    if (this.speedLines) this.speedLines.night = !!P.night;
     return P;
   }
 
@@ -1046,11 +1034,7 @@ class Game {
     if (this.inGarage) this._frameTitle();
 
     // Camera first: follow() re-centres the sky dome on this frame's position.
-    this.cam.carS = this.carS;
-    if (this.active) {
-      this._feedTrauma(dt);
-      this._feedSurroundings(dt);
-    }
+    if (this.active) this._feedSurroundings(dt);
     this.cam.update(dt, this.vehicle);
     // Use the interpolated pose: the shadow frustum is centred here, and
     // 8.3 ms steps would crawl the shadows across everything.
@@ -1061,8 +1045,6 @@ class Game {
         ? smoothstep(6, ATMOSPHERE.speedBlurRef, Math.abs(this.vehicle.forwardSpeed))
         : 0
     );
-
-    this.speedLines.update(dt, this.active ? this.vehicle.forwardSpeed : 0);
 
     if (this.active && this.mode === 'traffic') this.hud.updateRun(dt, this.run);
 
@@ -1083,32 +1065,6 @@ class Game {
 
     // Any one-shot press not consumed this frame is lost.
     this.input.endFrame();
-  }
-
-  /**
-   * Camera trauma from what the car is doing: a shift cut or driveline lash,
-   * an exhaust pop, a hard landing, a traffic hit. Each is an edge, so a
-   * held event is felt once.
-   */
-  _feedTrauma(dt) {
-    const sim = this.powertrain && this.powertrain.sim;
-    if (sim && sim.getEvents) {
-      const ev = sim.getEvents();
-      const m = this._evMark;
-      if (ev.cut > 0 && !(m.cut > 0)) this.cam.addTrauma(0.16);
-      if (ev.lash > 0.2 && !(m.lash > 0.2)) this.cam.addTrauma(0.12 * Math.min(1, ev.lash));
-      if (ev.pop > 0 && !(m.pop > 0)) this.cam.addTrauma(0.05);
-      m.cut = ev.cut; m.lash = ev.lash; m.pop = ev.pop;
-    }
-    const vy = this.vehicle.linvel.y;
-    // A landing: the vertical velocity snaps back toward zero in a frame.
-    const dv = vy - this._prevVy;
-    if (this._prevVy < -3 && dv > 2.5) this.cam.addTrauma(Math.min(0.7, dv * 0.07));
-    this._prevVy = vy;
-    if (this.traffic && this.traffic.impacts !== this._traumaImpacts) {
-      if (this._traumaImpacts !== undefined) this.cam.addTrauma(0.8);
-      this._traumaImpacts = this.traffic.impacts;
-    }
   }
 
   /**

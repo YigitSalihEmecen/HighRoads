@@ -6,7 +6,7 @@
  */
 
 import * as THREE from 'three';
-import { ATMOSPHERE, CAMERA, TITLE, ROAD } from './config.js';
+import { ATMOSPHERE, CAMERA, TITLE } from './config.js';
 import { clamp, damp, dampTrack, smoothstep } from './util.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -14,14 +14,7 @@ const WORLD_UP = new THREE.Vector3(0, 1, 0);
 /** Sun bearing from the world direction — the title orbit starts on the lit side. */
 const SUN_YAW = Math.atan2(ATMOSPHERE.sunDir.x, ATMOSPHERE.sunDir.z);
 
-export const CAM_MODES = ['close', 'chase', 'hood', 'cinematic'];
-
-/** Smooth 1D noise in [-1, 1]: three incommensurate sines, cheap and C∞. */
-function wobble(t, seed) {
-  return (Math.sin(t * 1.0 + seed) * 0.5
-        + Math.sin(t * 2.31 + seed * 1.7) * 0.3
-        + Math.sin(t * 5.17 + seed * 2.9) * 0.2);
-}
+export const CAM_MODES = ['close', 'chase', 'hood'];
 
 export class ChaseCamera {
   constructor(camera) {
@@ -60,31 +53,6 @@ export class ChaseCamera {
     // dampTrack needs both ends of the goal's travel; else the settled lag varies with frame rate.
     this._prevDesired = new THREE.Vector3();
     this._prevTarget = new THREE.Vector3();
-
-    // ---- cinematic state --------------------------------------------------
-    /** 0..1; shake is trauma² (Eiserloh, GDC 2016). Events add, time drains. */
-    this.trauma = 0;
-    this._shakeT = 0;
-    this._prevSpeed = 0;
-    this._accel = 0;
-    this._yawRate = 0;
-    this._prevHeading = new THREE.Vector3(0, 0, -1);
-    this._right = new THREE.Vector3();
-    /** Set by main.js: the road, a ground query, and where the car is on it. */
-    this.path = null;
-    this.groundAt = null;
-    /** (x, z) -> terrain height, for the trackside line-of-sight test. */
-    this.groundHeight = null;
-    this.carS = 0;
-    this._shot = null;
-    this._shotIdx = 0;
-    this._shotPos = new THREE.Vector3();
-    this._tmp = new THREE.Vector3();
-  }
-
-  /** Add camera trauma (0..1) — a gear change, a landing, an impact. */
-  addTrauma(x) {
-    this.trauma = Math.min(1, this.trauma + Math.max(0, x));
   }
 
   _track(vec, prev, goal, rate, dt) {
@@ -163,10 +131,6 @@ export class ChaseCamera {
       this._updateHood(dt, vehicle);
       return;
     }
-    if (mode === 'cinematic' && this.path && this.groundAt) {
-      this._updateCinematic(dt, vehicle);
-      return;
-    }
 
     const cfg = mode === 'close' ? CAMERA.close : CAMERA.chase;
     const zoom = cfg.zoom ?? 1;
@@ -190,35 +154,14 @@ export class ChaseCamera {
     this.speedT = damp(this.speedT, speedTarget, CAMERA.speedLag, dt);
     const speedT = this.speedT;
 
-    // ---- the cinematic terms ---------------------------------------------
-    // Longitudinal acceleration, smoothed: under throttle the camera falls
-    // back from the car, under braking it closes in. This is what makes a
-    // launch FEEL like a launch — the car pulls away from the lens.
-    if (dt > 0) {
-      const a = (vehicle.forwardSpeed - this._prevSpeed) / dt;
-      this._accel = damp(this._accel, clamp(a, -25, 25), 4.0, dt);
-      // Yaw rate from the heading the rig is following (rad/s, signed).
-      const cr = this._prevHeading.x * this.heading.z - this._prevHeading.z * this.heading.x;
-      this._yawRate = damp(this._yawRate, clamp(cr / dt, -2, 2), 5.0, dt);
-    }
-    this._prevSpeed = vehicle.forwardSpeed;
-    this._prevHeading.copy(this.heading);
-    const lag = clamp(this._accel * CAMERA.accelLag, -CAMERA.accelLagMax * 0.7, CAMERA.accelLagMax);
-    this._right.set(-this.heading.z, 0, this.heading.x);
-    // Look into the corner: the aim leads by the turn, more at speed.
-    const lead = clamp(this._yawRate * Math.abs(vehicle.forwardSpeed) * CAMERA.cornerLead, -4, 4);
-
     this._desired
       .copy(vehicle.renderPos)
-      .addScaledVector(this.heading, -(cfg.dist * dScale + speedT * CAMERA.distGain * zoom + lag))
-      // Lower at speed: the ground rushing closer to the lens reads as pace.
-      .addScaledVector(WORLD_UP, cfg.height * hScale + speedT * CAMERA.heightGain * zoom
-        - speedT * speedT * CAMERA.speedDrop);
+      .addScaledVector(this.heading, -(cfg.dist * dScale + speedT * CAMERA.distGain * zoom))
+      .addScaledVector(WORLD_UP, cfg.height * hScale + speedT * CAMERA.heightGain * zoom);
 
     this._target
       .copy(vehicle.renderPos)
       .addScaledVector(this.heading, cfg.ahead + speedT * 4)
-      .addScaledVector(this._right, -lead)
       .addScaledVector(WORLD_UP, CAMERA.aimHeight * hScale);
 
     if (!this.initialised) {
@@ -249,158 +192,8 @@ export class ChaseCamera {
     this.camera.lookAt(this.lookAt);
 
     this.camera.rotateZ(clamp(vehicle.slip * Math.sign(vehicle.wheels[2].slipLat) * 0.05, -0.06, 0.06));
-    // Lean into the turn, like a camera operator bracing against it.
-    this.camera.rotateZ(clamp(this._yawRate * speedT * CAMERA.lean, -0.07, 0.07));
-    this._shake(dt, speedT);
 
     this._applyFov(dt, speedT, vehicle, zoom);
-  }
-
-  /**
-   * Trauma shake plus a speed rumble, applied in the camera's own frame
-   * after it has been aimed, so it never feeds back into the damped rig.
-   */
-  _shake(dt, speedT) {
-    this.trauma = Math.max(0, this.trauma - CAMERA.traumaDecay * dt);
-    this._shakeT += dt;
-    const k = this.trauma * this.trauma * CAMERA.shakeTrauma
-            + speedT * speedT * speedT * CAMERA.shakeSpeed;
-    if (k <= 1e-5) return;
-    const t = this._shakeT * CAMERA.shakeFreq;
-    this.camera.translateX(wobble(t, 1.3) * k * 0.6);
-    this.camera.translateY(wobble(t, 7.1) * k * 0.45);
-    this.camera.rotateX(wobble(t * 1.3, 3.7) * k * 0.05);
-    this.camera.rotateY(wobble(t * 1.1, 5.9) * k * 0.05);
-    this.camera.rotateZ(wobble(t * 0.9, 9.2) * k * 0.035);
-  }
-
-  /**
-   * CINEMATIC mode: an auto-directed sequence of shots, cut between rather
-   * than flown between, the way a broadcast does it.
-   *
-   *   trackside  a fixed telephoto on the verge ahead; the car approaches and
-   *              blasts past. The lens zooms to hold the car's size, so the
-   *              background compresses — the classic motorsport shot.
-   *   tracking   a low "camera car" alongside, ground streaking past.
-   *   heli       high and behind, the road unrolling ahead.
-   */
-  _updateCinematic(dt, vehicle) {
-    const cam = this.camera;
-    const speed = Math.abs(vehicle.forwardSpeed);
-    const speedT = smoothstep(0, CAMERA.speedRef, speed);
-    this.speedT = speedT;
-    const shot = this._shot;
-    const kinds = ['trackside', 'tracking', 'heli', 'trackside'];
-    let cut = !shot || !this.initialised;
-    if (shot) {
-      shot.t += dt;
-      if (shot.kind === 'trackside') {
-        const past = this.carS - shot.s;
-        cut = cut || past > 30 || shot.t > 9 || (speed < 3 && shot.t > 4);
-      } else {
-        cut = cut || shot.t > shot.len;
-      }
-    }
-    if (cut) {
-      const kind = kinds[this._shotIdx++ % kinds.length];
-      const side = Math.random() < 0.5 ? -1 : 1;
-      this._shot = {
-        kind, side, t: 0, len: kind === 'heli' ? 7 : 6,
-        s: this.carS + clamp(speed * 3.2, 45, 140),
-        // On the shoulder, just off the tarmac: further out the verge grass is
-        // tall enough to fill a telephoto frame.
-        v: side * (ROAD.halfWidth + 1.8 + Math.random() * 2.5),
-        h: 2.0 + Math.random() * 1.6,
-      };
-      if (kind === 'trackside') this._placeTrackside(this._shot);
-      this.initialised = true;
-      this._cutFrame = true;
-    }
-    const S = this._shot;
-    this._fwd.copy(vehicle.renderFwd);
-    this._fwd.y = 0;
-    if (this._fwd.lengthSq() < 1e-6) this._fwd.set(0, 0, -1);
-    this._fwd.normalize();
-    this._right.set(-this._fwd.z, 0, this._fwd.x);
-
-    let fovTarget = CAMERA.fov;
-    this._target.copy(vehicle.renderPos).addScaledVector(WORLD_UP, 0.8);
-    if (S.kind === 'trackside') {
-      this._desired.copy(this._shotPos);
-      // Telephoto that holds the car's apparent size: fov from distance.
-      const d = this._desired.distanceTo(vehicle.renderPos);
-      fovTarget = clamp(2 * Math.atan(5.5 / Math.max(1, d)) * 180 / Math.PI, 14, 62);
-      this._target.addScaledVector(this._fwd, clamp(speed * 0.06, 0, 2.5));
-    } else if (S.kind === 'tracking') {
-      this._desired.copy(vehicle.renderPos)
-        .addScaledVector(this._right, S.side * 4.6)
-        .addScaledVector(this._fwd, 2.2 + Math.sin(S.t * 0.6) * 1.6)
-        .addScaledVector(WORLD_UP, 0.75);
-      fovTarget = 58;
-    } else {
-      this._desired.copy(vehicle.renderPos)
-        .addScaledVector(this._fwd, -26 + S.t * 1.5)
-        .addScaledVector(this._right, S.side * 9)
-        .addScaledVector(WORLD_UP, 14 - S.t * 0.6);
-      this._target.addScaledVector(this._fwd, 18);
-      fovTarget = 46;
-    }
-    if (this._cutFrame) {
-      this.position.copy(this._desired);
-      this.lookAt.copy(this._target);
-      this.fov = fovTarget;
-      this._seedGoals();
-      this._cutFrame = false;
-    } else if (S.kind === 'trackside') {
-      this.position.copy(this._desired);
-      this._track(this.lookAt, this._prevTarget, this._target, 9, dt);
-    } else {
-      this._track(this.position, this._prevDesired, this._desired, 6, dt);
-      this._track(this.lookAt, this._prevTarget, this._target, 8, dt);
-    }
-    this._seedGoals();
-    cam.position.copy(this.position);
-    cam.up.copy(WORLD_UP);
-    cam.lookAt(this.lookAt);
-    // A hand-held operator: a little drift even when nothing happens.
-    this.trauma = Math.max(this.trauma, S.kind === 'trackside' ? 0.18 : 0.12);
-    this._shake(dt, speedT * 0.6);
-    this.fov = damp(this.fov, fovTarget, S.kind === 'trackside' ? 6 : 2.5, dt);
-    if (Math.abs(cam.fov - this.fov) > 0.01) {
-      cam.fov = this.fov;
-      cam.updateProjectionMatrix();
-    }
-  }
-
-  /**
-   * Stands the trackside camera on the ground at (s, v) and makes sure it can
-   * see the road where the car will come from: if a crest is in the way, the
-   * other verge is tried, then the camera is raised over it.
-   */
-  _placeTrackside(shot) {
-    const look = this._tmp2 || (this._tmp2 = new THREE.Vector3());
-    const p = this._shotPos;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const g = this.groundAt(shot.s, shot.v, this._tmp);
-      p.set(g.x, g.y + shot.h, g.z);
-      let clear = true;
-      for (const back of [20, 40]) {
-        const r = this.groundAt(shot.s - back, 0, look);
-        const ty = r.y + 0.8;
-        for (let k = 1; k < 8; k++) {
-          const t = k / 8;
-          const x = p.x + (r.x - p.x) * t, z = p.z + (r.z - p.z) * t;
-          const yRay = p.y + (ty - p.y) * t;
-          const yGnd = this.groundHeight ? this.groundHeight(x, z) : -Infinity;
-          if (yGnd > yRay - 0.3) { clear = false; break; }
-        }
-        if (!clear) break;
-      }
-      if (clear) return;
-      if (attempt === 0) shot.v = -shot.v;
-    }
-    shot.h += 4;
-    p.y += 4;
   }
 
   /** Distance solved so the car fills TITLE.fill; the aim offset runs on the camera's own axes (horizontal negated). */

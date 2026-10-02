@@ -19,7 +19,6 @@ No build step, no bundlers, no dependencies — pure modern ES modules running s
 - **Traffic & Game Modes** — Choose between a relaxing **Zen** cruise or high-stakes **Traffic** mode with near-miss scoring, multiplier chains, and impact physics.
 - **Desktop & Mobile Optimized** — Responsive layouts supporting keyboard, gamepad, and touch controls with safe-area support for mobile portrait and landscape.
 - **Atmospheric Visuals** — Five sky presets (day, golden hour, dawn, overcast, and a full-moon night with stars), each setting light, fog, grade and water reflections.
-- **Cinematic Camera** — Acceleration lag, corner look-ahead, lean, trauma shake from shifts, landings and impacts, chromatic aberration and air streaks at speed, plus an auto-directed cinematic mode (telephoto trackside, tracking and heli shots).
 
 ---
 
@@ -35,7 +34,7 @@ No build step, no bundlers, no dependencies — pure modern ES modules running s
 | `G` | Toggle Auto / Manual Gearbox |
 | `L` | Headlights |
 | `F` *(hold)* | Flash Headlights (Traffic yields) |
-| `C` | Cycle Camera (Close / Chase / Hood / Cinematic) |
+| `C` | Cycle Camera (Chase / Close / Hood) |
 | `K` | Cycle Sky (Day / Golden / Dawn / Overcast / Night) |
 | `R` | Respawn / Reset |
 | `M` | Mute Audio |
