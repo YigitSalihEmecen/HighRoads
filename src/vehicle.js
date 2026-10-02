@@ -191,7 +191,13 @@ export class RaycastVehicle {
 
     // Density 0: mass comes from setAdditionalMassProperties, so the collider
     // cannot fight the chosen inertia tensor. The box is raised to the bodywork.
-    const col = RAPIER.ColliderDesc.cuboid(hx, hy, hz)
+    // Rounded edges: a sharp box bottoming out in a dip at speed caught the
+    // road trimesh's INTERNAL triangle edges and stopped dead from 190 km/h
+    // (probe/drive.mjs). A rounded one slides over them, so a scrape stays a
+    // scrape. (FIX_INTERNAL_EDGES on the road mesh fixes it too, but costs
+    // ~4 ms per streamed chunk.)
+    const round = Math.min(0.12, hy * 0.5);
+    const col = RAPIER.ColliderDesc.roundCuboid(hx - round, hy - round, hz - round, round)
       .setTranslation(0, this.V.chassisCentreY, 0)
       .setDensity(0)
       .setFriction(0.4)

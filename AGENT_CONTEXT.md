@@ -347,6 +347,13 @@ omega, gets propshaft torque. Two corrections follow from that override:
 - **`_retuneLaunch`** — `launchRate` is computed once in engine_sim's constructor
   and neither `setVehicle` nor `setEngine` revisits it; out by up to 2× both ways
   across the roster (#43).
+- **The gearbox is designed for the fitted engine** (#89). `vehicleProfile`
+  hands engine_sim the car's mass, wheels, the game's drag (`V.dragCoefficient`,
+  force = k·v²), rolling resistance and gravity; `sim.setVehicleProfile` then
+  redesigns the ratios (`engine_sim/src/gearbox.js`) and the gear count comes
+  from the engine (5-8). The car's own `gearRatios` table is no longer used
+  forward. `probe/gears.mjs` drag-races every car × engine: all must reach
+  their last gear.
 
 `mix.mechanical` is 0 — that layer is band-passed pink noise and reads as hiss.
 
@@ -1026,6 +1033,8 @@ Every one was real, diagnosed by measurement, and is re-introducible.
 | 86 | Golden-hour sun disc green | grade S-curve evaluated on HDR values went negative | evaluate on the clamped value, add the overflow back |
 | 87 | Vista shots radially smeared, FOV 997° | loop `dt` went negative after a tab stall; FOV damping extrapolated | clamp `dt ≥ 0` |
 | 88 | All foliage floated (or sank) over the terrain, following its shape | after the ground rewrite (#83) trees, shrubs, grass and rocks still interpolated the old road-space scatter sheet, whose columns are up to tens of metres wide: median +1.5 m (grass) to +3 m (trees), spread −3..+4 m against the drawn tiles | height from `field.height` via `_groundY`, a cached 2 m world lattice (matches the finest tiles) applied to accepted props only, so scatter cost stays in budget. Now within a few cm of the drawn surface |
+| 89 | Some engines never got past 4th; every engine had the car's gear count | ratios belonged to the CAR while engines are swappable, and the automatic needed 93.6 % of redline to change up: a weak or low-peaking engine sat on a drag plateau below it (`probe/gears.mjs`: 20 of 153 pairs stuck) | engine_sim designs the box per engine × car with the game's drag and gravity; power-based upshift at WOT. 0 of 153 stuck |
+| 90 | Car stopped dead from 190 km/h in a dip (exposed by #89's faster gearing) | the chassis cuboid bottomed out and caught the road trimesh's internal triangle edges | `roundCuboid` chassis (r ≤ 0.12 m). `FIX_INTERNAL_EDGES` on the road mesh also fixes it but costs ~4 ms per streamed chunk |
 
 ### Harness bugs that masqueraded as game bugs
 
