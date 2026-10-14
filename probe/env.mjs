@@ -231,6 +231,21 @@ run(1);
 const quietPuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
 check(quietPuffs === 0, 'a gripping tyre makes nothing', `${quietPuffs} puffs`);
 
+// A slip of a few frames — a steering flick, a shift — must leave nothing: a
+// lone quad reads as a dark square on the road (the flashing black rectangles).
+fx.reset();
+let blipMarks = 0;
+for (let blip = 0; blip < 20; blip++) {
+  for (const w of stub.wheels) w.slipAmount = w.rear ? 0.6 : 0;
+  stub.forwardSpeed = 25;
+  run(4 / 60);
+  for (const w of stub.wheels) w.slipAmount = 0;
+  run(20 / 60);
+}
+blipMarks = [...fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.marks.life).length / 4;
+check(blipMarks === 0, 'momentary slips leave no lone marks', `${blipMarks} quads from 20 four-frame blips`);
+stub.forwardSpeed = 1.2;
+
 // And nothing at speed: the cloud would be a hundred metres behind by the time
 // it existed — see FX.smoke.speedFade.
 fx.reset();

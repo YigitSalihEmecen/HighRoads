@@ -274,6 +274,8 @@ export class TyreFX {
       cursor: 0,
       /** Where each wheel last laid rubber, and whether it was laying any. */
       last: [null, null, null, null],
+      /** Seconds each wheel has been slipping; marks start only once it is sustained. */
+      held: [0, 0, 0, 0],
     };
   }
 
@@ -337,13 +339,16 @@ export class TyreFX {
       const w = vehicle.wheels[i];
 
       if (!w.grounded || w.slipAmount < FX.marks.minSlip) {
-        if (this.marks) this.marks.last[i] = null;
+        if (this.marks) { this.marks.last[i] = null; this.marks.held[i] = 0; }
         if (this.smoke) this.smoke.debt[i] = 0;
         continue;
       }
 
       // ---- marks -------------------------------------------------------
-      if (this.marks) {
+      // A slip of a frame or two would lay one lone quad: a dark square on the
+      // road that fades in place. Rubber goes down only once a slide is held.
+      if (this.marks) this.marks.held[i] += dt;
+      if (this.marks && this.marks.held[i] >= FX.marks.holdTime) {
         const strength = clamp(
           (w.slipAmount - FX.marks.minSlip) / (1 - FX.marks.minSlip), 0, 1);
         const prev = this.marks.last[i];
@@ -394,6 +399,7 @@ export class TyreFX {
       for (let i = 0; i < k.length; i += 2) k[i] = -1e6;
       this.marks.mark.needsUpdate = true;
       this.marks.last.fill(null);
+      this.marks.held.fill(0);
     }
   }
 

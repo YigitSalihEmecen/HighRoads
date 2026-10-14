@@ -50,6 +50,7 @@ export class RaycastVehicle {
     this.driveGrip = 0;
     /** Driven wheels' surface speed past the road, m/s (set by the powertrain): wheelspin. */
     this.driveSlip = 0;
+    this._spinVis = 0;
     /** Steering lock available this frame, radians. See `_updateSteering`. */
     this.steerLimit = 0;
 
@@ -569,8 +570,11 @@ export class RaycastVehicle {
     const slipBlend = smoothstep(V.slipBlendSpeed[0], V.slipBlendSpeed[1], this.speed);
     let slipAccum = 0;
     let driveGrip = 0;
-    // Wheelspin reads as slip on the driven tyres: smoke, marks and skid audio.
-    const spinSlip = smoothstep(1.2, 7, Math.abs(this.driveSlip));
+    // Wheelspin reads as slip on the driven tyres (smoke, marks, skid audio),
+    // smoothed so a momentary flicker of spin does not register — only a real
+    // burnout does.
+    this._spinVis += (Math.abs(this.driveSlip) - this._spinVis) * (1 - Math.exp(-dt / 0.12));
+    const spinSlip = smoothstep(2.5, 8, this._spinVis);
 
     for (let i = 0; i < this.wheels.length; i++) {
       const w = this.wheels[i];
@@ -657,7 +661,9 @@ export class RaycastVehicle {
     }
 
     this.slip = clamp(slipAccum / 4, 0, 1);
-    this.driveGrip = driveGrip;
+    // Low-passed (~60 ms): a steering transient spikes the lateral demand for a
+    // step or two, and the raw budget collapsed with it into phantom wheelspin.
+    this.driveGrip += (driveGrip - this.driveGrip) * (1 - Math.exp(-dt / 0.06));
   }
 
   // ----------------------------------------------------------------- aero --
@@ -789,6 +795,7 @@ export class RaycastVehicle {
     this.reverse = false;
     this.driveForce = 0;
     this.driveSlip = 0;
+    this._spinVis = 0;
     this.slip = 0;
     this.upsideDownFor = 0;
     this.parkedPos.copy(position);

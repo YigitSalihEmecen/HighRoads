@@ -594,6 +594,8 @@ export const FX = {
     opacity: 0.5,
     /** Above this much slip a mark is laid. */
     minSlip: 0.18,
+    /** ...once the slip has lasted this long, s. Shorter blips left lone dark squares. */
+    holdTime: 0.1,
     /** Lift above the contact patch, metres. Enough to clear the terrain mesh. */
     lift: 0.035,
     /** Mark width as a fraction of the tyre's own width. */
