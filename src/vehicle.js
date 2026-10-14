@@ -20,7 +20,7 @@ export class RaycastVehicle {
    *                               geometry measured from the model, rates
    *                               derived from mass. Held per instance as
    *                               `this.V`, never read from module config.
-   * @param {object}  opts.model   { body, wheels } from assets.loadCarModel
+   * @param {object}  opts.model   { body, wheels } from models.buildModel (car_gen)
    */
   constructor({ RAPIER, world, scene, params, model }) {
     this.RAPIER = RAPIER;
@@ -198,7 +198,7 @@ export class RaycastVehicle {
     // ~4 ms per streamed chunk.)
     const round = Math.min(0.12, hy * 0.5);
     const col = RAPIER.ColliderDesc.roundCuboid(hx - round, hy - round, hz - round, round)
-      .setTranslation(0, this.V.chassisCentreY, 0)
+      .setTranslation(0, this.V.chassisCentreY, this.V.chassisCentreZ || 0)
       .setDensity(0)
       .setFriction(0.4)
       .setRestitution(0.05);
@@ -247,17 +247,6 @@ export class RaycastVehicle {
     });
 
     this.scene.add(this.group);
-  }
-
-  /**
-   * Takes the model's groups back after the showroom has borrowed them.
-   *
-   * The showroom re-parents the body and wheel groups onto its turntable.
-   */
-  reattachModel() {
-    this.group.add(this.model.body);
-    for (let i = 0; i < this.wheelMeshes.length; i++) this.group.add(this.wheelMeshes[i]);
-    // Poses are rewritten by syncVisuals; this only unparents the groups.
   }
 
   /** Removes this vehicle from the scene and the physics world. */

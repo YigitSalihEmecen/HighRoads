@@ -734,8 +734,12 @@ export const VEHICLE = {
 };
 
 export const TRAFFIC = {
-  /** Cars kept alive around the player. */
-  count: 9,
+  /** Cars kept alive around the player, on average; `wave` swells and thins it along the road. */
+  count: 10,
+  /** Density varies ±this fraction over a few kilometres: busy stretches, empty ones. */
+  wave: 0.45,
+  /** Distinct generated cars in the pool (models.js Fleet). */
+  fleetSize: 18,
 
   /** Populated band, and where inside it a car may appear — cars spawn in the haze. */
   spawnMin: 430,
@@ -743,26 +747,41 @@ export const TRAFFIC = {
   behind: 240,
   /** Share of spawns that come the other way. */
   oncomingShare: 0.42,
+  /** Same-direction cars may also appear this far behind when the player dawdles. */
+  spawnBehind: 190,
 
-  speedMin: 17,
-  speedMax: 31,
-  speedFloor: 6,
-  /** Bumper-to-bumper minimum, plus this much per m/s of speed. */
-  minGap: 16,
-  headway: 0.9,
-  accelRate: 0.55,
-  brakeRate: 2.4,
+  /** Desired speeds, m/s, before each driver's personality and car class. */
+  speedMin: 18,
+  speedMax: 32,
+  speedFloor: 0,
+
+  // ------------------------------------------- Intelligent Driver Model --
+  /** Comfortable acceleration and deceleration, m/s², for a middling driver. */
+  accel: 1.7,
+  decel: 2.6,
+  /** Panic stop ceiling. IDM asks for more when something appears in the lane. */
+  emergencyDecel: 9,
+  /** Standstill gap, metres, and time headway, seconds. */
+  jamGap: 2.5,
+  headway: 1.3,
   /** Lateral acceleration traffic is willing to use through a corner. */
-  cornerAccel: 6.5,
+  cornerAccel: 3.2,
+
+  // ---------------------------------------------------------- lanes --
+  /** Seconds a manoeuvre takes, and seconds of indicator before it starts. */
+  laneChangeTime: 3.0,
+  signalTime: 1.1,
+  /** Acceleration gain (m/s²) that makes an overtake worth it; and the most braking it may impose. */
+  overtakeGain: 0.35,
+  safeDecel: 3.0,
+  changeCooldown: 4,
 
   /** How far back a driver notices someone coming up behind. */
   noticeRange: 90,
   /** Flashed: slow to this fraction of cruise while pulling aside. */
-  yieldSlow: 0.7,
-  /** Tailgated without a flash: most drivers find a little more speed. */
-  pressedBoost: 1.16,
-  changeCooldown: 3.5,
-  laneRate: 1.1,
+  yieldSlow: 0.75,
+  /** Seconds to impact at which an oncoming driver flashes, swerves and leans on the horn. */
+  alarmTime: 3.2,
 
   // ------------------------------------------------------------- impacts --
   /** Bounciness of a car-to-car hit. Sheet metal is not a squash ball. */

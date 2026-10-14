@@ -21,20 +21,25 @@ const chunks = new ChunkManager({
   scene: new THREE.Scene(), world: null, RAPIER: null, path, terrain, foliage: new Map(),
 });
 
-const mk = (id, mass, len, wid) => [id, {
-  body: new THREE.Group(),
-  wheels: { FL: new THREE.Group(), FR: new THREE.Group(), BL: new THREE.Group(), BR: new THREE.Group() },
-  metrics: {
-    trackHalf: wid * 0.82, wheelbaseHalf: len * 0.62, wheelRadius: 0.36, wheelWidth: 0.26,
-    bodyHeight: 1.45, bodyHalfWidth: wid, bodyHalfLength: len,
+// A stand-in for models.Fleet: three body sizes, enough cars that the pool never runs dry.
+const mk = (i, len, wid) => ({
+  seed: 'p' + i, mass: 1100 + 120 * (i % 7), build: { style: ['sedan', 'suv', 'hatch'][i % 3] },
+  model: {
+    body: new THREE.Group(),
+    wheels: { FL: new THREE.Group(), FR: new THREE.Group(), BL: new THREE.Group(), BR: new THREE.Group() },
+    metrics: {
+      trackHalf: wid * 0.82, wheelbaseHalf: len * 0.62, wheelRadius: 0.36, wheelWidth: 0.26,
+      bodyHeight: 1.45, bodyHalfWidth: wid, bodyHalfLength: len, bodyFrontZ: -len, bodyRearZ: len,
+    },
+    setBrake() {}, setHeadlights() {}, setColor() {}, setTrimColor() {},
   },
-}];
-const models = new Map([
-  mk('sport', 1180, 2.1, 0.92), mk('van', 1820, 2.6, 1.0), mk('pickup', 1950, 2.7, 1.05),
-]);
-const roster = [
-  { id: 'sport', mass: 1180 }, { id: 'van', mass: 1820 }, { id: 'pickup', mass: 1950 },
-];
+});
+const pool = Array.from({ length: 24 }, (_, i) => mk(i, [2.1, 2.6, 2.7][i % 3], [0.92, 1.0, 1.05][i % 3]));
+const fleet = {
+  free: pool.slice(), busy: new Set(),
+  acquire(rng) { if (!this.free.length) return null; const e = this.free.splice(Math.floor(rng() * this.free.length), 1)[0]; this.busy.add(e); return e; },
+  release(e) { if (this.busy.delete(e)) this.free.push(e); },
+};
 
 let impulses = [];
 const PLAYER_MASS = 1250;
@@ -53,15 +58,16 @@ const vehicle = {
   },
 };
 
-const traffic = new Traffic({ scene: new THREE.Scene(), path, chunks, models, roster });
+const traffic = new Traffic({ scene: new THREE.Scene(), path, chunks, fleet });
 
 const dt = 1 / 60;
 const steps = Math.round(MINUTES * 60 * 60);
 let playerS = 120;
-const playerSpeed = 42;                 // ~150 km/h, faster than all traffic
+const playerSpeed = Number(process.argv[4] || 42);   // default ~150 km/h, faster than all traffic
+const playerLane = Number(process.argv[5] || 0);
 path.ensureLength(playerS + playerSpeed * MINUTES * 60 + 3000);
 
-let minSpawnDist = Infinity;
+let minSpawnDist = Infinity, nearestBehind = -Infinity;
 let worstOverlap = 0, overlapEvents = 0;
 let stalledFrames = 0, movingSamples = 0;
 const stallSince = new Map();
@@ -70,6 +76,8 @@ let counts = [];
 let laneErrWorst = 0;
 let seen = new Set();
 let passes = 0, oncomingPasses = 0, closest = Infinity;
+let changes = 0, unsignalled = 0;
+const signalled = new Set();
 
 for (let i = 0; i < steps; i++) {
   playerS += playerSpeed * dt;
@@ -78,11 +86,22 @@ for (let i = 0; i < steps; i++) {
   vehicle.vel.set(f.tan.x * playerSpeed, 0, f.tan.z * playerSpeed);
 
   traffic.update(dt, {
-    s: playerS, v: ROAD.laneWidth * 0.5, speed: playerSpeed, flashing: false, vehicle,
+    s: playerS, v: traffic.lanes[playerLane], speed: playerSpeed, flashing: false, vehicle,
   });
 
   for (const c of traffic.cars) {
-    if (!seen.has(c.id)) { seen.add(c.id); minSpawnDist = Math.min(minSpawnDist, c.s - playerS); }
+    c.age = (c.age || 0) + dt;
+    if (c.signal && c.lastLane === c.lane) signalled.add(c.id + ':' + c.lane);
+    if (c.lastLane !== undefined && c.lastLane !== c.lane) {
+      changes++;
+      if (!signalled.has(c.id + ':' + c.lastLane)) unsignalled++;
+    }
+    c.lastLane = c.lane;
+    if (!seen.has(c.id)) {
+      seen.add(c.id);
+      const d = c.s - playerS;
+      if (d > 0) minSpawnDist = Math.min(minSpawnDist, d); else nearestBehind = Math.max(nearestBehind, d);
+    }
     if (c.spun === 0) {
       movingSamples++;
       if (c.speed < 1.0) {
@@ -92,7 +111,7 @@ for (let i = 0; i < steps; i++) {
         longestStall = Math.max(longestStall, (i - t0) * dt);
       } else stallSince.delete(c.id);
       // Only settled cars: a lane change eases across a lane mid-transition.
-      if (c.changeCooldown <= 0) {
+      if (c.laneT >= 1 && c.pendingLane < 0 && c.age > 3) {
         laneErrWorst = Math.max(laneErrWorst, Math.abs(c.v - c.dir * traffic.lanes[c.lane]));
       }
     }
@@ -106,7 +125,8 @@ for (let i = 0; i < steps; i++) {
   for (let a = 0; a < traffic.cars.length; a++) {
     for (let b = a + 1; b < traffic.cars.length; b++) {
       const A = traffic.cars[a], B = traffic.cars[b];
-      if (A.dir !== B.dir || A.lane !== B.lane || A.spun || B.spun) continue;
+      if (A.dir !== B.dir || A.spun || B.spun) continue;
+      if (Math.abs(A.v - B.v) > A.halfWid + B.halfWid) continue;
       const pen = (A.halfLen + B.halfLen) - Math.abs(A.s - B.s);
       if (pen > 0) { overlapEvents++; worstOverlap = Math.max(worstOverlap, pen); }
     }
@@ -116,12 +136,15 @@ for (let i = 0; i < steps; i++) {
 
 const ok = (b) => (b ? ' ok ' : 'FAIL');
 console.log(`seed "${seed}" — ${MINUTES} min at ${(playerSpeed * 3.6).toFixed(0)} km/h, ${seen.size} cars spawned\n`);
-console.log(`  [${ok(minSpawnDist >= TRAFFIC.spawnMin - 1)}] nearest spawn to the player      ${minSpawnDist.toFixed(0)} m  (floor ${TRAFFIC.spawnMin} m)`);
+console.log(`  [${ok(minSpawnDist >= TRAFFIC.spawnMin - 1)}] nearest spawn ahead               ${minSpawnDist.toFixed(0)} m  (floor ${TRAFFIC.spawnMin} m)`);
+console.log(`  [${ok(nearestBehind <= -TRAFFIC.spawnBehind * 0.85)}] nearest spawn behind              ${nearestBehind === -Infinity ? 'none' : nearestBehind.toFixed(0) + ' m'}`);
 console.log(`  [${ok(longestStall < 2.5)}] longest a healthy car sat still   ${longestStall.toFixed(2)} s`);
 console.log(`  [${ok(stalledFrames / movingSamples < 0.02)}] share of car-frames below 1 m/s   ${(100 * stalledFrames / movingSamples).toFixed(2)} %`);
-console.log(`  [${ok(overlapEvents === 0)}] same-lane overlaps                ${overlapEvents} (worst ${worstOverlap.toFixed(2)} m)`);
+console.log(`  [${ok(overlapEvents === 0)}] overlapping cars                ${overlapEvents} (worst ${worstOverlap.toFixed(2)} m)`);
 console.log(`  [${ok(laneErrWorst < 0.35)}] worst settled lane error          ${laneErrWorst.toFixed(3)} m`);
-console.log(`  [${ok(Math.min(...counts) >= TRAFFIC.count - 2)}] population range                  ${Math.min(...counts)}..${Math.max(...counts)} (target ${TRAFFIC.count})`);
+console.log(`  [${ok(Math.min(...counts) >= Math.floor(TRAFFIC.count * (1 - TRAFFIC.wave)) - 2)}] population range                  ${Math.min(...counts)}..${Math.max(...counts)} (target ${TRAFFIC.count} ±${Math.round(TRAFFIC.wave * 100)}%)`);
+console.log(`  [${ok(changes > 0 && unsignalled <= changes * 0.25)}] lane changes, unsignalled         ${changes}, ${unsignalled} (evasive swerves only)`);
+console.log(`  [${ok(fleet.busy.size === traffic.cars.length)}] fleet bookkeeping                 ${fleet.busy.size} out, ${traffic.cars.length} on road`);
 console.log(`  [${ok(passes > 0)}] near misses detected              ${passes} (${oncomingPasses} oncoming), closest ${closest === Infinity ? 'n/a' : closest.toFixed(2) + ' m'}`);
 if (impulses.length) {
   console.log(`  [${ok(Math.max(...impulses) <= TRAFFIC.maxImpactDv + 1e-6)}] impacts ${impulses.length}, player dv max ${Math.max(...impulses).toFixed(2)} m/s, mean ${(impulses.reduce((a, b) => a + b, 0) / impulses.length).toFixed(2)} m/s`);

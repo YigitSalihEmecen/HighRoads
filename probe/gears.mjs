@@ -1,7 +1,7 @@
 /**
  * gears.mjs — does every car pull through every gear, with every engine?
  *
- *   node probe/gears.mjs [carId|all] [engineId|all]
+ *   node probe/gears.mjs [styleId|all] [engineId|all]
  *
  * A straight-line drag race on a flat road: full throttle from rest, the
  * automatic box, the game's lumped aero drag (`V.dragCoefficient`·v²) and a
@@ -13,7 +13,8 @@
 import { createMockContext, installGlobals } from '../engine_sim/test/mock-audio.mjs';
 installGlobals(createMockContext().ctx);
 import { Powertrain } from '../src/powertrain.js';
-import { CARS, ENGINE_OPTIONS, buildCarParams } from '../src/cars.js';
+import { ENGINE_OPTIONS, BODY_STYLES, buildCarParams, deriveSpec } from '../src/cars.js';
+import { presetBuild } from '../src/models.js';
 import { VEHICLE, WORLD } from '../src/config.js';
 
 const g = Math.abs(WORLD.gravity);
@@ -23,8 +24,9 @@ const metrics = { trackHalf: 0.79, wheelbaseHalf: 1.28, wheelRadius: 0.34, wheel
 const engines = ENGINE_OPTIONS.map((e) => e.id);
 let stuck = 0, runs = 0;
 const rows = [];
-for (const spec of CARS) {
-  if (wantCar !== 'all' && spec.id !== wantCar) continue;
+for (const { id } of BODY_STYLES) {
+  if (wantCar !== 'all' && id !== wantCar) continue;
+  const spec = { ...deriveSpec(presetBuild(id), metrics), id };
   const V = buildCarParams(spec, metrics, VEHICLE, g);
   for (const eng of engines) {
     if (wantEng !== 'all' && eng !== wantEng) continue;

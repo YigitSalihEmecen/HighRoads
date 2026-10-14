@@ -17,19 +17,15 @@ import { createMockContext, installGlobals } from '../engine_sim/test/mock-audio
 installGlobals(createMockContext().ctx);
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import fs from 'node:fs';
 import { WORLD, VEHICLE, CAMERA } from '../src/config.js';
 import { RaycastVehicle } from '../src/vehicle.js';
 import { ChaseCamera } from '../src/camera.js';
 import { Powertrain } from '../src/powertrain.js';
-import { carById, buildCarParams } from '../src/cars.js';
-import { buildCarFromObject } from '../src/assets.js';
+import { buildCarParams } from '../src/cars.js';
+import { styleRoster } from '../src/models.js';
 
-const { FBXLoader } = await import('three/addons/loaders/FBXLoader.js');
-const spec = carById(process.argv[2] || 'sport');
-const buf = fs.readFileSync(`assets/car_models/Fbx/${spec.file}`);
-const model = buildCarFromObject(new FBXLoader().parse(
-  buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), ''), null, spec.file);
+const want = process.argv[2] || 'supercar';
+const { spec, model } = styleRoster(0).find((c) => c.id === want) || styleRoster(0)[0];
 await RAPIER.init();
 
 const h = WORLD.fixedStep;

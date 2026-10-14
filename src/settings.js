@@ -1,9 +1,9 @@
 /**
- * settings.js — the settings panel.
+ * settings.js — the settings sheet.
  *
- * The panel is a node, not a fixed location. The game mounts it into the
- * title screen drawer or into the pause menu. It builds the controls for the
- * engine simulator, the wind, the gearbox and the camera.
+ * One sheet, opened from the title, the garage and the pause menu. Each
+ * `_page` is a tab: graphics, driving (gearbox, camera, tilt) and audio (the
+ * engine simulator's buses and tone, wind, traffic horns).
  */
 
 import { TiltSteering } from './input.js';
@@ -37,8 +37,10 @@ export class Settings {
   constructor(game) {
     this.game = game;
     this.body = document.getElementById('settings-body');
+    this.tabs = document.getElementById('set-tabs');
+    this._pages = [];
     this._rows = [];
-    /** Where new controls go. Set to the audio fold's body while it builds. */
+    /** Where new controls go: the page being built. */
     this._host = this.body;
 
     // Nothing typed into the panel reaches the driving controls.
@@ -48,43 +50,35 @@ export class Settings {
     this._build();
   }
 
-  _section(title) {
-    const h = document.createElement('div');
-    h.className = 'set-section';
-    h.textContent = title;
-    this._host.appendChild(h);
+  /** A tab in the settings sheet, and the page new controls go into. */
+  _page(title) {
+    const page = document.createElement('div');
+    page.className = 'set-page';
+    this.body.appendChild(page);
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'set-tab';
+    tab.textContent = title;
+    tab.addEventListener('click', () => this.showPage(title));
+    this.tabs.appendChild(tab);
+    this._pages.push({ title, page, tab });
+    this._host = page;
+    if (this._pages.length === 1) this.showPage(title);
+    return page;
   }
 
-  /**
-   * A collapsible group — the audio block. Returns the body to build into;
-   * it starts folded, so the panel opens short instead of a wall of sliders.
-   */
-  collapse(title, { open = false } = {}) {
-    const root = document.createElement('div');
-    root.className = 'set-collapse' + (open ? ' open' : '');
-    const head = document.createElement('button');
-    head.type = 'button';
-    head.className = 'set-collapse-head';
-    head.setAttribute('aria-expanded', String(open));
-    const label = document.createElement('span');
-    label.textContent = title;
-    const caret = document.createElement('span');
-    caret.className = 'caret';
-    caret.setAttribute('aria-hidden', 'true');
-    head.append(label, caret);
-    const fold = document.createElement('div');
-    fold.className = 'set-collapse-fold';
-    const body = document.createElement('div');
-    body.className = 'set-collapse-body';
-    fold.appendChild(body);
-    root.append(head, fold);
-    this.body.appendChild(root);
-    head.addEventListener('click', () => {
-      const on = !root.classList.contains('open');
-      root.classList.toggle('open', on);
-      head.setAttribute('aria-expanded', String(on));
-    });
-    return body;
+  showPage(title) {
+    for (const p of this._pages) {
+      p.page.classList.toggle('on', p.title === title);
+      p.tab.classList.toggle('on', p.title === title);
+    }
+  }
+
+  _sub(title) {
+    const h = document.createElement('div');
+    h.className = 'set-sub';
+    h.textContent = title;
+    this._host.appendChild(h);
   }
 
   _slider(label, hint, min, max, value, onInput) {
@@ -106,7 +100,10 @@ export class Settings {
     input.step = '0.01';
     input.value = String(value);
 
-    const show = (v) => { readout.textContent = Number(v).toFixed(2); };
+    const show = (v) => {
+      readout.textContent = Number(v).toFixed(2);
+      input.style.setProperty('--p', `${((v - min) / (max - min)) * 100}%`);
+    };
     show(value);
 
     input.addEventListener('input', () => {
@@ -136,7 +133,8 @@ export class Settings {
   _build() {
     const pt = this.game.powertrain;
 
-    this._section('Graphics');
+    this._page('Graphics');
+    this._sub('Detail');
 /**
      * A three-state switch, one segment per level. Only an actual change
      * rebuilds the world (see config.js). Picking the current level does
@@ -164,12 +162,14 @@ export class Settings {
       seg.appendChild(b);
       this.gfxBtns.push({ lvl, el: b });
     });
-    this.body.appendChild(seg);
+    seg.style.setProperty('--n', GRAPHICS_LEVELS.length);
+    this._host.appendChild(seg);
 
     // One line saying what the level actually does; see config.js.
     this.gfxNote = document.createElement('div');
     this.gfxNote.className = 'row-hint';
-    this.body.appendChild(this.gfxNote);
+    this._host.appendChild(this.gfxNote);
+    this._sub('Atmosphere');
 
     // Sky preset: cycles day → golden hour → dawn → overcast → full moon.
     this.skyBtn = this._button('Sky: day', () => {
@@ -177,7 +177,8 @@ export class Settings {
       this.refresh();
     });
 
-    this._section('Driving');
+    this._page('Driving');
+    this._sub('Car');
     this.autoBtn = this._button('Gearbox: auto', () => {
       this.game.setAutoShift(!pt.autoShift);
     });
@@ -199,20 +200,22 @@ export class Settings {
       });
     }
 
-    // All audio shares one fold, folded by default. See collapse().
-    this._host = this.collapse('Audio');
+    this._page('Audio');
+    this._sub('Levels');
     this.master = this._slider('Master', 'overall level', 0, 1, pt.volume, (v) => pt.setVolume(v));
     // Not an engine bus (see wind.js), so it gets its own control.
     this.wind = this._slider('Wind', 'air over the body, louder the faster you go',
       0, 1, this.game.wind.volume, (v) => this.game.wind.setVolume(v));
+    this.horns = this._slider('Horns', 'other drivers telling you what they think', 0, 1, this.game.traffic ? this.game.traffic.hornVolume : 0.5,
+      (v) => { if (this.game.traffic) this.game.traffic.hornVolume = v; });
 
-    this._section('Voice mix');
+    this._sub('Voice mix');
     this.busRows = {};
     for (const [id, label, hint] of BUSES) {
       this.busRows[id] = this._slider(label, hint, 0, 2, pt.mix[id], (v) => pt.setBus(id, v));
     }
 
-    this._section('Tone');
+    this._sub('Tone');
     this.rumble = this._slider('Rumble', 'weight at the bottom end', 0, 2, pt.tone.rumble,
       (v) => pt.setTone({ rumble: v }));
     this.bright = this._slider('Brightness', 'rasp and air at the top', 0, 2, pt.tone.brightness,
@@ -230,7 +233,7 @@ export class Settings {
     if (this.gfxBtns && this.gfxBtns.length) {
       const lvl = graphicsLevel();
       const seg = this.gfxBtns[0].el.parentElement;
-      seg.dataset.active = String(GRAPHICS_LEVELS.indexOf(lvl));
+      seg.style.setProperty('--a', GRAPHICS_LEVELS.indexOf(lvl));
       for (const g of this.gfxBtns) g.el.setAttribute('aria-pressed', String(g.lvl === lvl));
       if (this.gfxNote) this.gfxNote.textContent = GFX_NOTES[lvl] || '';
     }

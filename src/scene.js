@@ -172,6 +172,7 @@ export async function createScene(container) {
   let renderPass = null;
   let speedBlur = null;
   let vignette = null;
+  let bloomPass = null;
   try {
     const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { ShaderPass }, { OutputPass }] =
       await Promise.all([
@@ -197,6 +198,7 @@ export async function createScene(container) {
     const bloomSize = bloom.setSize.bind(bloom);
     bloom.setSize = (w, h) => bloomSize(Math.max(2, w / 2), Math.max(2, h / 2));
     composer.addPass(bloom);
+    bloomPass = bloom;
     vignette = new ShaderPass(FINISH_SHADER);
     // Drive the config value instead of the shader's hard-coded default.
     vignette.uniforms.uAmount.value = ATMOSPHERE.vignette;
@@ -245,6 +247,26 @@ export async function createScene(container) {
   }
 
   /**
+   * Draws another scene through the same post chain — the garage studio uses
+   * it — with its own bloom and exposure; the road's settings are restored.
+   */
+  function renderView(view, viewCamera, { bloom = null, exposure = null } = {}) {
+    const keepBloom = bloomPass ? bloomPass.strength : 0;
+    const keepExposure = renderer.toneMappingExposure;
+    const keepBlur = speedBlur ? speedBlur.uniforms.uStrength.value : 0;
+    if (bloomPass && bloom != null) bloomPass.strength = bloom;
+    if (exposure != null) renderer.toneMappingExposure = exposure;
+    if (speedBlur) speedBlur.uniforms.uStrength.value = 0;
+    if (renderPass) { renderPass.scene = view; renderPass.camera = viewCamera; }
+    if (composer) composer.render();
+    else renderer.render(view, viewCamera);
+    if (renderPass) { renderPass.scene = scene; renderPass.camera = camera; }
+    if (bloomPass) bloomPass.strength = keepBloom;
+    renderer.toneMappingExposure = keepExposure;
+    if (speedBlur) speedBlur.uniforms.uStrength.value = keepBlur;
+  }
+
+  /**
    * Dynamic resolution. The frame's wall time (rAF to rAF) is smoothed; if it
    * stays over budget for ~1 s the render pixel ratio steps down, and after
    * ~4 s of clear headroom it steps back up. Bounded to [75 % of the device
@@ -277,7 +299,7 @@ export async function createScene(container) {
   }
 
   const gfx = {
-    renderer, scene, camera, sun, hemi, fill, sky, sunDir, composer, follow, render, resize,
+    renderer, scene, camera, sun, hemi, fill, sky, sunDir, composer, follow, render, renderView, resize,
     setSpeedBlur, grade: vignette, baseFogDensity: ATMOSPHERE.fogDensity, speedBlur, adapt,
     get pixelRatio() { return ratio; },
   };

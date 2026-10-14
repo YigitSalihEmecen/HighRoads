@@ -4,8 +4,8 @@
  * Usable steering angle across speed, steady-state cornering, and slide
  * recovery.
  */
-// FBXLoader reaches for the DOM to build texture images; same stub as the other
-// probes, hoisted so it is in place before three is imported.
+// car_gen's materials reach for the DOM; same stub as the other probes, hoisted
+// so it is in place before three is imported.
 globalThis.document = {
   createElement: (t) => ({
     tagName: t, style: {}, setAttribute() {}, getContext: () => null,
@@ -17,20 +17,13 @@ globalThis.document = {
 globalThis.self = globalThis;
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import fs from 'node:fs';
 import { WORLD, VEHICLE } from '../src/config.js';
 import { RaycastVehicle } from '../src/vehicle.js';
-import { CARS, carById, buildCarParams } from '../src/cars.js';
-import { buildCarFromObject } from '../src/assets.js';
+import { buildCarParams } from '../src/cars.js';
+import { styleRoster } from '../src/models.js';
 
-const { FBXLoader } = await import('three/addons/loaders/FBXLoader.js');
-const loader = new FBXLoader();
-const models = new Map();
-for (const spec of CARS) {
-  const buf = fs.readFileSync(`assets/car_models/Fbx/${spec.file}`);
-  models.set(spec.id, buildCarFromObject(
-    loader.parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), ''), null, spec.file));
-}
+// One generated car per body style (car_gen presets).
+const cars = new Map(styleRoster(0).map((c) => [c.id, c]));
 await RAPIER.init();
 
 function makeWorld() {
@@ -43,11 +36,11 @@ function makeWorld() {
 
 function spawn(id) {
   const world = makeWorld();
-  const spec = carById(id);
+  const { spec, model } = cars.get(id);
   const v = new RaycastVehicle({
     RAPIER, world, scene: new THREE.Scene(),
-    params: buildCarParams(spec, models.get(id).metrics, VEHICLE, Math.abs(WORLD.gravity)),
-    model: models.get(id),
+    params: buildCarParams(spec, model.metrics, VEHICLE, Math.abs(WORLD.gravity)),
+    model,
   });
   v.respawn(new THREE.Vector3(0, 0.03, 0), new THREE.Vector3(0, 0, -1));
   return { world, v };
@@ -77,7 +70,7 @@ function atSpeed(id, mps) {
 console.log('=== usable steering angle vs speed (Sport) ===');
 console.log('  km/h    max steer   lat accel it implies   road needs (165 m min radius)');
 for (const kmh of [30, 60, 100, 150, 200, 250]) {
-  const sim = atSpeed('sport', kmh / 3.6);
+  const sim = atSpeed('supercar', kmh / 3.6);
   step(sim, IN(1));
   for (let i = 0; i < 60; i++) step(sim, IN(1));
   const V = sim.v.V;
@@ -92,7 +85,7 @@ for (const kmh of [30, 60, 100, 150, 200, 250]) {
 
 console.log('\n=== provoke a slide, then try to catch it (Sport, 30 m/s) ===');
 {
-  const sim = atSpeed('sport', 30);
+  const sim = atSpeed('supercar', 30);
   // Handbrake turn to break the rear loose.
   for (let i = 0; i < Math.round(0.7 / h); i++) step(sim, IN(1, 0.4, 0, true), 4000);
   const yawAt = () => sim.v.body.angvel().y;
@@ -121,7 +114,7 @@ console.log('\n=== provoke a slide, then try to catch it (Sport, 30 m/s) ===');
 // Tall vehicles: opening the lock in a slide bypasses the rollover limit, so
 // check the things it exists to prevent.
 console.log('\n=== rollover check, tall vehicles, hard slalom at 25 m/s ===');
-for (const id of ['monster', 'van', 'military', 'pickup']) {
+for (const id of ['offroad', 'suv', 'wagon', 'sedan']) {
   const sim = atSpeed(id, 25);
   let worstTilt = 1, over = 0;
   for (let i = 0; i < Math.round(6.0 / h); i++) {
@@ -138,7 +131,7 @@ for (const id of ['monster', 'van', 'military', 'pickup']) {
 
 console.log('\n=== can a drift be held? (Sport, handbrake released, power on) ===');
 {
-  const sim = atSpeed('sport', 28);
+  const sim = atSpeed('supercar', 28);
   for (let i = 0; i < Math.round(0.6 / h); i++) step(sim, IN(1, 0.3, 0, true), 3000);
   let held = 0, slipSum = 0, n = 0;
   for (let i = 0; i < Math.round(3.0 / h); i++) {
@@ -158,7 +151,7 @@ console.log('\n=== how much of the catch is the assist? ===');
   const V0 = VEHICLE.spinRecovery;
   for (const strength of [0, V0]) {
     VEHICLE.spinRecovery = strength;
-    const sim = atSpeed('sport', 30);
+    const sim = atSpeed('supercar', 30);
     for (let i = 0; i < Math.round(0.7 / h); i++) step(sim, IN(1, 0.4, 0, true), 4000);
     // Same rule as above: stop integrating once the slide is over.
     let caught = -1, heading = 0;

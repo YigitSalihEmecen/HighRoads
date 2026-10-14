@@ -17,7 +17,7 @@ const wanted = new Map();
 for (const file of fs.readdirSync('src')) {
   if (!file.endsWith('.js')) continue;
   const src = fs.readFileSync('src/' + file, 'utf8');
-  for (const m of src.matchAll(/getElementById\(\s*'([^']+)'\s*\)/g)) {
+  for (const m of src.matchAll(/(?:getElementById|\$)\(\s*'([^']+)'\s*\)/g)) {
     wanted.set(m[1], file);
   }
   for (const m of src.matchAll(/querySelector(?:All)?\(\s*'#([-\w]+)([^']*)'\s*\)/g)) {

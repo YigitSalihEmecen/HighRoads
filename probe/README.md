@@ -29,7 +29,6 @@ npm run probe
 | `route.mjs` | **Does the road go anywhere on purpose?** Classifies the corridor cross-section — shelf / cutting / embankment / level — and reports earthwork, curvature and the self-clearance invariant. |
 | `grass.mjs` | Ground cover: how many tufts, what the scatter costs, whether the density matches the config, and that none of it is on the carriageway. |
 | `uishot.mjs` | **What the interface looks like.** Screenshots twelve real device viewports over CDP and reports any element overflowing its box. Not in `npm run probe` — it needs a local Chrome and writes images. `node probe/uishot.mjs`. |
-| `paint.mjs` | Both paint slots and both lamp pairs actually got triangles, on every car. The split is discovered from the atlas at load rather than declared, so a car whose second colour does nothing would otherwise fail silently. |
 | `drive.mjs` | End to end: real car, real physics, real engine_sim, real traffic, for a given number of seconds. |
 
 Each takes an optional seed as the first argument.

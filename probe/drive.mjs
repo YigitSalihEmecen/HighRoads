@@ -18,7 +18,6 @@ globalThis.self = globalThis;
 
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import fs from 'node:fs';
 import { WORLD, CHUNK, ROAD, VEHICLE } from '../src/config.js';
 import { createTerrain } from '../src/noise.js';
 import { RoadPath, makeFrame } from '../src/path.js';
@@ -29,21 +28,16 @@ import { Traffic } from '../src/traffic.js';
 /** Scratch frame for the autopilot's corner scan — used a dozen times a frame. */
 const _look = makeFrame();
 import { Powertrain } from '../src/powertrain.js';
-import { CARS, carById, buildCarParams } from '../src/cars.js';
-import { buildCarFromObject } from '../src/assets.js';
+import { buildCarParams } from '../src/cars.js';
+import { styleRoster, Fleet } from '../src/models.js';
 
 const seed = process.argv[2] || WORLD.seed;
 const SECONDS = Number(process.argv[3] || 90);
 
-const { FBXLoader } = await import('three/addons/loaders/FBXLoader.js');
-const loader = new FBXLoader();
-const models = new Map();
-for (const spec of CARS) {
-  const buf = fs.readFileSync(`assets/car_models/Fbx/${spec.file}`);
-  const root = loader.parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), '');
-  models.set(spec.id, buildCarFromObject(root, null, spec.file));
-}
-const roster = CARS.filter((c) => models.has(c.id));
+// The player drives the supercar preset; traffic is a real generated fleet.
+const player = styleRoster(0).find((c) => c.id === 'supercar');
+const fleet = new Fleet(seed, 14);
+while (fleet.count < fleet.size) fleet.buildOne();
 
 await RAPIER.init();
 const world = new RAPIER.World({ x: 0, y: WORLD.gravity, z: 0 });
@@ -55,12 +49,12 @@ const chunks = new ChunkManager({ scene, world, RAPIER, path, terrain, foliage: 
 chunks.preload(90);
 world.step();
 
-const spec = carById('sport');
+const { spec, model } = player;
 const vehicle = new RaycastVehicle({
-  RAPIER, world, scene, params: buildCarParams(spec, models.get('sport').metrics, VEHICLE, Math.abs(WORLD.gravity)),
-  model: models.get('sport'),
+  RAPIER, world, scene, params: buildCarParams(spec, model.metrics, VEHICLE, Math.abs(WORLD.gravity)),
+  model,
 });
-const traffic = new Traffic({ scene, path, chunks, models, roster });
+const traffic = new Traffic({ scene, path, chunks, fleet });
 const powertrain = new Powertrain();
 await powertrain.start({ spec, V: vehicle.V }, createMockContext().ctx);
 

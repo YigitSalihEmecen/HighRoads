@@ -13,3 +13,7 @@
 	path = engine_sim
 	url = https://github.com/YigitSalihEmecen/Engine_Sim.git
 	branch = main
+[submodule "car_gen"]
+	path = car_gen
+	url = https://github.com/YigitSalihEmecen/Car-gen.git
+	branch = main

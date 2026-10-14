@@ -8,7 +8,8 @@ installGlobals(createMockContext().ctx);
 
 import { EngineSim, ENGINE_PROFILES } from '../engine_sim/src/engine-sim.js';
 import { Powertrain } from '../src/powertrain.js';
-import { ENGINE_OPTIONS, CARS, buildCarParams } from '../src/cars.js';
+import { ENGINE_OPTIONS, BODY_STYLES, buildCarParams, deriveSpec } from '../src/cars.js';
+import { presetBuild } from '../src/models.js';
 import { VEHICLE, WORLD } from '../src/config.js';
 
 const ok = (b) => (b ? ' ok ' : 'FAIL');
@@ -39,16 +40,23 @@ check('Drivetrain fields the bridge reads', !missingDF.length, missingDF.join(',
 // ---- 2. the roster names engines that exist -------------------------------
 const unknown = ENGINE_OPTIONS.filter((e) => e.id !== 'stock' && !ENGINE_PROFILES[e.id]).map((e) => e.id);
 check('every ENGINE_OPTIONS id exists upstream', !unknown.length, unknown.join(',') || `${ENGINE_OPTIONS.length - 1} engines`);
-const stock = [...new Set(CARS.map((c) => c.engine))].filter((id) => !ENGINE_PROFILES[id]);
-check('every car\'s stock engine exists upstream', !stock.length, stock.join(',') || 'all 9 cars');
+// Every style's factory choice, over many seeds, must name a real engine.
+const stockIds = new Set();
+for (const { id } of BODY_STYLES) {
+  for (let i = 0; i < 12; i++) {
+    stockIds.add(deriveSpec({ ...presetBuild(id), seed: id + i }, { bodyHeight: 1.4 }).engine);
+  }
+}
+const stock = [...stockIds].filter((id) => !ENGINE_PROFILES[id]);
+check('every style\'s stock engine exists upstream', !stock.length, stock.join(',') || `${stockIds.size} distinct stock engines`);
 const unoffered = Object.keys(ENGINE_PROFILES).filter((id) => !ENGINE_OPTIONS.some((e) => e.id === id));
 check('every upstream engine is offered in the garage', !unoffered.length,
   unoffered.length ? `not offered: ${unoffered.join(',')}` : `${Object.keys(ENGINE_PROFILES).length} engines`);
 
 // ---- 3. each engine actually runs through the bridge ----------------------
-const spec = CARS.find((c) => c.id === 'sport');
 const metrics = { trackHalf: 0.79, wheelbaseHalf: 1.28, wheelRadius: 0.34, wheelWidth: 0.24,
   bodyHeight: 1.2, bodyHalfWidth: 0.92, bodyHalfLength: 2.1 };
+const spec = deriveSpec(presetBuild('supercar'), metrics);
 const V = buildCarParams(spec, metrics, VEHICLE, Math.abs(WORLD.gravity));
 
 const dt = 1 / 60;

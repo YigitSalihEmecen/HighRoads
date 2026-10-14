@@ -1,9 +1,23 @@
 /**
  * traffic.js — the other cars on the road.
  *
- * Traffic is not a rigid-body simulation. Each car follows a kinematic path.
+ * Traffic is not a rigid-body simulation. Each car is a point in road space
+ * (s, v) with a speed, driven by a driver model; the mesh is placed from that.
  * The collision response is scripted, so a struck car cannot compound
- * impulses against the player body.
+ * impulses against the player body (see `_resolvePlayer`).
+ *
+ * Drivers:
+ *  - follow with the Intelligent Driver Model (Treiber 2000): smooth
+ *    approach, a time headway, hard braking only when something appears;
+ *  - slow for corners they can see coming, braking at a comfortable rate;
+ *  - keep right and overtake on the left when it pays and the gap is safe
+ *    for whoever is behind in that lane (MOBIL's safety criterion) — the
+ *    player included — signalling before they move;
+ *  - pull aside when flashed, and when the player comes at them in their
+ *    lane, brake, flash, sound the horn and swerve if there is room.
+ * Each has a personality: desired speed, headway, how hard they accelerate.
+ *
+ * Every car is a different generated model from the `Fleet` (models.js).
  */
 
 import * as THREE from 'three';
@@ -12,27 +26,38 @@ import { makeFrame } from './path.js';
 import { clamp, lerp, damp, mulberry32, hashInt, hashString } from './util.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
+const KEYS = ['FL', 'FR', 'BL', 'BR'];
 
-/** Lane centres, inner first. Sign gives direction of travel. */
+const smoother = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+
+/** Lane centres, inner first. Sign gives direction of travel. Lane 1 is the cruising lane. */
 function laneOffsets() {
   const half = ROAD.laneWidth * 0.5;
   return [half, half + ROAD.laneWidth];
 }
 
+/** Indicator lamps: one geometry, two shared materials swapped per blink. */
+const MARKER_GEO = new THREE.BoxGeometry(0.14, 0.055, 0.03);
+const MARKER_ON = new THREE.MeshStandardMaterial({ color: 0xffa21f, emissive: 0xff8a00, emissiveIntensity: 6 });
+const MARKER_OFF = new THREE.MeshStandardMaterial({ color: 0x5a3a12, emissive: 0x000000, roughness: 0.4 });
+
 export class Traffic {
-  constructor({ scene, path, chunks, models, roster }) {
+  /**
+   * @param {object} opts.fleet  models.Fleet (or anything with acquire/release)
+   */
+  constructor({ scene, path, chunks, fleet }) {
     this.scene = scene;
     this.path = path;
     this.chunks = chunks;
-    this.models = models;
-    this.roster = roster.filter((c) => models.has(c.id));
+    this.fleet = fleet;
 
     this.cars = [];
     this.lanes = laneOffsets();
-    // Seeded from the world, not a constant: a fixed seed gave identical cars
-    // across worlds.
+    // Seeded from the world: a shared seed shares its traffic.
     this.rng = mulberry32(hashInt(0x51ed) ^ hashString(path.seed || ''));
+    this._phase = this.rng() * 100;
     this._nextId = 0;
+    this._clock = 0;
 
     /** Impact bookkeeping, read by the game for audio and camera feedback. */
     this.lastImpact = 0;
@@ -45,6 +70,11 @@ export class Traffic {
     this.passes = [];
     /** Whether cars are wanted at all — Zen mode turns them off. */
     this.enabled = true;
+    /** Night: everyone drives with lamps on. Set by the game from the sky. */
+    this.lightsOn = false;
+    /** An AudioContext for horns; null keeps traffic silent. */
+    this.audio = null;
+    this.hornVolume = 0.5;
 
     this._pos = new THREE.Vector3();
     this._q = new THREE.Quaternion();
@@ -54,7 +84,8 @@ export class Traffic {
     this._az = new THREE.Vector3();
     this._n = new THREE.Vector3();
     this._vel = new THREE.Vector3();
-    this._spunQ = new THREE.Quaternion();
+    this._yawQ = new THREE.Quaternion();
+    this._fwd = new THREE.Vector3();
     // Reused scratch for frameAt(); it allocates when not given a frame.
     this._fA = makeFrame();
     this._fB = makeFrame();
@@ -63,56 +94,121 @@ export class Traffic {
 
   /* ------------------------------------------------------------- spawning -- */
 
-  /**
-   * Clones a roster model. Geometries and materials are shared with the
-   * original, so a clone costs a few matrices.
-   */
-  _instance(spec) {
-    const src = this.models.get(spec.id);
+  /** A pooled model in its own group, with four indicator lamps at the corners. */
+  _instance(entry) {
+    const model = entry.model;
+    const m = model.metrics;
     const group = new THREE.Group();
-    group.add(src.body.clone(true));
-    const wheels = ['FL', 'FR', 'BL', 'BR'].map((k) => {
-      const w = src.wheels[k].clone(true);
+    model.body.rotation.set(0, 0, 0);
+    group.add(model.body);
+    const wheels = KEYS.map((k) => {
+      const w = model.wheels[k];
+      w.rotation.set(0, 0, 0, 'YXZ');
       group.add(w);
       return w;
     });
-    return { group, wheels, metrics: src.metrics };
+
+    // Lamps sit ON the body: found once per pooled model by casting at its corners.
+    if (!entry.markerSpots) {
+      group.updateMatrixWorld(true);
+      entry.markerSpots = this._markerSpots(model);
+    }
+    const marker = ([mx, my, mz]) => {
+      const mesh = new THREE.Mesh(MARKER_GEO, MARKER_OFF);
+      mesh.position.set(mx, my, mz);
+      group.add(mesh);
+      return mesh;
+    };
+    const [fl, rl, fr, rr] = entry.markerSpots;
+    const markers = { left: [marker(fl), marker(rl)], right: [marker(fr), marker(rr)] };
+    return { group, wheels, markers, model, metrics: m };
   }
 
-  _spawn(s, laneIndex, dir) {
-    const spec = this.roster[Math.floor(this.rng() * this.roster.length)];
-    const inst = this._instance(spec);
+  /** Where the body's skin is at each corner, lamp height: [FL, RL, FR, RR] as [x, y, z]. */
+  _markerSpots(model) {
+    const m = model.metrics;
+    const y = Math.min(0.95, Math.max(0.55, m.bodyHeight * 0.52));
+    const front = m.bodyFrontZ ?? -m.bodyHalfLength;
+    const rear = m.bodyRearZ ?? m.bodyHalfLength;
+    const ray = this._ray || (this._ray = new THREE.Raycaster());
+    const spots = [];
+    for (const side of [-1, 1]) {
+      for (const [z0, dir] of [[front - 1, 1], [rear + 1, -1]]) {
+        const x = side * m.bodyHalfWidth * 0.7;
+        ray.set(this._pos.set(x, y, z0), this._n.set(0, 0, dir));
+        ray.far = 3;
+        const hit = ray.intersectObject(model.body, true)[0];
+        const z = hit ? hit.point.z - dir * 0.015 : (dir > 0 ? front + 0.05 : rear - 0.05);
+        spots.push([x, y, z]);
+      }
+    }
+    return spots;
+  }
+
+  _spawn(s, laneIndex, dir, { fast = false } = {}) {
+    const entry = this.fleet.acquire(this.rng);
+    if (!entry) return null;
+    const inst = this._instance(entry);
     this.scene.add(inst.group);
 
     const m = inst.metrics;
-    const cruise = lerp(TRAFFIC.speedMin, TRAFFIC.speedMax, this.rng());
+    const rng = this.rng;
+    // Personality: 0 = Sunday driver, 1 = in a hurry. Skewed toward the middle.
+    const hurry = clamp((rng() + rng() + rng()) / 3 + (fast ? 0.35 : 0), 0, 1);
+    const style = entry.build && entry.build.style;
+    const classPace = style === 'offroad' ? 0.88 : style === 'supercar' || style === 'wedge' ? 1.1 : 1;
+    const v0 = lerp(TRAFFIC.speedMin, TRAFFIC.speedMax, clamp(hurry * 0.85 + rng() * 0.2, 0, 1)) * classPace;
+
     const car = {
       id: this._nextId++,
-      spec,
+      entry,
       inst,
       s,
       dir,                              // +1 with the player, -1 oncoming
       lane: laneIndex,
       v: dir * this.lanes[laneIndex],
-      vSmooth: dir * this.lanes[laneIndex],
-      speed: cruise,
-      cruise,
-      spin: 0,
-      changeCooldown: 0,
+      latVel: 0,
+      laneFrom: 0,
+      laneT: 1,
+      laneDur: TRAFFIC.laneChangeTime,
+      pendingLane: -1,
+      signal: 0,
+      signalT: 0,
+      hazard: false,
+
+      speed: 0,
+      accel: 0,
+      v0,
+      headway: TRAFFIC.headway * lerp(1.35, 0.7, hurry),
+      aMax: TRAFFIC.accel * lerp(0.75, 1.45, hurry),
+      bComf: TRAFFIC.decel * lerp(0.85, 1.2, hurry),
+      jam: TRAFFIC.jamGap * lerp(1.2, 0.8, hurry),
+      polite: lerp(0.6, 0.1, hurry),
+      think: rng() * 0.5,
+      cooldown: 0,
       yielding: 0,
-      mass: spec.mass || 1500,
+      flashT: 0,
+      hornCd: 0,
+      leaderIsPlayer: false,
+
+      pitch: 0, pitchV: 0, roll: 0, rollV: 0,
+      heading: null,
+      spin: 0,
+      steer: 0,
+      brake: 0,
+      mass: entry.mass || 1500,
 
       // Footprint used by the overlap test, in road space.
       halfLen: m.bodyHalfLength,
       halfWid: m.bodyHalfWidth,
 
-      /** Seconds of scripted spin-out left; 0 means under control. */
+      /** Seconds of scripted spin-out left; 0 means under control, −1 flags removal. */
       spun: 0,
-      /** Yaw rate and lateral drift while spun, both decaying. */
       spunYaw: 0,
       spunRate: 0,
       spunDrift: 0,
     };
+    car.speed = Math.min(v0, this._cornerLimit(car)) * (fast ? 1 : 0.92);
 
     this._place(car, 0);
     this.cars.push(car);
@@ -121,6 +217,11 @@ export class Traffic {
 
   _despawn(car) {
     this.scene.remove(car.inst.group);
+    const model = car.inst.model;
+    model.body.rotation.set(0, 0, 0);
+    model.setBrake(0);
+    model.setHeadlights(false, false);
+    this.fleet.release(car.entry);
     const i = this.cars.indexOf(car);
     if (i >= 0) this.cars.splice(i, 1);
   }
@@ -143,36 +244,393 @@ export class Traffic {
   update(dt, player) {
     this.passes.length = 0;
     this.lastImpact = Math.max(0, this.lastImpact - dt);
+    this._clock += dt;
     if (!this.enabled) {
       if (this.cars.length) this.dispose();
       return;
     }
+    if (dt <= 0) return;
+    this._player = this._playerState(player);
     this._maintainPopulation(player);
 
-    // Sorted once per frame so the follow model reads a stable ordering.
     const sorted = this.cars.slice().sort((a, b) => a.s - b.s);
 
-    for (let i = 0; i < sorted.length; i++) {
-      const car = sorted[i];
-      car.changeCooldown = Math.max(0, car.changeCooldown - dt);
+    for (const car of sorted) {
+      car.cooldown = Math.max(0, car.cooldown - dt);
+      car.hornCd = Math.max(0, car.hornCd - dt);
+      car.flashT = Math.max(0, car.flashT - dt);
 
       if (car.spun > 0) {
         this._advanceSpun(car, dt);
       } else {
-        const target = this._targetSpeed(car, sorted, player, dt);
-        // Asymmetric: lift off gently, brake hard. Slow deceleration drives
-        // through the car in front.
-        const rate = target < car.speed ? TRAFFIC.brakeRate : TRAFFIC.accelRate;
-        car.speed = damp(car.speed, target, rate, dt);
-        car.s += car.speed * car.dir * dt;
+        this._drive(car, dt);
       }
       this._place(car, dt);
+      this._lamps(car);
     }
 
     this._separate(sorted);
     if (player.vehicle) {
       this._resolvePlayer(dt, player);
       this._trackPasses(player);
+    }
+  }
+
+  /** The player in road terms: where, which way along the road, how fast, and how long. */
+  _playerState(player) {
+    const out = this._ps || (this._ps = {});
+    out.s = player.s;
+    out.v = player.v;
+    out.flashing = !!player.flashing;
+    out.halfLen = player.vehicle ? player.vehicle.V.chassis.hz : 2.2;
+    out.halfWid = player.vehicle ? player.vehicle.V.chassis.hx : 0.9;
+    let along = player.speed || 0;
+    if (player.vehicle && player.vehicle.body) {
+      const f = this.path.frameAt(player.s, this._fC);
+      const lv = player.vehicle.body.linvel();
+      along = lv.x * f.tan.x + lv.y * f.tan.y + lv.z * f.tan.z;
+    }
+    out.along = along;                   // signed: + is the direction of increasing s
+    return out;
+  }
+
+  /** One driver's decisions for this frame: lanes, then the throttle. */
+  _drive(car, dt) {
+    const P = this._player;
+
+    // ---- think: lane choice, a couple of times a second -------------------
+    car.think -= dt;
+    if (car.think <= 0) {
+      car.think = 0.35 + this.rng() * 0.3;
+      if (car.laneT >= 1 && car.pendingLane < 0 && car.cooldown <= 0) this._considerLanes(car);
+    }
+    this._reactToPlayer(car, dt);
+
+    // ---- indicator, then the manoeuvre ---------------------------------------
+    if (car.pendingLane >= 0) {
+      car.signalT -= dt;
+      if (car.signalT <= 0) {
+        car.laneFrom = car.v;
+        car.lane = car.pendingLane;
+        car.pendingLane = -1;
+        car.laneT = 0;
+      }
+    }
+    const target = car.dir * this.lanes[car.lane];
+    const before = car.v;
+    if (car.laneT < 1) {
+      car.laneT = Math.min(1, car.laneT + dt / car.laneDur);
+      car.v = lerp(car.laneFrom, target, smoother(car.laneT));
+      if (car.laneT >= 0.9) car.signal = 0;
+      if (car.laneT >= 1) car.cooldown = TRAFFIC.changeCooldown * (1 + this.rng());
+    } else {
+      car.v = damp(car.v, target, 2.5, dt);
+    }
+    car.latVel = (car.v - before) / dt;
+
+    // ---- throttle and brake: IDM against whoever is ahead in the path ------
+    const lead = this._leader(car, car.v);
+    let a = this._idm(car, car.speed, lead.gap, lead.speed);
+    // Mid-change, respect the lane being entered too.
+    if (car.laneT < 1 || car.pendingLane >= 0) {
+      const into = car.pendingLane >= 0 ? car.pendingLane : car.lane;
+      const l2 = this._leader(car, car.dir * this.lanes[into]);
+      a = Math.min(a, this._idm(car, car.speed, l2.gap, l2.speed));
+    }
+    car.leaderIsPlayer = lead.player;
+    a = clamp(a, -TRAFFIC.emergencyDecel, car.aMax);
+
+    // A driver who has to stand on the brakes because of the player says so.
+    if (lead.player && a < -4.5 && car.hornCd <= 0) this._honk(car, P);
+
+    car.accel = damp(car.accel, a, 6, dt);
+    car.speed = Math.max(0, car.speed + car.accel * dt);
+    if (car.speed === 0 && car.accel < 0) car.accel = 0;
+    car.s += car.speed * car.dir * dt;
+  }
+
+  /** Desired speed: the driver's own, capped by the corners in sight. */
+  _cornerLimit(car) {
+    let limit = Infinity;
+    for (const d of [25, 60, 110]) {
+      const f = this.path.frameAt(car.s + car.dir * d, this._fB);
+      const k = Math.abs(f.curv);
+      if (k < 1e-5) continue;
+      const vc = Math.sqrt(TRAFFIC.cornerAccel / k);
+      // Arrive at the corner's speed braking comfortably from here.
+      limit = Math.min(limit, Math.sqrt(vc * vc + 2 * car.bComf * Math.max(0, d - 15)));
+    }
+    return limit;
+  }
+
+  /** Intelligent Driver Model acceleration for `speed` with a leader `gap` metres ahead at `lead` m/s. */
+  _idm(car, speed, gap, lead) {
+    const v0 = Math.max(1, Math.min(car.v0 * (car.yielding > 0 ? TRAFFIC.yieldSlow : 1), this._cornerLimitCached(car)));
+    const free = 1 - Math.pow(speed / v0, 4);
+    if (!Number.isFinite(gap)) return car.aMax * free;
+    const dv = speed - lead;
+    const sStar = car.jam + Math.max(0, speed * car.headway + (speed * dv) / (2 * Math.sqrt(car.aMax * car.bComf)));
+    return car.aMax * (free - Math.pow(sStar / Math.max(gap, 0.2), 2));
+  }
+
+  /** The corner limit costs three spline lookups; a quarter-second old answer is fine. */
+  _cornerLimitCached(car) {
+    if (car._climT === undefined || this._clock - car._climT > 0.25) {
+      car._clim = this._cornerLimit(car);
+      car._climT = this._clock;
+    }
+    return car._clim;
+  }
+
+  /** Is something at lateral offset `ov` (half-width `hw`) in a path at `laneV`? */
+  _inPath(ov, hw, laneV, myHalfWid) {
+    return Math.abs(ov - laneV) < hw + myHalfWid + 0.35;
+  }
+
+  /**
+   * The nearest thing ahead in the path at lateral offset `laneV`: another car
+   * (either direction — a spun car is an obstacle) or the player.
+   * Returns bumper-to-bumper gap and its speed along this car's direction.
+   */
+  _leader(car, laneV) {
+    let gap = Infinity, speed = 0, player = false;
+    for (const o of this.cars) {
+      if (o === car) continue;
+      const d = (o.s - car.s) * car.dir;
+      if (d <= 0 || d > 220) continue;
+      if (!this._inPath(o.v, o.halfWid, laneV, car.halfWid)) continue;
+      const g = d - car.halfLen - o.halfLen;
+      if (g < gap) { gap = g; speed = o.speed * o.dir * car.dir; }
+    }
+    const P = this._player;
+    if (P) {
+      const d = (P.s - car.s) * car.dir;
+      if (d > 0 && d < 220 && this._inPath(P.v, P.halfWid, laneV, car.halfWid)) {
+        const g = d - car.halfLen - P.halfLen;
+        if (g < gap) { gap = g; speed = P.along * car.dir; player = true; }
+      }
+    }
+    return { gap, speed, player };
+  }
+
+  /** The nearest same-direction car behind in a lane, for the safety test; the player counts. */
+  _follower(car, laneV) {
+    let gap = Infinity, speed = 0, who = null;
+    for (const o of this.cars) {
+      if (o === car || o.dir !== car.dir || o.spun) continue;
+      const d = (car.s - o.s) * car.dir;
+      if (d <= 0 || d > 160) continue;
+      if (!this._inPath(o.v, o.halfWid, laneV, car.halfWid)) continue;
+      const g = d - car.halfLen - o.halfLen;
+      if (g < gap) { gap = g; speed = o.speed; who = o; }
+    }
+    const P = this._player;
+    if (P) {
+      const d = (car.s - P.s) * car.dir;
+      if (d > 0 && d < 220 && this._inPath(P.v, P.halfWid, laneV, car.halfWid)) {
+        const g = d - car.halfLen - P.halfLen;
+        if (g < gap) { gap = g; speed = P.along * car.dir; who = 'player'; }
+      }
+    }
+    return { gap, speed, who };
+  }
+
+  /**
+   * MOBIL's safety criterion: entering `lane` must not make whoever is behind
+   * there brake harder than `safeDecel`, and must leave room ahead. The player
+   * is held to a time gap, because nobody knows how hard a player will brake.
+   */
+  _laneSafe(car, lane) {
+    const laneV = car.dir * this.lanes[lane];
+    const ahead = this._leader(car, laneV);
+    if (ahead.gap < car.jam + car.speed * 0.5) return false;
+    const behind = this._follower(car, laneV);
+    if (!Number.isFinite(behind.gap)) return true;
+    if (behind.gap < 4) return false;
+    if (behind.who === 'player') {
+      const closing = behind.speed - car.speed;
+      return closing <= 0 || behind.gap / closing > 3.5;
+    }
+    const a = this._idm(behind.who, behind.speed, behind.gap, car.speed);
+    return a > -TRAFFIC.safeDecel;
+  }
+
+  _beginChange(car, lane, { signal = TRAFFIC.signalTime, duration = TRAFFIC.laneChangeTime } = {}) {
+    if (lane === car.lane || car.pendingLane >= 0 || car.laneT < 1) return false;
+    car.pendingLane = lane;
+    car.signal = Math.sign(this.lanes[lane] - this.lanes[car.lane]);
+    car.signalT = signal;
+    // Faster cars change lanes more briskly; a fixed time looks lazy at 110 and frantic at 50.
+    car.laneDur = duration * clamp(25 / Math.max(10, car.speed), 0.7, 1.25);
+    return true;
+  }
+
+  /** Overtake when the passing lane pays; otherwise keep right. */
+  _considerLanes(car) {
+    const other = 1 - car.lane;
+    const here = this._leader(car, car.v);
+    const there = this._leader(car, car.dir * this.lanes[other]);
+    const aHere = this._idm(car, car.speed, here.gap, here.speed);
+    const aThere = this._idm(car, car.speed, there.gap, there.speed);
+
+    if (car.lane === 1) {
+      const blocked = Number.isFinite(here.gap) && here.speed < car.v0 - 2 && here.gap < 90;
+      if (blocked && aThere - aHere > TRAFFIC.overtakeGain * (1 + car.polite) && this._laneSafe(car, 0)) {
+        this._beginChange(car, 0);
+      }
+    } else if (car.yielding <= 0 && aThere >= aHere - 0.2 && this._laneSafe(car, 1)) {
+      this._beginChange(car, 1);
+    }
+  }
+
+  /** Being flashed from behind, or met head-on in the wrong lane. */
+  _reactToPlayer(car, dt) {
+    const P = this._player;
+    if (!P) return;
+    const d = (P.s - car.s) * car.dir;          // + ahead of this car
+    const inMyLane = this._inPath(P.v, P.halfWid, car.v, car.halfWid);
+
+    if (car.dir > 0 && d < 0 && -d < TRAFFIC.noticeRange && P.flashing && inMyLane) {
+      // Flashed from behind: let them by.
+      car.yielding = 2;
+      if (car.lane === 0 && this._laneSafe(car, 1)) this._beginChange(car, 1, { signal: 0.5 });
+    } else {
+      car.yielding = Math.max(0, car.yielding - dt);
+    }
+
+    // Head-on: the player is ahead, in this lane, and closing.
+    const closing = car.speed - P.along * car.dir;
+    if (d > 0 && inMyLane && closing > 3) {
+      const ttc = (d - car.halfLen - P.halfLen) / closing;
+      if (ttc < TRAFFIC.alarmTime && P.along * car.dir < 0) {
+        if (car.flashT <= 0) car.flashT = 1.4;
+        if (car.hornCd <= 0) this._honk(car, P);
+        // Swerve away from the player if the other lane is the clearer one.
+        const other = 1 - car.lane;
+        const away = Math.abs(P.v - car.dir * this.lanes[other]) > Math.abs(P.v - car.v);
+        if (away && car.laneT >= 1 && car.pendingLane < 0 && this._leader(car, car.dir * this.lanes[other]).gap > 8) {
+          this._beginChange(car, other, { signal: 0, duration: 1.6 });
+        }
+      }
+    }
+  }
+
+  /** A two-tone horn from the car's direction, quieter with distance. */
+  _honk(car, P) {
+    car.hornCd = 3 + this.rng() * 2;
+    const ctx = this.audio;
+    if (!ctx || ctx.state !== 'running') return;
+    const dist = Math.abs(car.s - P.s);
+    const level = this.hornVolume * 0.32 * clamp(1 - dist / 180, 0, 1);
+    if (level < 0.005) return;
+    const t = ctx.currentTime;
+    const len = 0.3 + this.rng() * 0.35;
+    const pitch = 0.9 + ((car.id * 0.137) % 0.22);
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0, t);
+    out.gain.linearRampToValueAtTime(level, t + 0.02);
+    out.gain.setValueAtTime(level, t + len);
+    out.gain.linearRampToValueAtTime(0, t + len + 0.06);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 2600;
+    lp.connect(out);
+    out.connect(ctx.destination);
+    for (const f of [415, 523]) {
+      const o = ctx.createOscillator();
+      o.type = 'square';
+      o.frequency.value = f * pitch;
+      o.connect(lp);
+      o.start(t);
+      o.stop(t + len + 0.08);
+    }
+  }
+
+  /* ------------------------------------------------------------- lamps -- */
+
+  _lamps(car) {
+    const model = car.inst.model;
+    const braking = car.spun > 0 ? 0 : car.accel < -0.6 ? 1 : car.speed < 0.5 ? 0.7 : 0;
+    car.brake += (braking - car.brake) * 0.25;
+    model.setBrake(car.brake);
+    const flash = car.flashT > 0 && Math.sin(car.flashT * 22) > 0;
+    model.setHeadlights(this.lightsOn, flash);
+
+    // 1.5 Hz, the regulation rate.
+    const on = Math.sin(this._clock * Math.PI * 3 + car.id) > 0;
+    const left = car.hazard || car.signal < 0;
+    const right = car.hazard || car.signal > 0;
+    for (const m of car.inst.markers.left) m.material = left && on ? MARKER_ON : MARKER_OFF;
+    for (const m of car.inst.markers.right) m.material = right && on ? MARKER_ON : MARKER_OFF;
+  }
+
+  /* ----------------------------------------------------------- population -- */
+
+  /**
+   * Keeps a band of road around the player populated. Density swells and
+   * thins along the road, so there are busy stretches and empty ones.
+   *
+   * Cars appear beyond `spawnMin`, in the haze. Same-direction cars also come
+   * up from behind when the player is slower than they are.
+   */
+  _maintainPopulation(player) {
+    for (const car of this.cars.slice()) {
+      const rel = car.s - player.s;
+      if (rel > TRAFFIC.ahead + 120 || rel < -TRAFFIC.behind) this._despawn(car);
+      else if (car.spun < 0) this._despawn(car);
+    }
+
+    const x = player.s / 1700 + this._phase;
+    const wave = Math.sin(x) * Math.cos(x * 0.41 + 1.3);
+    const want = Math.round(TRAFFIC.count * (1 + TRAFFIC.wave * wave));
+
+    let guard = 0;
+    while (this.cars.length < want && guard++ < 30) {
+      const P = this._player;
+      const slow = P && P.along < TRAFFIC.speedMin;
+      let dir = this.rng() < TRAFFIC.oncomingShare ? -1 : 1;
+      let s, fast = false;
+      if (dir > 0 && slow && this.rng() < 0.35) {
+        s = player.s - TRAFFIC.spawnBehind * (0.9 + this.rng() * 0.2);
+        fast = true;
+      } else {
+        s = player.s + lerp(TRAFFIC.spawnMin, TRAFFIC.ahead, this.rng());
+      }
+      if (s < 40) continue;
+
+      // Most traffic cruises in the outer lane.
+      const lane = this.rng() < 0.7 ? 1 : 0;
+      const clash = this.cars.some(
+        (c) => c.dir === dir && c.lane === lane && Math.abs(c.s - s) < 45
+      );
+      if (clash) continue;
+      if (!this._spawn(s, lane, dir, { fast })) break;
+    }
+  }
+
+  /**
+   * Last line of defence against overlap. Because nothing here is simulated,
+   * separation can be asserted: push the pair apart until the gap is legal.
+   */
+  _separate(sorted) {
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
+      for (let j = i + 1; j < sorted.length; j++) {
+        const b = sorted[j];
+        if (b.s - a.s > 14) break;      // sorted: nothing else is near
+        if (a.spun || b.spun) continue;
+        if (a.dir !== b.dir) continue;
+        if (Math.abs(a.v - b.v) > a.halfWid + b.halfWid + 0.2) continue;
+        const need = a.halfLen + b.halfLen + 1.2;
+        const d = b.s - a.s;
+        if (d >= need) continue;
+        const push = (need - d) * 0.5;
+        a.s -= push;
+        b.s += push;
+        // Whoever was behind matches the one in front, or they meet again next frame.
+        const back = a.dir > 0 ? a : b, front = back === a ? b : a;
+        back.speed = Math.min(back.speed, front.speed);
+      }
     }
   }
 
@@ -199,142 +657,6 @@ export class Traffic {
         }
         car.wasNear = false;
         car.nearMin = undefined;
-      }
-    }
-  }
-
-  /**
-   * Keeps a band of road around the player populated.
-   *
-   * Cars appear beyond `spawnMin`, past the fog. Nothing spawns behind: same-
-   * direction traffic is slower than the player.
-   */
-  _maintainPopulation(player) {
-    for (const car of this.cars.slice()) {
-      const rel = (car.s - player.s) * 1;
-      if (rel > TRAFFIC.ahead + 120 || rel < -TRAFFIC.behind) this._despawn(car);
-      else if (car.spun < 0) this._despawn(car);
-    }
-
-    // Reject a candidate only if it lands near a car in the same lane; cars
-    // abreast in different lanes are traffic, not a clash.
-    let guard = 0;
-    while (this.cars.length < TRAFFIC.count && guard++ < 40) {
-      const dir = this.rng() < TRAFFIC.oncomingShare ? -1 : 1;
-      const s = player.s + lerp(TRAFFIC.spawnMin, TRAFFIC.ahead, this.rng());
-      if (s < 40) continue;
-
-      const lane = this.rng() < 0.62 ? 0 : 1;
-      const clash = this.cars.some(
-        (c) => c.dir === dir && c.lane === lane && Math.abs(c.s - s) < TRAFFIC.minGap * 1.6
-      );
-      if (clash) continue;
-      this._spawn(s, lane, dir);
-    }
-  }
-
-  /**
-   * Desired speed: cruise, limited by the car in front, by the corner ahead,
-   * and modified by whatever the player is doing behind.
-   */
-  _targetSpeed(car, sorted, player, dt) {
-    let target = car.cruise;
-
-    // ---- car in front, same direction and lane --------------------------
-    // Scan every car, not the sorted list: stepping breaks at the first car in
-    // another lane, leaving an infinite gap.
-    let gap = Infinity;
-    let leadSpeed = 0;
-    for (const other of sorted) {
-      if (other === car || other.dir !== car.dir || other.lane !== car.lane) continue;
-      const d = (other.s - car.s) * car.dir;
-      if (d > 0 && d < gap) { gap = d; leadSpeed = other.spun > 0 ? 0 : other.speed; }
-    }
-
-    if (gap < TRAFFIC.minGap * 6) {
-      // Follow at a time headway; below the minimum gap, match or undercut.
-      const desired = TRAFFIC.minGap + car.speed * TRAFFIC.headway;
-      const t = clamp((gap - TRAFFIC.minGap) / Math.max(1, desired - TRAFFIC.minGap), 0, 1);
-      target = Math.min(target, lerp(leadSpeed * 0.85, car.cruise, t));
-    }
-    // Hard floor on separation; the headway model alone converges too slowly.
-    if (gap < TRAFFIC.minGap) {
-      target = Math.min(target, leadSpeed * clamp(gap / TRAFFIC.minGap, 0, 1) * 0.8);
-    }
-
-    // ---- corners --------------------------------------------------------
-    const look = this.path.frameAt(car.s + car.dir * 45, this._fB);
-    const curv = Math.abs(look.curv);
-    if (curv > 1e-5) {
-      // v = sqrt(a / k) — the same limit the player's steering law uses.
-      target = Math.min(target, Math.sqrt(TRAFFIC.cornerAccel / curv));
-    }
-
-    // ---- the player -----------------------------------------------------
-    if (car.dir > 0) {
-      const behind = car.s - player.s;
-      const sameSide = player.v * car.dir > -0.5;
-      const closing = player.speed > car.speed;
-
-      if (sameSide && behind > 0 && behind < TRAFFIC.noticeRange && closing) {
-        const urgency = 1 - behind / TRAFFIC.noticeRange;
-
-        if (player.flashing) {
-          // Being flashed: pull over, but only into a lane that is free.
-          car.yielding = 1;
-          if (car.lane === 0 && car.changeCooldown <= 0 && this._laneClear(car, 1)) {
-            car.lane = 1;
-            car.changeCooldown = TRAFFIC.changeCooldown;
-          }
-          target = Math.min(target, car.cruise * lerp(1, TRAFFIC.yieldSlow, urgency));
-        } else if (Math.abs(player.v - car.v) < ROAD.laneWidth * 0.75) {
-          // Someone right behind in your lane: most drivers speed up a little.
-          target = Math.min(car.cruise * TRAFFIC.pressedBoost, TRAFFIC.speedMax * 1.1);
-        }
-      } else {
-        car.yielding = Math.max(0, car.yielding - dt * 0.5);
-      }
-
-      // Drift back to the inner lane once nobody is pushing.
-      if (car.yielding <= 0 && car.lane === 1 && car.changeCooldown <= 0 && this.rng() < 0.004) {
-        if (this._laneClear(car, 0)) {
-          car.lane = 0;
-          car.changeCooldown = TRAFFIC.changeCooldown;
-        }
-      }
-    }
-
-    return Math.max(TRAFFIC.speedFloor, target);
-  }
-
-  /** Is `lane` free around this car's station, in its own direction? */
-  _laneClear(car, lane) {
-    const room = TRAFFIC.minGap * 2.2;
-    return !this.cars.some(
-      (c) => c !== car && c.dir === car.dir && c.lane === lane && Math.abs(c.s - car.s) < room
-    );
-  }
-
-  /**
-   * Last line of defence against overlap. Because nothing here is simulated,
-   * separation can be asserted: push the trailing car back until the gap is
-   * legal.
-   */
-  _separate(sorted) {
-    for (let i = 0; i < sorted.length; i++) {
-      const a = sorted[i];
-      for (let j = i + 1; j < sorted.length; j++) {
-        const b = sorted[j];
-        if (b.s - a.s > TRAFFIC.minGap) break;      // sorted: nothing else is near
-        if (a.spun || b.spun) continue;
-        if (a.dir !== b.dir || a.lane !== b.lane) continue;
-        const need = a.halfLen + b.halfLen + 1.5;
-        const d = b.s - a.s;
-        if (d >= need) continue;
-        // The one travelling in +s is ahead when dir is +1, behind when -1.
-        const push = (need - d) * 0.5;
-        a.s -= push;
-        b.s += push;
       }
     }
   }
@@ -408,12 +730,15 @@ export class Traffic {
     }
   }
 
-  /** Hands a car over to a scripted spin-out. */
+  /** Hands a car over to a scripted spin-out, hazards on. */
   _spinOut(car, closing, side) {
     car.spun = TRAFFIC.spinTime;
     car.spunRate = clamp(closing * 0.10, 0.5, 3.2) * (side || 1);
     car.spunDrift = clamp(closing * 0.28, 1.5, 7) * (side || 1);
-    car.speed = Math.max(TRAFFIC.speedFloor, car.speed * 0.55);
+    car.speed = Math.max(0, car.speed * 0.55);
+    car.signal = 0;
+    car.pendingLane = -1;
+    car.hazard = true;
   }
 
   /**
@@ -424,15 +749,17 @@ export class Traffic {
     car.spun -= dt;
     car.s += car.speed * car.dir * dt;
     car.speed = Math.max(0, car.speed - TRAFFIC.spinDecel * dt);
+    car.accel = -TRAFFIC.spinDecel;
 
     car.spunYaw += car.spunRate * dt;
     car.spunRate = damp(car.spunRate, 0, 1.4, dt);
 
     // Slide off the carriageway to clear the lane behind.
-    car.vSmooth += car.spunDrift * dt;
+    const before = car.v;
+    car.v += car.spunDrift * dt;
     car.spunDrift = damp(car.spunDrift, 0, 0.8, dt);
-    car.vSmooth = clamp(car.vSmooth, -ROAD.halfWidth - 6, ROAD.halfWidth + 6);
-    car.v = car.vSmooth;
+    car.v = clamp(car.v, -ROAD.halfWidth - 6, ROAD.halfWidth + 6);
+    car.latVel = (car.v - before) / Math.max(dt, 1e-4);
 
     if (car.spun <= 0) car.spun = -1;                // flagged for despawn
   }
@@ -440,20 +767,11 @@ export class Traffic {
   /* ------------------------------------------------------------- placement -- */
 
   /**
-   * Puts a car on the road surface, facing along it and leaning with it.
-   *
-   * The full road frame is used, not just a yaw.
+   * Puts a car on the road surface, facing along it (plus the yaw of a lane
+   * change), leaning with it; the body pitches and rolls on its springs.
    */
   _place(car, dt) {
     const f = this.path.frameAt(car.s, this._fA);
-
-    if (car.spun === 0) {
-      // Lane changes are eased, not teleported.
-      const wanted = car.dir * this.lanes[car.lane];
-      car.vSmooth = dt > 0 ? damp(car.vSmooth, wanted, TRAFFIC.laneRate, dt) : wanted;
-      car.v = car.vSmooth;
-    }
-
     this.chunks.groundAt(car.s, car.v, this._pos);
 
     // Basis from the road: local -Z is forward, local +Y is the road's up.
@@ -463,24 +781,53 @@ export class Traffic {
     this._ay.crossVectors(this._az, this._ax).normalize();
     this._m.makeBasis(this._ax, this._ay, this._az);
     this._q.setFromRotationMatrix(this._m);
-    if (car.spunYaw) {
-      this._q.multiply(this._spunQ.setFromAxisAngle(WORLD_UP, car.spunYaw));
-    }
+
+    // Pointing into a lane change: atan of lateral over forward speed, toward the driver's side.
+    const yaw = car.spun ? car.spunYaw : -Math.atan2(car.latVel * car.dir, Math.max(car.speed, 3));
+    if (yaw) this._q.multiply(this._yawQ.setFromAxisAngle(WORLD_UP, yaw));
 
     const g = car.inst.group;
     g.position.copy(this._pos);
     g.quaternion.copy(this._q);
 
-    // Wheels: sit at the model's own rolling radius and turn with road speed.
-    const r = car.inst.metrics.wheelRadius;
+    const m = car.inst.metrics;
+    const r = m.wheelRadius;
+
+    if (dt > 0) {
+      // Yaw rate from the heading change; lateral acceleration = ω·v.
+      this._fwd.set(0, 0, -1).applyQuaternion(this._q);
+      let omega = 0;
+      if (car.heading) {
+        const cross = car.heading.x * this._fwd.z - car.heading.z * this._fwd.x;
+        omega = -cross / dt;
+        car.heading.copy(this._fwd);
+      } else {
+        car.heading = this._fwd.clone();
+      }
+      const aLeft = car.spun ? 0 : omega * car.speed;
+
+      // Body on its springs: a slightly under-damped second-order follower.
+      const k = 70, c = 9.5;
+      const pitchGoal = clamp(car.accel * 0.0065, -0.045, 0.03);
+      const rollGoal = clamp(-aLeft * 0.011, -0.055, 0.055);
+      car.pitchV += (k * (pitchGoal - car.pitch) - c * car.pitchV) * dt;
+      car.pitch += car.pitchV * dt;
+      car.rollV += (k * (rollGoal - car.roll) - c * car.rollV) * dt;
+      car.roll += car.rollV * dt;
+      car.inst.model.body.rotation.set(car.pitch, 0, car.roll);
+
+      car.steer = damp(car.steer, clamp(yaw * 2.2, -0.45, 0.45), 8, dt);
+    }
+
+    // Wheels at the model's own rolling radius, turning with road speed.
     car.spin += (car.speed / r) * dt;
-    const wb = car.inst.metrics.wheelbaseHalf;
-    const tr = car.inst.metrics.trackHalf;
+    const wb = m.wheelbaseHalf;
+    const tr = m.trackHalf;
     const layout = [[-tr, -wb], [tr, -wb], [-tr, wb], [tr, wb]];
     for (let i = 0; i < 4; i++) {
       const w = car.inst.wheels[i];
       w.position.set(layout[i][0], r, layout[i][1]);
-      w.rotation.set(-car.spin, 0, 0);
+      w.rotation.set(-car.spin, i < 2 && !car.spun ? car.steer : 0, 0, 'YXZ');
     }
   }
 }
