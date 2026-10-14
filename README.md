@@ -14,9 +14,9 @@ No build step, no bundlers, no dependencies — pure modern ES modules running s
 - **Biomes & Water** — Ten ecological biomes (meadow, broadleaf, autumn, boreal, birchwood, savanna, mediterranean, alpine, wetland, blossom) laid out by climate and warped Voronoi cells, with soft borders; occasional lakes in natural basins with a Fresnel water shader, shore foam and beaches.
 - **Raycast Vehicle Physics** — Rigid-body dynamics powered by Rapier3D (WebAssembly) with 4-wheel independent raycast suspension, Magic Formula tyre friction, anti-roll coupling, downforce, aerodynamic drag, and counter-steer assists.
 - **Physical Engine Simulation & Acoustics** — Directly bridged with [`Engine_Sim`](https://github.com/YigitSalihEmecen/Engine_Sim); the engine simulator *is* the actual drivetrain calculating propshaft torque, clutch slip, gearing, and procedural sound synthesis across 16 engine configurations.
-- **Vehicle Roster & Swaps** — 9 vehicle types (Sport, Muscle, Classic, Hatchback, Police, Pickup, Van, Military, Monster Truck) with custom paint swatches, engine swaps, and automatic/manual transmissions.
+- **Generated Cars & Garage** — every car is built from numbers by [`Car-gen`](https://github.com/YigitSalihEmecen/Car-gen) (submodule). A 3D garage studio to generate cars by body style, mutate them, edit every generator parameter, paint, swap engines, drivetrain and gearbox, and save builds. Mass, grip, drag, CoM and suspension are derived from the generated shape.
 - **Procedural Environment** — 16 faceted low-poly tree species (pine, oak, beech, fir, larch, cypress, acacia, willow, cherry, olive…), 10 shrubs from ferns to lavender and reeds, four kinds of grass and flowers, rock scatter, and triplanar ground with macro variation and bump.
-- **Traffic & Game Modes** — Choose between a relaxing **Zen** cruise or high-stakes **Traffic** mode with near-miss scoring, multiplier chains, and impact physics.
+- **Living Traffic & Game Modes** — every traffic car is a different generated model. Drivers follow with the Intelligent Driver Model, slow for corners, keep right and overtake with indicators, pull over when flashed, and brake, flash and honk when you come at them head-on. Choose a relaxing **Zen** cruise or **Traffic** mode with near-miss scoring and multiplier chains.
 - **Desktop & Mobile Optimized** — Responsive layouts supporting keyboard, gamepad, and touch controls with safe-area support for mobile portrait and landscape.
 - **Atmospheric Visuals** — Five sky presets (day, golden hour, dawn, overcast, and a full-moon night with stars), each setting light, fog, grade and water reflections.
 
@@ -38,6 +38,9 @@ No build step, no bundlers, no dependencies — pure modern ES modules running s
 | `K` | Cycle Sky (Day / Golden / Dawn / Overcast / Night) |
 | `R` | Respawn / Reset |
 | `M` | Mute Audio |
+| `Esc` | Pause |
+
+**Garage:** `G` generate · `M` mutate · `Z` undo · drag to orbit.
 
 *Also supports standard gamepads (left stick steering, triggers for throttle/brake) and touch controls on mobile.*
 
@@ -48,7 +51,7 @@ No build step, no bundlers, no dependencies — pure modern ES modules running s
 Because ES modules and WebAssembly require a standard HTTP origin, serve the folder with any static web server:
 
 ```bash
-# Clone the repository with submodules
+# Clone the repository with submodules (engine_sim and car_gen)
 git clone --recurse-submodules https://github.com/YigitSalihEmecen/HighRoads.git
 cd HighRoads
 
