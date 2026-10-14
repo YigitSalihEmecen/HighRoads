@@ -1,13 +1,23 @@
 /**
  * powertrain.js — the engine simulator wired in as the drivetrain.
  *
- * engine_sim owns gear, rpm and torque. The game vehicle supplies wheel
- * speed; the bridge returns the torque the physics applies. One source of
- * truth keeps the audio with the car.
+ * engine_sim owns gear, rpm and torque. The game supplies the road speed
+ * under the driven wheels and how much force their tyres can transmit; the
+ * bridge models the driven wheel itself (engine_sim's `_stepVehicle`, the one
+ * hook overridden) and returns the force the tyres actually put down. One
+ * source of truth keeps the sound with the car:
+ *
+ *  - gripping, the wheel turns with the road, so rpm is road speed through
+ *    the gear and the propshaft torque is what pushes the car;
+ *  - past the grip limit the wheel spins up on its own inertia — the revs
+ *    flare and the car gets only what the tyres can carry (a burnout);
+ *  - in the air the engine spins the wheels freely and they bite on landing;
+ *  - reverse is first gear run backwards, loaded like any other gear.
  */
 
 import { EngineSim } from '../engine_sim/src/engine-sim.js';
 import { WORLD } from './config.js';
+import { smoothstep } from './util.js';
 
 // Air density for converting the simulator's drag area.
 const RHO_AIR = 1.225;
@@ -19,13 +29,16 @@ const STALL_RATE = 220;     // rpm/s below which the engine counts as plateaued
 const STALL_TIME = 0.7;     // s it must persist
 const STALL_COOLDOWN = 1.2; // s before it may fire again
 
-// Launch authority: `_stepVehicle` is overridden so the drivetrain never sees
-// the load on the wheels, which leaves the clutch model stuck half open at a
-// standing start. Below LAUNCH_FADE the host asserts a floor on drive force.
-const LAUNCH_FADE = 7.0;
-// Peak torque is not on tap at idle; 0.72 is roughly what `torqueFactor`
-// returns just above idle for the roster's engines.
-const LAUNCH_TORQUE_FRAC = 0.72;
+// A spinning tyre carries a little less than a gripping one (kinetic friction).
+const KINETIC = 0.94;
+// Driven wheel + tyre + half-shaft inertia, kg·m² per m² of radius — engine_sim's own figure.
+const WHEEL_J_PER_R2 = 13;
+// Traction control: wheelspin (m/s past the road) where it starts and finishes
+// cutting, the deepest cut, and how fast it acts (1/s). Some slip is allowed —
+// that is where a tyre makes its most force.
+const TC_FROM = 1.5, TC_TO = 5, TC_DEPTH = 0.85, TC_RATE = 15;
+// Reverse speed limiter, m/s: fades the throttle out between these.
+const REVERSE_FROM = 10, REVERSE_TO = 12.5;
 // engine_sim derives `launchRate` once from the preset it was built with;
 // `setCar` recomputes it via `_retuneLaunch` for the car actually on screen.
 const LAUNCH_RATE_FRAC = 0.9;
@@ -71,8 +84,23 @@ export class Powertrain {
     this.muted = false;
     this.volume = 0.62;
 
-    // Wheel angular velocity handed to the drivetrain, rad/s.
-    this._ww = 0;
+    // The road under the driven wheels, as wheel rad/s (positive = the way the
+    // selected gear drives), and the force their tyres can transmit, N.
+    this._groundW = 0;
+    this._grip = Infinity;
+    // Driven-wheel state: spinning past the road, and the force actually put
+    // down, averaged over the frame.
+    this._spinning = false;
+    this._fSum = 0;
+    this._tSum = 0;
+    this._Jw = 2.8;
+    /** Driven wheels' surface speed minus the road's, m/s, in the car's frame (+ = forward). */
+    this.wheelSlip = 0;
+    // Reverse runs the box in first with the automatic suspended.
+    this._revHeld = false;
+    /** Throttle cut on wheelspin. Off lets the tyres light up. */
+    this.tractionControl = true;
+    this._tc = 0;
     // Longitudinal force at the contact patch, newtons.
     this.force = 0;
 
@@ -126,9 +154,14 @@ export class Powertrain {
   // Resets the drivetrain and selects first gear, so a respawn never starts a
   // car bogged down in the gear it came off the road in.
   reset(gear = 1) {
-    this._ww = 0;
+    this._groundW = 0;
+    this._spinning = false;
+    this.wheelSlip = 0;
+    this._tc = 0;
     this.force = 0;
     this.reverse = false;
+    if (this._revHeld && this.sim) this.sim.setAutoShift(this.autoShift);
+    this._revHeld = false;
     this._stallFor = 0;
     this._stallCool = 0;
     if (this.sim && this.sim.physics) {
@@ -204,12 +237,9 @@ export class Powertrain {
       volume: this.volume,
     });
 
-    // Hand the wheels over to the host. `_stepVehicle` is overridden per instance
+    // The driven wheel is the host's: `_stepVehicle` is overridden per instance
     // so engine_sim stays intact and its own test suite keeps passing.
-    const dt = this.sim.physics;
-    dt._stepVehicle = () => {
-      dt.ww = this._ww;
-    };
+    this.sim.physics._stepVehicle = (h, Tp) => this._stepWheel(h, Tp);
 
     this.setCar(car);
     await this.sim.start();
@@ -228,6 +258,8 @@ export class Powertrain {
   setCar(car) {
     this._car = car;
     this.maxRpm = car.V.maxRpm;
+    const driven = (car.V.driveBias || [0, 0, 0.5, 0.5]).filter((b) => b > 0).length || 2;
+    this._Jw = driven * WHEEL_J_PER_R2 * car.V.wheelRadius * car.V.wheelRadius;
     if (!this.sim) return;
 
     // Engine first, then the car: the gearbox is designed for the pair.
@@ -260,8 +292,9 @@ export class Powertrain {
     p.launchRate = Math.min(12000, Math.max(400, gearedRate * LAUNCH_RATE_FRAC));
 
     // Holding rpm scales off the engine's own span, so a launch sounds like that
-    // engine doing it rather than like one number.
-    p.launchFlareRpm = Math.max(900, (eng.redlineRpm - eng.idleRpm) * 0.45);
+    // engine doing it rather than like one number. A quarter of the span: at
+    // 45 % the clutch slipped to ~40 km/h in first and the revs ran ahead of the car.
+    p.launchFlareRpm = Math.max(700, (eng.redlineRpm - eng.idleRpm) * 0.25);
   }
 
   /**
@@ -280,73 +313,103 @@ export class Powertrain {
     this.sim.setInputs(s);
   }
 
-  // One simulator step per rendered frame, then the torque is held across the
-  // physics substeps that follow. The drivetrain sub-steps at 0.5 ms internally.
+  /**
+   * The driven wheel, once per drivetrain sub-step (0.5 ms), against the
+   * propshaft torque. Gripping, it turns with the road and passes the axle
+   * torque to the car; when that torque exceeds what the tyres can carry it
+   * breaks away and spins on its own inertia until the slip closes again.
+   */
+  _stepWheel(h, Tp) {
+    const p = this.sim.physics;
+    const Taxle = Tp > 0 ? Tp * p.fd * p.eff : Tp * p.fd;
+    const Tgrip = this._grip * p.r;
+    const g = this._groundW;
+    let w = p.ww, Troad;
+    if (this._spinning) {
+      const s0 = w - g;
+      Troad = Math.sign(s0) * Tgrip * KINETIC;
+      w += (h * (Taxle - Troad)) / this._Jw;
+      // Slip closed through zero: the tyre has hooked up again.
+      if ((w - g) * s0 <= 0) { w = g; this._spinning = false; }
+    } else if (Math.abs(Taxle) > Tgrip) {
+      this._spinning = true;
+      Troad = Math.sign(Taxle) * Tgrip * KINETIC;
+      w = g + (h * (Taxle - Troad)) / this._Jw;
+    } else {
+      Troad = Taxle;
+      w = g;
+    }
+    p.ww = w;
+    this._fSum += (Troad / p.r) * h;
+    this._tSum += h;
+  }
+
+  /**
+   * One simulator step per rendered frame; the force it returns is held across
+   * the physics substeps that follow. The drivetrain sub-steps at 0.5 ms.
+   *
+   * state: { wheelSpeed (m/s along the car, + forward), throttle, brake,
+   *          reverse, neutral, grip (N the driven tyres can transmit; omitted = unlimited) }
+   */
   update(dt, state) {
     if (!this.sim) return 0;
 
     const V = this._car.V;
     const p = this.sim.physics;
 
-    // Reverse is not a gear the simulator has: the gearbox goes to neutral, the
-    // engine idles against no load, and the host supplies a reversing force.
-    // Neutral also covers the garage preview, where the engine revs freely.
-    this.reverse = state.reverse;
-    if (this.reverse || state.neutral) {
+    // Neutral (the title screen and garage) lets the engine rev freely.
+    // Reverse is first gear driven backwards: the automatic is suspended so it
+    // cannot change up, and the road speed is mirrored so the drivetrain sees
+    // ordinary forward motion.
+    this.reverse = state.reverse && !state.neutral;
+    if (state.neutral) {
       if (p.gear !== 0) p.selectGear(0);
-    } else if (p.gear === 0 && !p.shifting && this.autoShift) {
-      p.selectGear(1);
+    } else if (this.reverse) {
+      if (!this._revHeld) {
+        this._revHeld = true;
+        this.sim.setAutoShift(false);
+        this._spinning = false;
+      }
+      if (p.gear !== 1 && !p.shifting) p.selectGear(1);
+    } else {
+      if (this._revHeld) {
+        this._revHeld = false;
+        this.sim.setAutoShift(this.autoShift);
+        this._spinning = false;
+      }
+      if (p.gear === 0 && !p.shifting) p.selectGear(1);
     }
 
-    // The wheels are driven by the game, not by the simulator's point mass.
-    this._ww = state.wheelSpeed / V.wheelRadius;
+    const dir = this.reverse ? -1 : 1;
+    this._groundW = (dir * state.wheelSpeed) / V.wheelRadius;
+    this._grip = state.grip != null ? Math.max(0, state.grip) : Infinity;
+    this._fSum = 0;
+    this._tSum = 0;
 
-    this.sim.setThrottle(state.throttle);
+    // The driver's pedal, as the engine gets it: traction control trims it on
+    // last frame's wheelspin; reverse is speed-limited.
+    const cut = this.tractionControl ? smoothstep(TC_FROM, TC_TO, Math.abs(this.wheelSlip)) : 0;
+    this._tc += (cut - this._tc) * (1 - Math.exp(-TC_RATE * dt));
+    let throttle = state.throttle * (1 - TC_DEPTH * this._tc);
+    if (this.reverse) throttle *= 1 - smoothstep(REVERSE_FROM, REVERSE_TO, Math.abs(state.wheelSpeed));
+
+    this.sim.setThrottle(throttle);
     this.sim.setBrake(state.brake);
     this.sim.update(dt);
 
-    this._stallUpshift(dt, p, state.throttle);
+    this._stallUpshift(dt, p, throttle);
 
     const params = (this.params = this.sim._lastParams);
     this.rpm = p.rpm;
     this.gear = p.gear;
     this.load = params ? params.load : 0;
     this.limiter = p.limiterCut > 0;
+    this.wheelSlip = dir * (p.ww - this._groundW) * V.wheelRadius;
 
-    // Propshaft torque → wheel torque → contact-patch force. Driveline efficiency
-    // is charged on the driving side only; the same losses retard on the overrun.
-    const Tp = p.Tp || 0;
-    const wheelTorque = Tp > 0 ? Tp * p.fd * p.eff : Tp * p.fd;
-    let force = wheelTorque / p.r;
-
-    if (this.reverse) {
-      // Neutral transmits nothing, so reverse gets its own simple term.
-      force = -state.throttle * V.mass * 3.2;
-    } else if (!state.neutral) {
-      force = Math.max(force, this._launchFloor(p, state.throttle, state.wheelSpeed));
-    }
-
+    // What the tyres put down this frame, averaged over the drivetrain's sub-steps.
+    const force = this._tSum > 0 ? (dir * this._fSum) / this._tSum : 0;
     this.force = Number.isFinite(force) ? force : 0;
     return this.force;
-  }
-
-  // Floor on drive force at a standing start — see LAUNCH_FADE. Returns 0 the
-  // moment the car moves, leaves first, or the pedal is off, and never exceeds
-  // LAUNCH_TORQUE_FRAC of peak torque through the gear actually selected.
-  _launchFloor(p, throttle, wheelSpeed) {
-    if (!(throttle > 0.02) || p.gear !== 1 || p.shifting) return 0;
-
-    const speed = Math.abs(wheelSpeed);
-    if (speed >= LAUNCH_FADE) return 0;
-    // Linear fade: at rest the floor is fully in, by LAUNCH_FADE it is gone.
-    const fade = 1 - speed / LAUNCH_FADE;
-
-    const eng = this.sim.profile;
-    const ratio = Math.abs(p.ratios[0] * p.fd);
-    if (!eng || !(ratio > 0)) return 0;
-
-    const torque = eng.peakTorque * LAUNCH_TORQUE_FRAC * throttle;
-    return (torque * ratio * p.eff) / p.r * fade;
   }
 
   // Changes up when the engine is at the top of its range and nothing is
@@ -360,6 +423,7 @@ export class Powertrain {
     const eligible =
       this.autoShift && !p.shifting && this._stallCool <= 0 &&
       p.gear >= 1 && p.gear < p.gearCount &&
+      !this.reverse && !this._spinning &&
       throttle > 0.7 && p.rpm > redline * STALL_FRAC && rate < STALL_RATE;
 
     if (!eligible) {

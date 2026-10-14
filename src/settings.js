@@ -182,6 +182,10 @@ export class Settings {
     this.autoBtn = this._button('Gearbox: auto', () => {
       this.game.setAutoShift(!pt.autoShift);
     });
+    this.tcBtn = this._button('Traction control: on', () => {
+      pt.tractionControl = !pt.tractionControl;
+      this.refresh();
+    });
     this.camBtn = this._button(`Camera: ${CAM_MODES[this.game.cam.mode]}`, () => {
       this.camBtn.textContent = 'Camera: ' + this.game.cam.cycle();
     });
@@ -244,6 +248,10 @@ export class Settings {
     if (this.autoBtn) {
       this.autoBtn.textContent = 'Gearbox: ' + (pt.autoShift ? 'auto' : 'manual');
       this.autoBtn.classList.toggle('on', !pt.autoShift);
+    }
+    if (this.tcBtn) {
+      this.tcBtn.textContent = 'Traction control: ' + (pt.tractionControl ? 'on' : 'off');
+      this.tcBtn.classList.toggle('on', !pt.tractionControl);
     }
     if (this.tiltBtn) {
       const on = !!(this.game.input && this.game.input.tilt.on);

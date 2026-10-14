@@ -168,7 +168,9 @@ for (let i = 0; i < steps; i++) {
   vehicle.setSurface(0);
   vehicle.setDriveForce(powertrain.update(dt, {
     wheelSpeed: vehicle.forwardSpeed, throttle: input.throttle, brake: input.brake, reverse: false,
+    grip: vehicle.driveGrip,
   }));
+  vehicle.driveSlip = powertrain.wheelSlip;
 
   acc += dt;
   let sub = 0;

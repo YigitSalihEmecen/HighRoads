@@ -62,7 +62,8 @@ async function run(label, frameDt, { jitter = 0, spikeEvery = 0, spikeDt = 0, st
   const frame = (rawDt) => {
     const dt = Math.min(rawDt, MAX_FRAME);
     v.setDriveForce(pt.update(dt, {
-      wheelSpeed: v.forwardSpeed, throttle: 1, brake: 0, reverse: false, neutral: false }));
+      wheelSpeed: v.forwardSpeed, throttle: 1, brake: 0, reverse: false, neutral: false, grip: v.driveGrip }));
+    v.driveSlip = pt.wheelSlip;
     v.setSurface(0);
     acc += dt;
     let steps = 0;

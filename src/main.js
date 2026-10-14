@@ -657,8 +657,11 @@ class Game {
         brake: pedals.brake,
         reverse,
         neutral: garage,
+        // The driven tyres' grip: past it the wheels spin and the revs flare.
+        grip: this.vehicle.driveGrip,
       })
     );
+    this.vehicle.driveSlip = this.powertrain.wheelSlip;
 
     PERF.lap('powertrain');
     // ---- fixed-step physics ---------------------------------------------

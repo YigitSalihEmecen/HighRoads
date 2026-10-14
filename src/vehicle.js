@@ -46,6 +46,10 @@ export class RaycastVehicle {
     this.forwardSpeed = 0;
     this.groundedCount = 0;
     this.slip = 0;        // 0..1, drives skid audio and drift feedback
+    /** Longitudinal force the driven tyres can transmit right now, N — the powertrain's grip limit. */
+    this.driveGrip = 0;
+    /** Driven wheels' surface speed past the road, m/s (set by the powertrain): wheelspin. */
+    this.driveSlip = 0;
     /** Steering lock available this frame, radians. See `_updateSteering`. */
     this.steerLimit = 0;
 
@@ -564,6 +568,9 @@ export class RaycastVehicle {
     // velocity cancellation to keep a parked car parked.
     const slipBlend = smoothstep(V.slipBlendSpeed[0], V.slipBlendSpeed[1], this.speed);
     let slipAccum = 0;
+    let driveGrip = 0;
+    // Wheelspin reads as slip on the driven tyres: smoke, marks and skid audio.
+    const spinSlip = smoothstep(1.2, 7, Math.abs(this.driveSlip));
 
     for (let i = 0; i < this.wheels.length; i++) {
       const w = this.wheels[i];
@@ -603,6 +610,10 @@ export class RaycastVehicle {
       const lat = lerp(-vr * mLat * handbrakeCut, magic * dt, slipBlend);
 
       // ---- longitudinal ----------------------------------------------------
+      // What this tyre could still carry along its heading after cornering.
+      if (V.driveBias[i] > 0) {
+        driveGrip += Math.sqrt(Math.max(0, maxImpulse * maxImpulse - lat * lat)) / dt;
+      }
       let driveImpulse = this.driveForce * V.driveBias[i] * dt;
 
       // Traction control caps drive (never braking) at the friction left after
@@ -636,7 +647,7 @@ export class RaycastVehicle {
       // Skid feedback comes from slip angle past the tyre's peak.
       const alphaPeak = 1.86 / B;
       const angleSlip = smoothstep(alphaPeak * 1.1, alphaPeak * 3.0, Math.abs(alpha));
-      w.slipAmount = Math.max(clampSlip, angleSlip);
+      w.slipAmount = Math.max(clampSlip, angleSlip, V.driveBias[i] > 0 ? spinSlip : 0);
       slipAccum += w.slipAmount;
 
       const impulse = this._e.copy(wf).multiplyScalar(lon).addScaledVector(wr, latOut);
@@ -646,6 +657,7 @@ export class RaycastVehicle {
     }
 
     this.slip = clamp(slipAccum / 4, 0, 1);
+    this.driveGrip = driveGrip;
   }
 
   // ----------------------------------------------------------------- aero --
@@ -715,9 +727,11 @@ export class RaycastVehicle {
 
   _integrateWheelSpin(dt, input) {
     const V = this.V;
-    for (const w of this.wheels) {
+    for (let i = 0; i < this.wheels.length; i++) {
+      const w = this.wheels[i];
       if (input.handbrake && w.rear) continue; // locked wheels don't turn
-      const v = w.grounded ? w.pointVel.dot(this.fwd) : this.forwardSpeed;
+      let v = w.grounded ? w.pointVel.dot(this.fwd) : this.forwardSpeed;
+      if (V.driveBias[i] > 0) v += this.driveSlip;
       w.spin += (v / V.wheelRadius) * dt;
     }
   }
@@ -774,6 +788,7 @@ export class RaycastVehicle {
     this.steer = 0;
     this.reverse = false;
     this.driveForce = 0;
+    this.driveSlip = 0;
     this.slip = 0;
     this.upsideDownFor = 0;
     this.parkedPos.copy(position);

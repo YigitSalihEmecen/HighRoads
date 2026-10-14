@@ -353,15 +353,30 @@ Detail: player 0.5, garage 0.72, traffic 0.12 (≈13k tris, ≈45 ms to build).
 ### 4.7 Powertrain (`powertrain.js`)
 
 `engine_sim` is used **unmodified**; the bridge overrides one method per
-instance: `dt._stepVehicle = () => { dt.ww = this._ww; }`. The game feeds wheel
-omega, gets propshaft torque. Two corrections follow from that override:
+instance, `_stepVehicle`, with **the driven wheel** (`_stepWheel`, every 0.5 ms
+drivetrain sub-step). The game hands it the road speed under the car and
+`vehicle.driveGrip` — the longitudinal force the driven tyres can carry after
+cornering, from the same friction budget `_tyres` uses. Gripping, the wheel
+turns with the road and the axle torque is the force; past the grip it breaks
+away and spins on its own inertia (`WHEEL_J_PER_R2`) until the slip closes. The
+returned force is what the tyres actually transmitted, averaged over the frame.
+So rpm is ALWAYS the car's: road speed through the gear when gripping, wheelspin
+flares the revs, airborne wheels spin up, a pinned automatic sits at converter
+stall. `wheelSlip` goes back to the vehicle (wheel rotation, smoke, marks).
 
-- **`_launchFloor`** — the drivetrain never sees wheel load, only that wheel
-  speed is not rising, and its launch controller regulates on *road speed*. Below
-  7 m/s in first, assert `0.72 × peakTorque × throttle` through the gear (#42).
+- **Reverse is first gear run backwards** (#90): automatic suspended, road speed
+  mirrored, force negated, a 36–45 km/h reverse limiter. It used to put the box
+  in NEUTRAL and push the car with `mass × 3.2` — the engine sat on the limiter
+  at walking pace while the car crawled ("the sound follows the keys").
+- **Traction control** (`tractionControl`, Settings › Driving) trims the
+  throttle on last frame's wheelspin (1.5–5 m/s), so it bogs like a real TC.
+- **The launch force floor is gone** (#42's workaround): with the wheel loaded
+  through the tyres the clutch schedule launches on its own.
+  `probe/coupling.mjs` checks all of the above on generated cars.
 - **`_retuneLaunch`** — `launchRate` is computed once in engine_sim's constructor
   and neither `setVehicle` nor `setEngine` revisits it; out by up to 2× both ways
-  across the roster (#43).
+  across the roster (#43). The launch hold is a quarter of the rev span: at 45 %
+  the clutch slipped to ~40 km/h and the revs ran ahead of the car.
 - **The gearbox is designed for the fitted engine** (#89). `vehicleProfile`
   hands engine_sim the car's mass, wheels, the game's drag (`V.dragCoefficient`,
   force = k·v²), rolling resistance and gravity; `sim.setVehicleProfile` then
@@ -1079,6 +1094,7 @@ Every one was real, diagnosed by measurement, and is re-introducible.
 | 87 | Vista shots radially smeared, FOV 997° | loop `dt` went negative after a tab stall; FOV damping extrapolated | clamp `dt ≥ 0` |
 | 88 | All foliage floated (or sank) over the terrain, following its shape | after the ground rewrite (#83) trees, shrubs, grass and rocks still interpolated the old road-space scatter sheet, whose columns are up to tens of metres wide: median +1.5 m (grass) to +3 m (trees), spread −3..+4 m against the drawn tiles | height from `field.height` via `_groundY`, a cached 2 m world lattice (matches the finest tiles) applied to accepted props only, so scatter cost stays in budget. Now within a few cm of the drawn surface |
 | 89 | Some engines never got past 4th; every engine had the car's gear count | ratios belonged to the CAR while engines are swappable, and the automatic needed 93.6 % of redline to change up: a weak or low-peaking engine sat on a drag plateau below it (`probe/gears.mjs`: 20 of 153 pairs stuck) | engine_sim designs the box per engine × car with the game's drag and gravity; power-based upshift at WOT. 0 of 153 stuck |
+| 90 | Full rpm while the car barely moved; engine sound "follows the keys" | reverse ran the box in neutral (free revs on the pedal) with a fixed fake force; the drivetrain was fed body speed, so wheelspin and airtime never reached it; a launch floor pushed the car independent of the engine | the driven wheel is modelled in `_stepWheel` against the tyres' grip; reverse is a loaded first gear with a limiter; traction control; floor removed (`probe/coupling.mjs`) |
 | 90 | Car stopped dead from 190 km/h in a dip (exposed by #89's faster gearing) | the chassis cuboid bottomed out and caught the road trimesh's internal triangle edges | `roundCuboid` chassis (r ≤ 0.12 m). `FIX_INTERNAL_EDGES` on the road mesh also fixes it but costs ~4 ms per streamed chunk |
 
 ### Harness bugs that masqueraded as game bugs
