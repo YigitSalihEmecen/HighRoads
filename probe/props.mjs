@@ -1,5 +1,6 @@
 /**
- * props.mjs — measures the canopy and understorey.
+ * props.mjs — measures the LEGACY canopy (env/legacy/trees.js) and the
+ * understorey. The TreeGen canopy has its own probe: forest.mjs.
  *
  * Reports triangle cost, float, ground contact and canopy gaps, and checks
  * the in-view total against the budget.
@@ -13,6 +14,7 @@ import { RoadPath } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
 import { TREE_FORMS, SHRUBS } from '../src/foliage.js';
 
+TREES.generator = 'legacy';
 const seed = process.argv[2] || WORLD.seed;
 const terrain = createTerrain(seed);
 const path = new RoadPath(terrain, seed);

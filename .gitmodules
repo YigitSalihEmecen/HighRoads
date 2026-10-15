@@ -17,3 +17,7 @@
 	path = car_gen
 	url = https://github.com/YigitSalihEmecen/Car-gen.git
 	branch = main
+[submodule "tree_gen"]
+	path = tree_gen
+	url = https://github.com/YigitSalihEmecen/Tree-Gen.git
+	branch = main

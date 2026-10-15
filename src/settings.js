@@ -8,7 +8,7 @@
 
 import { TiltSteering } from './input.js';
 import { CAM_MODES } from './camera.js';
-import { GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel } from './config.js';
+import { GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel, TREES, setTreeGenerator } from './config.js';
 import { SKY_PRESETS } from './sky.js';
 
 /**
@@ -169,6 +169,12 @@ export class Settings {
     this.gfxNote = document.createElement('div');
     this.gfxNote.className = 'row-hint';
     this._host.appendChild(this.gfxNote);
+
+    // TreeGen or the legacy low-poly canopy; the library is built at boot.
+    this._button(`Trees: ${TREES.generator === 'legacy' ? 'legacy low-poly' : 'TreeGen'}`, () => {
+      setTreeGenerator(TREES.generator === 'legacy' ? 'treegen' : 'legacy');
+      location.reload();
+    });
     this._sub('Atmosphere');
 
     // Sky preset: cycles day → golden hour → dawn → overcast → full moon.

@@ -1,5 +1,7 @@
 /**
- * env/trees.js — tree forms built from faceted solids.
+ * env/legacy/trees.js — the LEGACY tree generator: forms built from faceted
+ * solids. Superseded by TreeGen (env/treegen.js + forest.js); kept whole and
+ * selectable with `TREES.generator = 'legacy'` or `?trees=legacy`.
  *
  * A tree is described, not grown: a tapered stem carries faceted crowns or
  * conical skirts. The far tier is the same builder at lower subdivision, so
@@ -7,10 +9,10 @@
  */
 
 import * as THREE from 'three';
-import { TREES } from '../config.js';
-import { TREE_FORMS } from '../foliage.js';
-import { rng } from './textures.js';
-import { Facets, blob, makeWarp, tube, tier, triangleCount } from './lowpoly.js';
+import { TREES } from '../../config.js';
+import { TREE_FORMS } from '../../foliage.js';
+import { rng } from '../textures.js';
+import { Facets, blob, makeWarp, tube, tier, triangleCount } from '../lowpoly.js';
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const lerp = (a, b, t) => a + (b - a) * t;

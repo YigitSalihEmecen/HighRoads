@@ -9,7 +9,7 @@ import { BUSHES as BUSH_CFG, TREES } from '../config.js';
 import { SHRUBS } from '../foliage.js';
 import { rng } from './textures.js';
 import { Facets, blob, makeWarp, tube, triangleCount } from './lowpoly.js';
-import { foliageMaterial } from './trees.js';
+import { foliageMaterial } from './legacy/trees.js';
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -208,7 +208,7 @@ export function createBushAssets() {
   return {
     library,
     material: tier.material,
-    /** See `env/trees.js` — `probe/canopy.mjs` turns the fade off through this. */
+    /** See `env/legacy/trees.js` — `probe/canopy.mjs` turns the fade off through this. */
     uniforms: tier.uniforms,
     trianglesPerBush: triangles / Math.max(1, n),
     setTime(t) { tier.uniforms.uTime.value = t; },

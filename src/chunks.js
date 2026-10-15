@@ -18,7 +18,9 @@ import { createGrassAssets } from './env/grass.js';
 import { createGroundAssets } from './env/ground.js';
 import { createRoadAssets } from './env/road.js';
 import { createRockAssets } from './env/rocks.js';
-import { createTreeAssets } from './env/trees.js';
+import { createTreeAssets } from './env/legacy/trees.js';
+import { createTreeGenAssets } from './env/treegen.js';
+import { Forest } from './forest.js';
 import { createBushAssets } from './env/bushes.js';
 import { TerrainField, ROAD_SINK } from './terrainfield.js';
 import { PERF } from './perf.js';
@@ -191,8 +193,9 @@ function lateralAt(frame, rightFlat, v, outDir) {
 }
 
 export class ChunkManager {
-  constructor({ scene, world, RAPIER, path, terrain, anisotropy = 1 }) {
+  constructor({ scene, world, RAPIER, path, terrain, anisotropy = 1, trees = null }) {
     this.scene = scene;
+    this._treeAssets = trees;
     this.anisotropy = anisotropy;
     this.world = world;
     this.RAPIER = RAPIER;
@@ -370,7 +373,14 @@ export class ChunkManager {
 
     // Null where switched off; both come back texture-less rather than throwing
     // when there is no canvas, so the headless probes run the real scatter.
-    this.trees = TREES.enabled ? createTreeAssets() : null;
+    // TreeGen's library is normally built by main.js across boot frames and
+    // handed in; built here at once when it was not (probes).
+    const treegen = TREES.generator === 'treegen';
+    this.trees = !TREES.enabled ? null
+      : treegen ? (this._treeAssets || createTreeGenAssets())
+        : createTreeAssets();
+    /** TreeGen trees are drawn by the forest, one level of detail each (forest.js). */
+    this.forest = this.trees && treegen ? new Forest(this.scene, this.trees) : null;
     this.bushes = BUSHES.enabled ? createBushAssets() : null;
 
     this.grass = GRASS.enabled ? createGrassAssets({ anisotropy: this.anisotropy }) : null;
@@ -633,6 +643,7 @@ export class ChunkManager {
         if (part.mesh !== obj) { part.mesh.geometry.dispose(); part.mesh.dispose(); }
       }
     }
+    if (this.forest) this.forest.removeChunk(chunk.index);
     if (chunk.collider && this.world) this.world.removeCollider(chunk.collider, false);
     if (chunk.extraColliders) {
       for (const c of chunk.extraColliders) this.world.removeCollider(c, false);
@@ -649,6 +660,7 @@ export class ChunkManager {
     this.tiles.dispose();
     this.water.dispose();
     this.road.dispose();
+    if (this.forest) this.forest.dispose();
     if (this.trees) this.trees.dispose();
     if (this.bushes) this.bushes.dispose();
     if (this.ground) this.ground.dispose();
@@ -1206,6 +1218,12 @@ export class ChunkManager {
     const batches = new Map();
     /** species -> the near tier's recipe, handed to the chunk record. */
     const canopy = new Map();
+    /** TreeGen: every placed tree, handed to the forest at the end. */
+    const forestTrees = [];
+    const toForest = (variant, lone) => forestTrees.push({
+      variant, matrix: this._mat.clone(), origin,
+      colour: [this._color.r, this._color.g, this._color.b], lone,
+    });
     const push = (key, geometry, material, matrix, colour, shadow, lone) => {
       let b = batches.get(key);
       if (!b) {
@@ -1327,6 +1345,17 @@ export class ChunkManager {
         // size, drawn at two subdivisions.
         p.set(wx - origin.x, wy - origin.y, wz - origin.z);
         this._setLocalMatrix(p, height * wobble, height, height * wobble, yaw);
+
+        if (this.forest) {
+          // One tree, one record: the forest picks its level per frame. A tree
+          // with no near slot is a far-only (lone) one, as in the legacy tiers.
+          if (paired || far < TREES.farCap) {
+            toForest(variant, !paired);
+            if (paired) placed++;
+            far++;
+          }
+          return;
+        }
 
         if (paired) {
           // Stashed as a recipe; the near meshes come and go with the car.
@@ -1498,8 +1527,12 @@ export class ChunkManager {
           this._color.b = (1 - gk) + gk * this._color.b * 2;
           const wob = 0.88 + drng() * 0.24;
           this._setLocalMatrix(p, height * wob, height, height * wob, drng() * Math.PI * 2);
-          const variant = this.trees.far.get(pick)[this._lastChosen.get(pick)];
-          push(`f:${pick}`, variant.geometry, this.trees.farMaterial, this._mat, this._color, false, false);
+          if (this.forest) {
+            toForest(this.trees.library.get(pick)[this._lastChosen.get(pick)], false);
+          } else {
+            const variant = this.trees.far.get(pick)[this._lastChosen.get(pick)];
+            push(`f:${pick}`, variant.geometry, this.trees.farMaterial, this._mat, this._color, false, false);
+          }
           n++;
         }
       }
@@ -1615,6 +1648,7 @@ export class ChunkManager {
     }
 
     chunk.canopySpec = canopy.size ? [...canopy.values()] : null;
+    if (this.forest) this.forest.addChunk(index, forestTrees);
 
     return out;
   }

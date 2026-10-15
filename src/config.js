@@ -197,11 +197,50 @@ export const CHUNK = {
 };
 
 /**
- * The canopy — see `src/env/trees.js`, `src/env/lowpoly.js` and `src/foliage.js`.
- * Both tiers are opaque, untextured, faceted solids; no atlas, no billboard.
+ * The canopy — see `src/env/treegen.js` + `src/forest.js` (TreeGen), the legacy
+ * `src/env/legacy/trees.js`, and `src/foliage.js`.
+ * Legacy: both tiers are opaque, untextured, faceted solids. Placement, the
+ * stand logic and the fades below drive both generators.
  */
 export const TREES = {
   enabled: true,
+
+  /**
+   * Who grows the canopy: 'treegen' (`tree_gen/` submodule, env/treegen.js,
+   * drawn by forest.js) or 'legacy' (the faceted low-poly trees,
+   * env/legacy/trees.js). `?trees=legacy` in the URL picks the old one.
+   */
+  generator: 'treegen',
+
+  /** TreeGen: generation budget, and the levels of detail drawn. */
+  treegen: {
+    /** Shapes per species; leaf colour still follows `foliage.js` palettes. */
+    variants: 2,
+    /** Mesh resolution multiplier and caps, per tree. */
+    detail: 0.5,
+    maxLeaves: 26000,
+    maxBranches: 4000,
+    barkSize: 256,
+    impostorHeight: 192,
+    /**
+     * TreeGen level specs, nearest first (see tree_gen/src/lod.js). Its LOD0
+     * (full, ~100k+ triangles) is never drawn in the game; these are its
+     * LOD1-4: simplified bark with thinned polygon leaves, two card levels
+     * with their own atlases, and the lit billboard.
+     */
+    lods: [
+      { error: 0.002, leafDetail: 0.35, keep: 0.25 },
+      // Cards are painted from the leaf outlines, and a tile is 10-20 px:
+      // coarse outlines cost a third and cannot be seen.
+      { error: 0.004, perCard: 6, cardSpan: 0.05, atlas: 512, keep: 0.4, leafDetail: 0.3 },
+      { error: 0.008, perCard: 16, cardSpan: 0.1, atlas: 256, keep: 0.4, leafDetail: 0.3 },
+      { impostor: true, error: 0.016 },
+    ],
+    /** A level is drawn once its error is this many pixels on screen. */
+    lodPixels: 1.5,
+    /** Levels (from the nearest) that cast shadows. */
+    shadowLevels: 2,
+  },
 
   /** Geometries built per species at boot, and species drawn per chunk. */
   variants: 3,
@@ -1065,6 +1104,10 @@ function applyGraphics() {
     TREES.ahead = 3;
     TREES.farFade = [430, 470];
     TREES.loneFadeIn = [300, 460];
+    // No polygon-leaf level: cards from the first metre.
+    TREES.treegen.lods = TREES.treegen.lods.slice(1);
+    TREES.treegen.lodPixels = 2;
+    TREES.treegen.shadowLevels = 1;
 
     // Grass, shrubs and stone scale down together.
     GRASS.density = 2.3;
@@ -1099,8 +1142,31 @@ function applyGraphics() {
     TREES.farFadeIn = [6, 16];
     TREES.loneFadeIn = [6, 16];
     TREES.farFade = [280, 345];
+    TREES.treegen.lods = TREES.treegen.lods.slice(2);
+    TREES.treegen.lodPixels = 2.5;
+    TREES.treegen.shadowLevels = 0;
+    TREES.treegen.impostorHeight = 128;
   }
   return level;
 }
 
 applyGraphics();
+
+/**
+ * The tree generator: Settings › Graphics saves it (and reloads, like the
+ * level — the library is built at boot); `?trees=legacy|treegen` overrides it
+ * for one load. Same try/catch as graphicsLevel: Node's storage throws.
+ */
+const TREES_KEY = 'highroads.trees';
+export const TREE_GENERATORS = ['treegen', 'legacy'];
+
+export function setTreeGenerator(g) {
+  if (TREE_GENERATORS.includes(g)) {
+    try { localStorage.setItem(TREES_KEY, g); } catch (err) { /* private window */ }
+  }
+}
+
+try {
+  const g = new URLSearchParams(location.search).get('trees') || localStorage.getItem(TREES_KEY);
+  if (TREE_GENERATORS.includes(g)) TREES.generator = g;
+} catch (err) { /* no location or storage (Node) */ }

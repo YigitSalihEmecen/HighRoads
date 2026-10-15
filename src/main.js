@@ -14,7 +14,7 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 
-import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE, TRAFFIC } from './config.js';
+import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE, TRAFFIC, TREES } from './config.js';
 import { deriveSpec, buildCarParams } from './cars.js';
 import { buildModel, generateBuild, finishBuild, newSeed, Fleet, DETAIL } from './models.js';
 import { smoothstep, clamp } from './util.js';
@@ -23,6 +23,7 @@ import { applySky, saveSky, SKY_PRESETS, SKY_NAMES } from './sky.js';
 import { createTerrain } from './noise.js';
 import { RoadPath, makeFrame } from './path.js';
 import { ChunkManager } from './chunks.js';
+import { createTreeGenAssetsAsync } from './env/treegen.js';
 import { Traffic } from './traffic.js';
 import { RaycastVehicle } from './vehicle.js';
 import { ChaseCamera } from './camera.js';
@@ -99,13 +100,30 @@ export async function boot() {
   const terrain = createTerrain(startSeed);
   const path = new RoadPath(terrain, startSeed);
 
+  // The canopy: every species grown by TreeGen on worker threads (dressed
+  // and its billboards baked here as each arrives). The traffic fleet needs
+  // nothing from the world, so it is generated meanwhile.
+  let treeShare = 0;
+  const treesReady = TREES.enabled && TREES.generator === 'treegen'
+    ? createTreeGenAssetsAsync({ renderer: gfx.renderer }, (f) => { treeShare = f; })
+    : Promise.resolve(null);
+
+  // Every traffic car is its own generated design, built now so nothing is
+  // generated mid-run. See models.Fleet.
+  const fleet = new Fleet(startSeed, TRAFFIC.fleetSize);
+  await fleet.fill((f) => P(0.22 + f * 0.26, `Generating traffic · ${fleet.count} / ${fleet.size}`));
+
+  const growing = setInterval(() =>
+    P(0.48 + treeShare * 0.1, `Growing trees · ${Math.round(treeShare * 100)} %`), 100);
+  const trees = await treesReady.finally(() => clearInterval(growing));
+
   const chunks = new ChunkManager({
-    scene: gfx.scene, world, RAPIER, path, terrain,
+    scene: gfx.scene, world, RAPIER, path, terrain, trees,
     // Grass is seen at a grazing angle; that is why anisotropic filtering.
     anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
   });
 
-  P(0.3, 'Carving terrain');
+  P(0.6, 'Carving terrain');
   await frame();
   chunks.preload(START_S);
 
@@ -113,7 +131,7 @@ export async function boot() {
   // null until one has run.
   world.step();
 
-  P(0.5, 'Generating your car');
+  P(0.78, 'Generating your car');
   await frame();
   const game = new Game({ gfx, world, path, terrain, chunks });
   game.seed = startSeed;
@@ -131,10 +149,6 @@ export async function boot() {
   // preset decide the lamps (a full-moon night starts with them on).
   game.setSky(gfx.skyName || 'day', false);
 
-  // Every traffic car is its own generated design, built now so nothing is
-  // generated mid-run. See models.Fleet.
-  const fleet = new Fleet(startSeed, TRAFFIC.fleetSize);
-  await fleet.fill((f) => P(0.56 + f * 0.32, `Generating traffic · ${fleet.count} / ${fleet.size}`));
   game.fleet = fleet;
   // No world, no RAPIER: traffic owns no physics objects at all. See traffic.js.
   game.traffic = new Traffic({ scene: gfx.scene, path, chunks, fleet });
@@ -732,6 +746,7 @@ class Game {
     this.cam.update(dt, this.vehicle);
     // Trees, shrubs and rocks: draw only the instances in (or near) the view.
     this.chunks.culler.update(this.gfx.camera);
+    if (this.chunks.forest) this.chunks.forest.update(this.gfx.camera, this.gfx.renderer.domElement.height);
     // Use the interpolated pose: the shadow frustum is centred here, and
     // 8.3 ms steps would crawl the shadows across everything.
     this.gfx.follow(this.vehicle.renderPos, dt);

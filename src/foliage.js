@@ -2,7 +2,7 @@
  * foliage.js — what grows, its look, and where it belongs.
  *
  * One table holds the form and the habitat of each species. Shapes come from
- * env/trees.js and env/bushes.js. Placement and streaming read this file.
+ * env/treegen.js (legacy: env/legacy/trees.js) and env/bushes.js. Placement and streaming read this file.
  */
 
 import { CHUNK, TREES } from './config.js';
