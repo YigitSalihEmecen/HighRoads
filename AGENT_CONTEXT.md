@@ -335,6 +335,9 @@ collider is offset by `chassisCentreZ`. `metrics` measure the SHELL: car_gen
 leaves its bolt-on accessories (plates, exhaust, spoiler, mirrors, antenna,
 grille, hood parts) out of the box, or mirrors would widen every collider and a
 mast would lift the CoM. Wings add downforce in `deriveSpec` (by `spType`).
+Camber is the host's job (the game owns each wheel holder's rotation): `buildModel` puts
+`model.camber = { tilt[FL,FR,BL,BR], lift }` on the model, and vehicle/traffic/garage pose
+holders as steer · camber(Z) · spin(X) (Euler `'YZX'`), raised by `lift`.
 
 A **build** is the unit the garage edits and localStorage keeps:
 `{ seed, style, params, color, trim, engine, drive, gearbox, name }`.

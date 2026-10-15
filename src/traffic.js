@@ -824,10 +824,11 @@ export class Traffic {
     const wb = m.wheelbaseHalf;
     const tr = m.trackHalf;
     const layout = [[-tr, -wb], [tr, -wb], [-tr, wb], [tr, wb]];
+    const cb = car.inst.model.camber;
     for (let i = 0; i < 4; i++) {
       const w = car.inst.wheels[i];
-      w.position.set(layout[i][0], r, layout[i][1]);
-      w.rotation.set(-car.spin, i < 2 && !car.spun ? car.steer : 0, 0, 'YXZ');
+      w.position.set(layout[i][0], r + cb.lift, layout[i][1]);
+      w.rotation.set(-car.spin, i < 2 && !car.spun ? car.steer : 0, cb.tilt[i], 'YZX');
     }
   }
 }

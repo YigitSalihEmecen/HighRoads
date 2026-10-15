@@ -31,6 +31,7 @@ const mk = (i, len, wid) => ({
       trackHalf: wid * 0.82, wheelbaseHalf: len * 0.62, wheelRadius: 0.36, wheelWidth: 0.26,
       bodyHeight: 1.45, bodyHalfWidth: wid, bodyHalfLength: len, bodyFrontZ: -len, bodyRearZ: len,
     },
+    camber: { tilt: [0, 0, 0, 0], lift: 0 },
     setBrake() {}, setHeadlights() {}, setColor() {}, setTrimColor() {},
   },
 });

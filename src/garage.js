@@ -633,12 +633,12 @@ export class GarageStudio {
     g.add(model.body);
     const m = model.metrics;
     const layout = { FL: [-m.trackHalf, -m.wheelbaseHalf], FR: [m.trackHalf, -m.wheelbaseHalf], BL: [-m.trackHalf, m.wheelbaseHalf], BR: [m.trackHalf, m.wheelbaseHalf] };
-    for (const k in layout) {
+    Object.keys(layout).forEach((k, i) => {
       const w = model.wheels[k];
-      w.position.set(layout[k][0], m.wheelRadius, layout[k][1]);
-      w.rotation.set(0, 0, 0, 'YXZ');
+      w.position.set(layout[k][0], m.wheelRadius + model.camber.lift, layout[k][1]);
+      w.rotation.set(0, 0, model.camber.tilt[i], 'YZX');
       g.add(w);
-    }
+    });
     model.body.traverse((o) => { if (o.isMesh) o.castShadow = true; });
     for (const k in model.wheels) model.wheels[k].traverse((o) => { if (o.isMesh) o.castShadow = true; });
     model.setHeadlights(true, false);

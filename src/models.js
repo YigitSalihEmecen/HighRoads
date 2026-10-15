@@ -111,6 +111,14 @@ export function buildModel(build, detail = DETAIL.player) {
   const model = createCar(build.params, { detail });
   model.setColor(build.color || build.params.color);
   model.setTrimColor(build.trim || null);
+  // car_gen leaves camber to the host, which owns each holder's rotation: a
+  // tilt about the car's length per wheel (FL, FR, BL, BR; negative = tops in),
+  // and the hub lift that keeps the low tyre shoulder on the ground.
+  const P = model.params, cam = ((P.camber || 0) * Math.PI) / 180;
+  model.camber = {
+    tilt: [cam, -cam, cam, -cam],
+    lift: P.wheelR * (Math.cos(cam) - 1) + (P.tireW / 2) * Math.abs(Math.sin(cam)),
+  };
   return model;
 }
 

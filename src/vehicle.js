@@ -13,6 +13,7 @@ import { clamp, lerp, sign, smoothstep, moveTowards } from './util.js';
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 const AXIS_Y = new THREE.Vector3(0, 1, 0);
+const AXIS_Z = new THREE.Vector3(0, 0, 1);
 
 export class RaycastVehicle {
   /**
@@ -250,6 +251,7 @@ export class RaycastVehicle {
       this.group.add(mesh);
       return mesh;
     });
+    this.camber = model.camber;
 
     this.scene.add(this.group);
   }
@@ -770,11 +772,13 @@ export class RaycastVehicle {
       const mesh = this.wheelMeshes[i];
 
       const suspLen = lerp(w.prevSuspLen, w.suspLen, a);
-      mesh.position.set(w.local.x, w.local.y - suspLen, w.local.z);
+      mesh.position.set(w.local.x, w.local.y - suspLen + this.camber.lift, w.local.z);
 
       this._q.setFromAxisAngle(AXIS_Y, this._wheelSteerAngle(w, steer));
-      this._q2.setFromAxisAngle(AXIS_X, -lerp(w.prevSpin, w.spin, a));
+      this._q2.setFromAxisAngle(AXIS_Z, this.camber.tilt[i]);
       mesh.quaternion.copy(this._q).multiply(this._q2);
+      this._q2.setFromAxisAngle(AXIS_X, -lerp(w.prevSpin, w.spin, a));
+      mesh.quaternion.multiply(this._q2);
     }
   }
 
