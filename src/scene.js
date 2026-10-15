@@ -11,6 +11,29 @@ import { ATMOSPHERE, CAMERA } from './config.js';
 import { SKY_VERT, SKY_FRAG, skyUniforms, applySky, chosenSky } from './sky.js';
 
 /**
+ * One bad pixel in the scene buffer and bloom smears it over the whole frame:
+ * a NaN draws the screen black, an Inf white. Both are guarded for every
+ * built-in material here, ahead of any shader compile.
+ *
+ * NaN: the road ribbon and car_gen's meshes carry zero-length vertex normals
+ * (zero-area quads under computeVertexNormals), and normalize() of zero is
+ * NaN, per vertex and again per pixel. A sliver triangle holding one covers a
+ * pixel every few hundred frames, and that frame is black.
+ *
+ * Inf: a sun glint on clearcoat or chrome was measured at 33,184 in the
+ * half-float buffer (max 65,504). 1024 is far above any lamp and still white
+ * after tone mapping.
+ */
+THREE.ShaderChunk.normal_vertex = THREE.ShaderChunk.normal_vertex.replace(
+  'vNormal = normalize( transformedNormal );',
+  'vNormal = dot( transformedNormal, transformedNormal ) > 1e-12 ? normalize( transformedNormal ) : vec3( 0.0, 0.0, 1.0 );');
+THREE.ShaderChunk.normal_fragment_begin = THREE.ShaderChunk.normal_fragment_begin.replace(
+  'vec3 normal = normalize( vNormal );',
+  'vec3 normal = dot( vNormal, vNormal ) > 1e-12 ? normalize( vNormal ) : vec3( 0.0, 0.0, 1.0 );');
+THREE.ShaderChunk.opaque_fragment = THREE.ShaderChunk.opaque_fragment.replace(
+  'vec4( outgoingLight,', 'vec4( min( outgoingLight, vec3( 1024.0 ) ),');
+
+/**
  * Radial blur, strength driven by road speed.
  *
  * Replaces depth-of-field, which focused at one distance and blurred the car
