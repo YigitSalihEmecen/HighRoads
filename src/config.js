@@ -559,7 +559,7 @@ export const FX = {
   smoke: {
     enabled: true,
     /** Particle pool. Fixed: mesh allotted at boot, particles recycled oldest-first. */
-    max: 260,
+    max: 420,
     /** Puffs per second per wheel at full slip. */
     rate: 55,
     /** Seconds a puff lives. */
@@ -575,8 +575,12 @@ export const FX = {
     /** Below this much slip nothing is emitted at all. */
     minSlip: 0.22,
 
-    /** The "wheelspin, not speed" gate, m/s. Emission fades out across this range. */
-    speedFade: [14, 34],
+    /** Tyre heat time constants, s: how long a slide takes to billow, and to clear. */
+    heatUp: 0.9,
+    heatDown: 1.6,
+
+    /** Emission thins to 40 % across this speed range, m/s: fast slides spread along the road. */
+    speedFade: [20, 45],
 
     /** Where a puff is born relative to the contact patch: back and up, metres. */
     offset: [0.25, 0.12],

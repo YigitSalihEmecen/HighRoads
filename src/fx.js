@@ -1,8 +1,10 @@
 /**
  * fx.js — smoke and rubber marks left by the tyres.
  *
- * Both effects follow wheel.slipAmount, the same number the skid audio uses.
- * Particles come from one fixed pool, recycled oldest-first.
+ * Both effects follow wheel.slipAmount, the same number the skid audio uses
+ * (wheelspin from a hard launch included). Smoke also follows each tyre's
+ * heat: a chirp puffs thin, a held burnout or drift billows. Particles come
+ * from one fixed pool, recycled oldest-first.
  */
 
 import * as THREE from 'three';
@@ -50,6 +52,7 @@ function smokeMaterial(map) {
     uRise: { value: FX.smoke.rise },
     uDrag: { value: FX.smoke.drag },
     uOpacity: { value: FX.smoke.opacity },
+    uLight: { value: new THREE.Color(1, 1, 1) },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -62,12 +65,15 @@ function smokeMaterial(map) {
       uniform vec2 uSize;
       attribute vec3 aOrigin;
       attribute vec3 aVel;
-      attribute vec2 aBirth;     // x = birth time, y = random seed 0..1
+      attribute vec3 aBirth;     // x = birth time, y = random seed 0..1, z = strength 0..1
       varying vec2 vUv;
       varying float vAlpha;
 
       void main() {
-        float age = ( uTime - aBirth.x ) / uLife;
+        float strength = aBirth.z;
+        // A thick cloud hangs about longer and spreads wider than a wisp.
+        float life = uLife * ( 0.6 + 0.7 * strength );
+        float age = ( uTime - aBirth.x ) / life;
         vUv = uv;
 
         if ( age < 0.0 || age > 1.0 ) {
@@ -79,7 +85,7 @@ function smokeMaterial(map) {
           return;
         }
 
-        float t = age * uLife;
+        float t = age * life;
         // Closed-form position under linear drag plus a constant rise:
         //   x(t) = x0 + v0 * (1 - e^(-k t)) / k  +  rise * t
         // which is the exact integral of the model, so the CPU never touches a
@@ -92,7 +98,7 @@ function smokeMaterial(map) {
         // transformed, so the card faces the camera with nothing on the CPU
         // needing to know where the camera is.
         vec4 mv = modelViewMatrix * vec4( pos, 1.0 );
-        float size = mix( uSize.x, uSize.y, sqrt( age ) );
+        float size = mix( uSize.x, uSize.y * ( 0.55 + 0.75 * strength ), sqrt( age ) );
         float rot = aBirth.y * 6.2831853 + age * ( aBirth.y - 0.5 ) * 2.0;
         float c = cos( rot ), s = sin( rot );
         vec2 q = ( uv - 0.5 ) * size;
@@ -100,12 +106,13 @@ function smokeMaterial(map) {
 
         // Fade in fast, out slowly. Smoke appears as soon as the rubber lets go
         // and then hangs; the reverse reads as a puff of steam.
-        vAlpha = uOpacity * smoothstep( 0.0, 0.10, age ) * ( 1.0 - age ) * ( 1.0 - age );
+        vAlpha = uOpacity * ( 0.35 + 0.65 * strength ) * smoothstep( 0.0, 0.10, age ) * ( 1.0 - age ) * ( 1.0 - age );
         gl_Position = projectionMatrix * mv;
       }
     `,
     fragmentShader: /* glsl */`
       uniform sampler2D uMap;
+      uniform vec3 uLight;
       varying vec2 vUv;
       varying float vAlpha;
       void main() {
@@ -114,7 +121,8 @@ function smokeMaterial(map) {
         if ( a < 0.004 ) discard;
         // Warm grey, and lighter than the road. Tyre smoke is mostly vaporised
         // oil and water, not soot; painting it dark makes it read as a fire.
-        gl_FragColor = vec4( vec3( 0.82, 0.80, 0.78 ), a );
+        // Lit by the sky, so it does not glow at night.
+        gl_FragColor = vec4( vec3( 0.82, 0.80, 0.78 ) * uLight, a );
       }
     `,
   });
@@ -168,12 +176,15 @@ export class TyreFX {
    * @param {THREE.Scene} scene
    * @param {number} anisotropy  from the renderer, for the puff texture
    */
-  constructor(scene, { anisotropy = 1 } = {}) {
+  constructor(scene, { anisotropy = 1, hemi = null, sun = null } = {}) {
     this.scene = scene;
+    this.hemi = hemi;
+    this.sun = sun;
     this.time = 0;
     this._v = new THREE.Vector3();
     this._a = new THREE.Vector3();
     this._b = new THREE.Vector3();
+    this._tint = new THREE.Color();
 
     this._initSmoke(anisotropy);
     this._initMarks();
@@ -198,9 +209,9 @@ export class TyreFX {
 
     this._sOrigin = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
     this._sVel = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
-    this._sBirth = new THREE.InstancedBufferAttribute(new Float32Array(n * 2), 2);
+    this._sBirth = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
     // Everything starts long dead, so nothing is drawn before the first skid.
-    for (let i = 0; i < n; i++) this._sBirth.array[i * 2] = -1e6;
+    for (let i = 0; i < n; i++) this._sBirth.array[i * 3] = -1e6;
     geo.setAttribute('aOrigin', this._sOrigin);
     geo.setAttribute('aVel', this._sVel);
     geo.setAttribute('aBirth', this._sBirth);
@@ -218,11 +229,13 @@ export class TyreFX {
       cursor: 0,
       /** Fractional particle budget carried between frames, per wheel. */
       debt: [0, 0, 0, 0],
+      /** How hot each tyre runs, 0..1: builds over a held slide, cools after. */
+      heat: [0, 0, 0, 0],
     };
   }
 
-  /** Births one puff at `pos` with `vel`. */
-  _emit(pos, vel) {
+  /** Births one puff at `pos` with `vel`, `strength` 0..1. */
+  _emit(pos, vel, strength) {
     const s = this.smoke;
     const i = s.cursor;
     s.cursor = (s.cursor + 1) % FX.smoke.max;
@@ -232,8 +245,9 @@ export class TyreFX {
     const b = this._sBirth.array;
     o[i * 3] = pos.x; o[i * 3 + 1] = pos.y; o[i * 3 + 2] = pos.z;
     v[i * 3] = vel.x; v[i * 3 + 1] = vel.y; v[i * 3 + 2] = vel.z;
-    b[i * 2] = this.time;
-    b[i * 2 + 1] = Math.random();
+    b[i * 3] = this.time;
+    b[i * 3 + 1] = Math.random();
+    b[i * 3 + 2] = strength;
     this._sOrigin.needsUpdate = true;
     this._sVel.needsUpdate = true;
     this._sBirth.needsUpdate = true;
@@ -330,13 +344,23 @@ export class TyreFX {
     if (this.smoke) this.smoke.uniforms.uTime.value = this.time;
     if (this.marks) this.marks.uniforms.uTime.value = this.time;
     if (!vehicle) return;
+    if (this.smoke && this.hemi && this.sun) {
+      this.smoke.uniforms.uLight.value.copy(this.hemi.color).multiplyScalar(this.hemi.intensity * 0.5)
+        .add(this._tint.copy(this.sun.color).multiplyScalar(this.sun.intensity * 0.15));
+    }
 
     const speed = Math.abs(vehicle.forwardSpeed);
-    // The contact patch must move relative to the road; see FX.smoke.speedFade.
-    const speedGate = 1 - smoothstep(FX.smoke.speedFade[0], FX.smoke.speedFade[1], speed);
+    // A fast slide spreads its smoke along the road: thinner per metre, never gone.
+    const speedThin = 1 - 0.6 * smoothstep(FX.smoke.speedFade[0], FX.smoke.speedFade[1], speed);
 
     for (let i = 0; i < vehicle.wheels.length; i++) {
       const w = vehicle.wheels[i];
+
+      if (this.smoke) {
+        const target = w.grounded ? w.slipAmount : 0;
+        const tau = target > this.smoke.heat[i] ? FX.smoke.heatUp : FX.smoke.heatDown;
+        this.smoke.heat[i] += (target - this.smoke.heat[i]) * (1 - Math.exp(-dt / tau));
+      }
 
       if (!w.grounded || w.slipAmount < FX.marks.minSlip) {
         if (this.marks) { this.marks.last[i] = null; this.marks.held[i] = 0; }
@@ -363,22 +387,26 @@ export class TyreFX {
       }
 
       // ---- smoke -------------------------------------------------------
-      if (this.smoke && w.slipAmount >= FX.smoke.minSlip && speedGate > 0.01) {
+      if (this.smoke && w.slipAmount >= FX.smoke.minSlip) {
         const drive = clamp(
           (w.slipAmount - FX.smoke.minSlip) / (1 - FX.smoke.minSlip), 0, 1);
-        this.smoke.debt[i] += FX.smoke.rate * drive * speedGate * dt;
+        const strength = drive * (0.35 + 0.65 * this.smoke.heat[i]);
+        this.smoke.debt[i] += FX.smoke.rate * strength * speedThin * dt;
+        // A spinning driven tyre flings its smoke backwards.
+        const fling = vehicle.V.driveBias[i] > 0 ? -Math.min(Math.abs(vehicle.driveSlip), 10) * 0.35 : 0;
         while (this.smoke.debt[i] >= 1) {
           this.smoke.debt[i] -= 1;
-          // Born just behind and above the patch, with some of the wheel's slip
-          // velocity plus scatter.
+          // Born just behind and above the patch, carried a little in the car's
+          // wake, with scatter that grows with the cloud.
           const p = this._a.copy(w.contact)
             .addScaledVector(vehicle.fwd, -FX.smoke.offset[0])
             .addScaledVector(w.normal, FX.smoke.offset[1]);
-          const vel = this._b.copy(w.pointVel).multiplyScalar(-0.28);
-          vel.x += (Math.random() - 0.5) * 1.4;
-          vel.y += Math.random() * 0.7;
-          vel.z += (Math.random() - 0.5) * 1.4;
-          this._emit(p, vel);
+          const vel = this._b.copy(w.pointVel).multiplyScalar(0.3).addScaledVector(vehicle.fwd, fling);
+          const spread = 1 + 1.6 * strength;
+          vel.x += (Math.random() - 0.5) * spread;
+          vel.y += Math.random() * 0.4 * spread;
+          vel.z += (Math.random() - 0.5) * spread;
+          this._emit(p, vel, strength);
         }
       } else if (this.smoke) {
         this.smoke.debt[i] = 0;
@@ -390,9 +418,10 @@ export class TyreFX {
   reset() {
     if (this.smoke) {
       const b = this._sBirth.array;
-      for (let i = 0; i < FX.smoke.max; i++) b[i * 2] = -1e6;
+      for (let i = 0; i < FX.smoke.max; i++) b[i * 3] = -1e6;
       this._sBirth.needsUpdate = true;
       this.smoke.debt.fill(0);
+      this.smoke.heat.fill(0);
     }
     if (this.marks) {
       const k = this.marks.mark.array;

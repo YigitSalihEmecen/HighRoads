@@ -211,7 +211,7 @@ if (process.env.SKID === '1') {
     g.__peak = { slip: 0, rpm: 0, puffs: 0, marks: 0 };
     g.__watch = setInterval(() => {
       const s = Math.max(...g.vehicle.wheels.map(w => w.slipAmount));
-      const p = [...g.fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > g.fx.time - g.fx.smoke.uniforms.uLife.value).length;
+      const p = [...g.fx._sBirth.array].filter((v, i) => i % 3 === 0 && v > g.fx.time - g.fx.smoke.uniforms.uLife.value).length;
       const m = [...g.fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > -1e5).length / 4;
       if (s > g.__peak.slip) { g.__peak.slip = s; g.__peak.rpm = g.powertrain.rpm; }
       g.__peak.puffs = Math.max(g.__peak.puffs, p);

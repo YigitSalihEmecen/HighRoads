@@ -96,6 +96,8 @@ export class Powertrain {
     this._Jw = 2.8;
     /** Driven wheels' surface speed minus the road's, m/s, in the car's frame (+ = forward). */
     this.wheelSlip = 0;
+    /** A high-rev launch's clutch slip as tyre speed, m/s: drawn as wheelspin, never applied. */
+    this.launchSlip = 0;
     // Reverse runs the box in first with the automatic suspended.
     this._revHeld = false;
     /** Throttle cut on wheelspin. Off lets the tyres light up. */
@@ -157,6 +159,7 @@ export class Powertrain {
     this._groundW = 0;
     this._spinning = false;
     this.wheelSlip = 0;
+    this.launchSlip = 0;
     this._tc = 0;
     this.force = 0;
     this.reverse = false;
@@ -405,6 +408,14 @@ export class Powertrain {
     this.load = params ? params.load : 0;
     this.limiter = p.limiterCut > 0;
     this.wheelSlip = dir * (p.ww - this._groundW) * V.wheelRadius;
+    // A hard launch slips the clutch at high revs. The drivetrain keeps that
+    // slip in the clutch; the car shows it at the tyres (smoke, marks, squeal).
+    const ratio = params ? Math.abs(params.gearRatio) : 0;
+    // Pulling away only: a clutch slipping after a shift at speed is not a launch.
+    this.launchSlip = ratio > 0 && !params.shiftPhase && throttle > 0.3
+      ? dir * throttle * Math.max(0, params.clutchSlip) * (Math.PI / 30) / ratio * V.wheelRadius
+        * (1 - smoothstep(6, 16, Math.abs(state.wheelSpeed)))
+      : 0;
 
     // What the tyres put down this frame, averaged over the drivetrain's sub-steps.
     const force = this._tSum > 0 ? (dir * this._fSum) / this._tSum : 0;

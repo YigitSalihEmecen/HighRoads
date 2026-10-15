@@ -240,6 +240,8 @@ class Game {
     /** Tyre smoke and rubber. */
     this.fx = new TyreFX(gfx.scene, {
       anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
+      hemi: gfx.hemi,
+      sun: gfx.sun,
     });
     /** Exhaust flames on the engine simulator's pops. */
     this.flames = new ExhaustFlames();
@@ -664,7 +666,7 @@ class Game {
         grip: this.vehicle.driveGrip,
       })
     );
-    this.vehicle.driveSlip = this.powertrain.wheelSlip;
+    this.vehicle.driveSlip = this.powertrain.wheelSlip + this.powertrain.launchSlip;
 
     PERF.lap('powertrain');
     // ---- fixed-step physics ---------------------------------------------

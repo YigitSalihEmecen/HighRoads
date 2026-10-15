@@ -187,7 +187,8 @@ const fx = new TyreFX(fxScene);
 const stub = {
   forwardSpeed: 1.2,
   fwd: new THREE.Vector3(0, 0, 1),
-  V: { wheelWidth: 0.28 },
+  V: { wheelWidth: 0.28, driveBias: [0, 0, 0.5, 0.5] },
+  driveSlip: 6,
   wheels: [0, 1, 2, 3].map((i) => ({
     grounded: true,
     rear: i >= 2,
@@ -210,7 +211,7 @@ function run(seconds) {
 // Two seconds rolling forward at walking pace, so marks have somewhere to go.
 run(2);
 
-const livePuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
+const livePuffs = [...fx._sBirth.array].filter((v, i) => i % 3 === 0 && v > fx.time - FX.smoke.life).length;
 const liveMarks = [...fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.marks.life).length / 4;
 
 check(livePuffs > 0, 'a burnout makes smoke',
@@ -228,7 +229,7 @@ check(liveMarks >= 2, 'both driven wheels mark separately', `${liveMarks} quads`
 fx.reset();
 for (const w of stub.wheels) w.slipAmount = 0.05;
 run(1);
-const quietPuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
+const quietPuffs = [...fx._sBirth.array].filter((v, i) => i % 3 === 0 && v > fx.time - FX.smoke.life).length;
 check(quietPuffs === 0, 'a gripping tyre makes nothing', `${quietPuffs} puffs`);
 
 // A slip of a few frames — a steering flick, a shift — must leave nothing: a
@@ -246,18 +247,21 @@ blipMarks = [...fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > fx.time
 check(blipMarks === 0, 'momentary slips leave no lone marks', `${blipMarks} quads from 20 four-frame blips`);
 stub.forwardSpeed = 1.2;
 
-// And nothing at speed: the cloud would be a hundred metres behind by the time
-// it existed — see FX.smoke.speedFade.
-fx.reset();
-for (const w of stub.wheels) w.slipAmount = 0.6;
-stub.forwardSpeed = 50;
-for (let f = 0; f < 60; f++) {
-  for (const w of stub.wheels) w.contact.z += stub.forwardSpeed / 60;
-  fx.update(1 / 60, stub);
-}
-const fastPuffs = [...fx._sBirth.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.smoke.life).length;
+// A fast slide still smokes, spread thinner along the road — see FX.smoke.speedFade.
+const slide = (speed) => {
+  fx.reset();
+  for (const w of stub.wheels) w.slipAmount = 0.6;
+  stub.forwardSpeed = speed;
+  for (let f = 0; f < 60; f++) {
+    for (const w of stub.wheels) w.contact.z += stub.forwardSpeed / 60;
+    fx.update(1 / 60, stub);
+  }
+  return [...fx._sBirth.array].filter((v, i) => i % 3 === 0 && v > fx.time - FX.smoke.life).length;
+};
+const slowPuffs = slide(1.2);
+const fastPuffs = slide(50);
 const fastMarks = [...fx.marks.mark.array].filter((v, i) => i % 2 === 0 && v > fx.time - FX.marks.life).length / 4;
-check(fastPuffs === 0, 'no smoke at speed', `${fastPuffs} puffs at 180 km/h`);
+check(fastPuffs > 0 && fastPuffs < slowPuffs * 0.6, 'a fast slide smokes, thinner', `${fastPuffs} puffs at 180 km/h against ${slowPuffs} at a crawl`);
 check(fastMarks > 0, 'but rubber at speed', `${fastMarks} quads — a high-speed slide still marks`);
 
 fx.dispose();

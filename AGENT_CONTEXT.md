@@ -51,6 +51,7 @@ engine_sim/     vendored sibling — DO NOT EDIT
 | `powertrain.js` | the `engine_sim` bridge |
 | `noise.js` | gradient noise, fBm, erosion, warping, landforms, continent |
 | `fx.js` | tyre smoke (GPU pool) and rubber (quad ring) |
+| `flames.js` | exhaust flames on engine_sim's pops |
 | `cars.js` | body styles, colours, engines, spec derivation from generated geometry, physics synthesis |
 | `scene.js` | renderer, lights, fog, post chain (speed blur + aberration, grade) |
 | `terrainfield.js` | **the ground as a pure function** `height(x, z)`: natural terrain carved by the road's distance field; also `Lakes` (§3b) |
@@ -369,6 +370,12 @@ returned force is what the tyres actually transmitted, averaged over the frame.
 So rpm is ALWAYS the car's: road speed through the gear when gripping, wheelspin
 flares the revs, airborne wheels spin up, a pinned automatic sits at converter
 stall. `wheelSlip` goes back to the vehicle (wheel rotation, smoke, marks).
+The gearbox keeps first gear inside the grip, so a launch never truly spins:
+engine_sim slips its CLUTCH instead. `launchSlip` re-expresses that slip as
+tyre speed (clutch rpm / total ratio × r, faded out over 6–16 m/s, not during
+shifts) and is added to `vehicle.driveSlip` only, so a high-rev launch or a
+brake-held burnout smokes and squeals while traction control and the physics
+never see it.
 
 - **Reverse is first gear run backwards** (#90): automatic suspended, road speed
   mirrored, force negated, a 36–45 km/h reverse limiter. It used to put the box
@@ -757,9 +764,14 @@ chips along a bank and the odd stone in a field without any being a special case
 Both driven by ONE quantity, `wheel.slipAmount` — the same number the skid audio
 uses. A visual effect that disagrees with the sound is worse than none.
 
-**Smoke is a GPU pool**: 260 particles allocated once, recycled oldest-first. Each
+**Smoke is a GPU pool**: 420 particles allocated once, recycled oldest-first. Each
 carries origin, velocity and birth time; the vertex shader solves the closed form
 `x(t) = x0 + v0(1−e^(−kt))/k + rise·t`, so the CPU writes a particle **once**.
+Each puff also carries a strength (life, size, opacity): slip × per-tyre heat,
+which builds over a held slide (`heatUp` 0.9 s) and clears after (`heatDown`),
+so a chirp puffs thin and a burnout billows. Puffs ride 30 % of the patch's
+velocity (the wake), driven tyres fling them back, emission thins to 40 % at
+speed rather than stopping, and `uLight` (hemi + sun) keeps night smoke dark.
 Billboards built in VIEW space. **Rubber is a ring of 3,000 quads**, each bridging
 where a wheel *was* and *is*, built from the direction BETWEEN those points — a
 sliding tyre is not pointing where it is going. Coplanar with the ground by
@@ -769,6 +781,15 @@ construction, so `polygonOffset` and `depthWrite: false`.
 `slipAmount` is how much the friction circle had to take away; a full-throttle
 start in the Sport measures **0.39–0.46**. A threshold set by imagining what
 "full slip" ought to mean lands above everything the model produces (#63).
+
+### 4.15b Exhaust flames (`flames.js`)
+
+engine_sim `takePops()` hands over every bang/crackle it schedules (audio-clock
+`time`, `amp`). Each waits until `ctx.currentTime − outputLatency` reaches it,
+then fires at every `metrics.exhaustTips` mouth (car_gen; none fitted = under
+the tail). A flame is 6 camera-facing additive fireballs along the pipe axis,
+so it reads as a jet from the side and a ball from the chase cam that looks
+down the pipe; HDR (×5) so bloom glows it. The mesh rides in `vehicle.group`.
 
 ### 4.16 Wind (`wind.js`)
 
