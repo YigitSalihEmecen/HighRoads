@@ -32,6 +32,7 @@ import { HUD } from './hud.js';
 import { createScene } from './scene.js';
 import { Wind } from './wind.js';
 import { TyreFX } from './fx.js';
+import { ExhaustFlames } from './flames.js';
 import { Settings } from './settings.js';
 import { ScoreRun } from './score.js';
 import { GarageStudio } from './garage.js';
@@ -240,6 +241,8 @@ class Game {
     this.fx = new TyreFX(gfx.scene, {
       anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
     });
+    /** Exhaust flames on the engine simulator's pops. */
+    this.flames = new ExhaustFlames();
     this.cam = new ChaseCamera(gfx.camera);
     this._sFrame = makeFrame();
 
@@ -410,6 +413,7 @@ class Game {
     if (!restart) this.cam.beginIntro();
     // Clear the previous run's marks; respawn is elsewhere.
     this.fx.reset();
+    this.flames.reset();
     const ctx = this.powertrain.sim && this.powertrain.sim.ctx;
     this.wind.start(ctx);
     if (this.traffic) {
@@ -694,6 +698,7 @@ class Game {
     // Tyre effects read the wheel state just written by the substeps, so they
     // come after the loop and before anything renders.
     this.fx.update(dt, this.vehicle);
+    this.flames.update(dt, this.vehicle, this.powertrain.sim);
     this.wind.update(dt, this.active ? this.vehicle.forwardSpeed : 0);
 
     PERF.lap('fx+wind');
