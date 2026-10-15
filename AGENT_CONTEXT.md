@@ -19,7 +19,8 @@ downward suspension rays. `engine_sim/` is the car's actual drivetrain, not just
 its soundtrack. Everything streams in chunks, forever, from a typed seed.
 
 **Nothing visible is an asset** except the car models. Terrain, road, foliage,
-grass, stone, textures, smoke and wind are generated at boot in `src/env/`.
+grass, stone, textures, smoke and wind are generated at boot in `src/env/`; the
+trees by the `tree_gen` submodule (§4.11b).
 
 No build step. ES modules + import map, served statically.
 
@@ -29,9 +30,10 @@ No build step. ES modules + import map, served statically.
 
 ```
 index.html      shell, import map, every screen's markup (boot, title, mode, garage, settings, pause, game over, HUD, touch), ALL CSS
-src/            20 modules + src/env/ (8)
+src/            30 modules + src/env/ (10, + legacy/)
 probe/          headless measurement (§10)
 car_gen/        car generator SUBMODULE (YigitSalihEmecen/Car-gen) — every car is generated; DO NOT EDIT here
+tree_gen/       tree generator SUBMODULE (YigitSalihEmecen/Tree-Gen) — every tree is grown; change it in its own repo, then bump
 style_examples/ reference art the low-poly foliage was built against
 engine_sim/     vendored sibling — DO NOT EDIT
 ```
@@ -39,6 +41,7 @@ engine_sim/     vendored sibling — DO NOT EDIT
 | module | owns |
 |---|---|
 | `chunks.js` | terrain/road mesh, colliders, streaming, **every scatter** |
+| `forest.js` | the TreeGen canopy's draw: per-tree level of detail + culling over world-wide instanced meshes (§4.11b) |
 | `config.js` | all tunables, **19 blocks** + the graphics levels |
 | `vehicle.js` | raycast vehicle: suspension, tyres, aero, stability |
 | `main.js` | boot (with progress), `Game`, build → vehicle lifecycle, fixed-step loop, studio branch, recovery |
@@ -68,7 +71,9 @@ road, the sheet and the streaming window.
 |---|---|---|
 | `textures.js` | canvas helpers, seeded PRNG, **tileable** noise/fBm/ridged, `paint()` | — |
 | `lowpoly.js` | faceted-solid primitives: warped lumps, tapering tubes, conifer skirts | — |
-| `trees.js` | faceted low-poly trees, near and far tiers from ONE builder | 105–500 / **30–254** |
+| `treegen.js` | the canopy: 16 species as TreeGen parameter sets, four levels each, worker pool (§4.11b) | ~56k / 18k / 5k / 6 |
+| `treegen.worker.js` | TreeGen meshing + card atlas painting off the main thread | — |
+| `legacy/trees.js` | LEGACY faceted low-poly trees, near and far tiers from ONE builder (`?trees=legacy`) | 105–500 / **30–254** |
 | `bushes.js` | four shrub forms, clusters of faceted lumps | 75–115 |
 | `grass.js` | crossed-card tufts: roadside, woodland-floor and far tiers | 4 |
 | `rocks.js` | fractured convex boulders, slabs, scree | 20–80 |
@@ -90,8 +95,10 @@ and commit the new gitlink. `powertrain.js` uses the newer API where present:
 ## 2. Boot and frame
 
 **Boot**: `createScene` → `RAPIER.init` + world at `WORLD.gravity`, `timestep
-1/120` → `createTerrain(seed)`, `new RoadPath` → `ChunkManager`, `preload`, one
-`world.step()` so colliders exist → generate the player's car from its stored build → fill the traffic `Fleet` → build the garage studio and UI → title → **on "Start"** (mode screen):
+1/120` → `createTerrain(seed)`, `new RoadPath` → start growing the TreeGen
+library on workers **while** filling the traffic `Fleet` (neither needs the
+other) → `ChunkManager` (handed the library), `preload`, one
+`world.step()` so colliders exist → generate the player's car from its stored build → build the garage studio and UI → title → **on "Start"** (mode screen):
 `RaycastVehicle`, `Powertrain.start()` (**first AudioContext touch, must be
 inside the gesture**), `Wind`, `loop()`.
 
@@ -470,7 +477,12 @@ the real scene, so what you choose is what you drive, paint included.
   cannot do it: asked to cross 15 m it either crawls or snaps. **Controls are
   live from frame one.** The fly-in belongs to the Drive button only (#65).
 
-### 4.11 Foliage — faceted low-poly (`foliage.js`, `env/lowpoly.js`, `env/trees.js`, `env/bushes.js`, `chunks.js`)
+### 4.11 Foliage — faceted low-poly (`foliage.js`, `env/lowpoly.js`, `env/legacy/trees.js`, `env/bushes.js`, `chunks.js`)
+
+> **The trees in this section are now the LEGACY generator** — kept whole in
+> `env/legacy/trees.js`, selectable from Settings › Graphics › Trees or
+> `?trees=legacy`. TreeGen replaced them (§4.11b). The shrubs, `vegetation()`,
+> the guilds, the biomes and the whole PLACEMENT below still drive both.
 
 Built against `style_examples/`. A tree is a **tapering faceted stem** carrying
 either a cluster of warped lumps or a stack of jagged conical skirts;
@@ -662,6 +674,82 @@ broken rock. Halving the warp and subdividing the main mass is the whole
 difference, and it costs ~30 triangles. Hazel needs **short stems and big heads**
 or it is three lollipops on sticks.
 
+### 4.11b The TreeGen canopy (`tree_gen/`, `env/treegen.js`, `env/treegen.worker.js`, `forest.js`)
+
+Every tree is grown by TreeGen (submodule `tree_gen/`, YigitSalihEmecen/Tree-Gen,
+its own site and repo): Weber & Penn parametric trees with generated bark and
+real leaves. HighRoads uses its library entry points — `lod.js:buildLods` (mesh
+once, derive every level) and `kit.js:dressLevels` / `bakeImpostor` — and never
+edits it; changes go to Tree-Gen first, then the submodule pointer moves.
+
+**Species.** `treegen.js:TREEGEN_SPECIES` maps each of the 16 HighRoads species
+(the same names `foliage.js` and `biomes.js` use — nothing about placement or
+biomes changed) to a TreeGen preset plus overrides; spruce, fir, larch, beech,
+poplar and olive are derived sets. Presets are generated at their OWN scale
+(leaf size is in metres) with `scaleV: 0`, then normalised to unit height, so
+`chunks.js` scales them exactly as it scaled the legacy protos. Leaf colour is
+`TREE_FORMS[*].palettes` (variant v takes palette v), so a chunk's variant
+still picks a colourway; bark is TreeGen's.
+
+- **Conifers carry needle SPRAYS** (`frond`/`bipinnate` leaves, ~0.5 m), not
+  needles. TreeGen's own pine has 1 cm needles: sub-pixel on every card level,
+  and a pine stand read as dead poles.
+- **Generate full, then thin with `keep`.** Capping `maxLeaves` thins a crown
+  without growing what is left — trees came out bare. `keep` (per level) thins
+  AND grows the survivors to hold canopy area.
+
+**Levels** (`TREES.treegen.lods`; Medium drops the first, Low the first two):
+
+| | what | tris (mean) |
+|---|---|---|
+| 0 | bark simplified 0.2 % of size, polygon leaves at keep 0.25 | ~56k |
+| 1 | 0.4 %, leaf-cluster cards (6 leaves/pair), 512 px atlas | ~18k |
+| 2 | 0.8 %, cards (16/pair), 256 px atlas | ~5k |
+| 3 | billboard: 3 crossed quads | 6 |
+
+TreeGen's own LOD0 (100k–600k) is never drawn. The billboard is an **albedo +
+view-space normal atlas** (`kit.js:bakeImpostor`), so it is lit by the game's
+lights under every sky preset rather than carrying a bake's lighting; it stays
+on the GPU (`readback: false`).
+
+**Boot** (`createTreeGenAssetsAsync`): one job per species variant (16 × 2) on
+up to 8 module workers. **Module workers do not see the import map**, so
+`treegen.worker.js` loads TreeGen through a 20-line loader that rewrites its
+relative imports to blob URLs and its bare ones to what the page resolved
+(`import.meta.resolve`). Workers mesh and paint the card atlases
+(OffscreenCanvas → ImageBitmap, flipped and premultiplied); the main thread
+dresses (materials, wind) and bakes. ~2.5 s of a ~4.7 s boot, overlapped with
+the fleet. Without workers it falls back to a variant per frame; Node (probes)
+builds synchronously, untextured, no billboards.
+
+**Drawing** (`forest.js`). Chunks hand their placed trees to the forest
+(`addChunk`; `_dispose` removes them). Each frame every tree is measured once:
+frustum test (grown 25 m for shadows), then the level whose error is
+`TREES.treegen.lodPixels` on screen at that distance — TreeGen's
+`lodDistances` rule, ×the tree's size — and it is written into that level's
+instance buffers. One InstancedMesh per variant × level × part for the WORLD,
+so draws follow species in view, not chunks loaded. ~0.15 ms for 2,300 trees.
+Fades are CPU-side scale-about-the-base: `farFade` at the draw distance, and
+`loneFadeIn` for far-only trees (the dense far stands), exactly the legacy
+semantics. Matrices are rewritten relative to an anchor snapped to the camera
+every 256 m (float64 positions), so precision holds forever.
+
+Traps:
+
+- **Card atlases are premultiplied** (`kit.js:cardMaterial` divides it back
+  out). Straight alpha averaged the transparent black around every leaf into
+  the mipmaps; card levels came out visibly darker than level 0 — a pop at
+  every switch.
+- **Chain `onBeforeCompile`.** The card material has a patch of its own;
+  `treegen.js:windify` calls it before adding the wind. Replacing it brought
+  the dark cards back.
+- **The distant woodland is no longer hidden inside 260 m.** Legacy far-tier
+  instances flagged non-lone took `farFadeIn` (260–420 m), so the 175–260 m band
+  of the distant woodland was invisible; in the forest a non-lone tree is drawn
+  at any distance.
+- TreeGen trees are 100× the legacy triangles at the nearest level. Level 0
+  is only ever a handful of trees (within ~36 m for a 15 m tree at 1080p).
+
 ### 4.12 Ground cover — THREE TIERS (`env/grass.js` + `chunks.js`)
 
 A tuft is two crossed quads carrying a painted card of seven blades. The card is
@@ -838,6 +926,7 @@ no storage).
 | chunks ahead | 6 | 4 | 3 |
 | near canopy | 150/chunk | 95 | **0** |
 | far canopy | 760 | 380 | 300 |
+| TreeGen levels | 4 (polygon leaves near) | 3 (cards from 0 m) | 2 (coarse cards, billboard) |
 | grass / shrubs / stone | on | thinned | **off** |
 | worst-case foliage in view | 723k tris | 302k | 95k |
 
@@ -1416,7 +1505,8 @@ npm run probe
 | `ground.mjs` | the world-space ground: coverage, LOD seams vs skirts, no poke-through under the ribbon, colliders near the car, faceting by distance. Replaces `offroad`/`terrain`/`cliff` |
 | `traffic.mjs` | spawn distance, stalls, overlaps, lane error, population, Δv |
 | `score.mjs` | the near-miss mechanic, without physics |
-| `props.mjs` | canopy and understorey: per-species counts both tiers, determinism, **whether the far tier is the same tree**, caps, batches, cost, clearance, float, and that the scatter is LUMPY |
+| `props.mjs` | LEGACY canopy and understorey: per-species counts both tiers, determinism, **whether the far tier is the same tree**, caps, batches, cost, clearance, float, and that the scatter is LUMPY |
+| `forest.mjs` | the TreeGen canopy: triangles per level, determinism, scatter caps/clearance/float/lumpiness, the forest's per-frame LOD pass (§4.11b). `forest.html` is its contact sheet (`?level=N`, `?species=oak`) |
 | `handling.mjs` | steering by speed, slide recovery, drift, rollover safety |
 | `smooth.mjs` | is the car smooth **on screen** under jitter and hitches |
 | `drive.mjs` | end to end: real car, physics, `engine_sim`, traffic |

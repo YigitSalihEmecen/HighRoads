@@ -63,7 +63,9 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 | `textures.js` | shared procedural canvas helpers — value noise, fBm, mottle | — |
 | `lowpoly.js` | faceted-solid primitives: warped lumps, tapering tubes, conifer skirts | — |
 | `grass.js` | crossed-card grass tufts, in a near and a far tier | 4 |
-| `trees.js` | faceted low-poly trees, near and far tiers from one builder | 150–376 / **66–270** |
+| `treegen.js` | the canopy, grown by TreeGen (`tree_gen/` submodule): four levels per tree, drawn by `../forest.js` | ~56k / ~18k / ~5k / 6 |
+| `treegen.worker.js` | TreeGen's meshing and card painting on worker threads | — |
+| `legacy/trees.js` | the LEGACY faceted low-poly trees (`?trees=legacy`), near and far tiers from one builder | 150–376 / **66–270** |
 | `bushes.js` | four shrub forms, clusters of faceted lumps | 112–183 |
 | `rocks.js` | convex boulders, slabs and scree, three size classes | 44–120 |
 | `road.js` | the carriageway's asphalt mask and its material patch | — |
@@ -71,7 +73,11 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 
 ## The canopy
 
-`trees.js` and `bushes.js` are **faceted solids** — the low-poly look in
+**The canopy is TreeGen's now** — see `AGENT_CONTEXT.md` §4.11b. What follows
+describes the legacy trees (`legacy/trees.js`), which the shrubs still share
+a material and a look with.
+
+`legacy/trees.js` and `bushes.js` are **faceted solids** — the low-poly look in
 `style_examples/`. A tree is a tapering faceted stem carrying either a cluster
 of warped lumps or a stack of jagged conical skirts, flat-shaded, per-face
 coloured, with no texture, no UVs and no alpha test anywhere in it.
