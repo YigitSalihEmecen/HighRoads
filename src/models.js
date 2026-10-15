@@ -111,6 +111,8 @@ export function buildModel(build, detail = DETAIL.player) {
   const model = createCar(build.params, { detail });
   model.setColor(build.color || build.params.color);
   model.setTrimColor(build.trim || null);
+  matte(model);
+  finish(model, build.params);
   // car_gen leaves camber to the host, which owns each holder's rotation: a
   // tilt about the car's length per wheel (FL, FR, BL, BR; negative = tops in),
   // and the hub lift that keeps the low tyre shoulder on the ground.
@@ -126,11 +128,43 @@ export function buildModel(build, detail = DETAIL.player) {
 export function paintModel(model, build) {
   model.setColor(build.color);
   model.setTrimColor(build.trim || null);
-  const M = model.materials;
-  if (M && M.paint) {
-    M.paint.metalness = build.params.metal;
-    M.paint.roughness = build.params.rough;
-  }
+  finish(model, build.params);
+}
+
+/**
+ * The world is matte (terrain, rocks and trees sit at roughness ~0.9, no
+ * metal), and a lacquered car in it reads as the only toy on the table. Every
+ * car material loses its clearcoat and mirror shine.
+ */
+function matte(model) {
+  const seen = new Set();
+  const dull = (m) => {
+    if (seen.has(m)) return;
+    seen.add(m);
+    if (m.isMeshPhysicalMaterial) m.clearcoat = 0;
+    if (m.isMeshStandardMaterial) {
+      m.roughness = Math.max(m.roughness, 0.6);
+      m.metalness = Math.min(m.metalness, 0.4);
+    }
+  };
+  // The material set covers parts swapped in later (the contrast roof).
+  const walk = (v) => {
+    if (v?.isMaterial) dull(v);
+    else if (v && typeof v === 'object' && !v.isTexture && !v.isVector4) for (const k in v) if (k !== 'U') walk(v[k]);
+  };
+  walk(model.materials);
+  const visit = (o) => { for (const m of [].concat(o.material || [])) dull(m); };
+  model.body.traverse(visit);
+  for (const k in model.wheels) model.wheels[k].traverse(visit);
+}
+
+/** The build's finish, squeezed into the matte range: Gloss is a satin sheen. */
+function finish(model, P) {
+  const paint = model.materials?.paint;
+  if (!paint) return;
+  paint.clearcoat = 0;
+  paint.metalness = P.metal * 0.5;
+  paint.roughness = 0.6 + 0.4 * P.rough;
 }
 
 /* ----------------------------------------------------------------- fleet -- */

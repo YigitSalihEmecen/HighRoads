@@ -412,7 +412,7 @@ ahead, braked toward comfortably. Keep-right: lane 1 is cruising, lane 0 passing
 `_considerLanes` overtakes when the IDM gain pays and MOBIL's safety test passes
 for whoever is behind there (player held to a 3.5 s gap); indicators run
 `signalTime` before the move. Flashed from behind → pull aside; met head-on in
-their lane → flash, horn (Web Audio, `traffic.audio`), swerve if clear.
+their lane → flash, swerve if clear (no horns).
 Personalities vary v0, headway, accel. Bodies pitch and roll on a spring.
 Density swells/thins along the road (`TRAFFIC.wave`); same-direction cars also
 arrive from behind a slow player. Indicator lamps are seated on the body by a
