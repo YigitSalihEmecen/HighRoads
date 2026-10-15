@@ -224,6 +224,8 @@ export function deriveSpec(build, metrics) {
   const dragCoefficient = 0.6 * cd * area * 1.45;
 
   const kit = ((P.kitF > 0) + (P.kitR > 0)) * 0.25;
+  // car_gen SPOILER_TYPES: None, Lip, Ducktail, Pedestal wing, GT wing, Roof spoiler
+  const wing = [0, 0.1, 0.15, 0.35, 0.5, 0.1][P.spType | 0] * (P.spSize ?? 1);
 
   return {
     id: 'gen-' + (build.seed ?? 'custom'),
@@ -238,7 +240,7 @@ export function deriveSpec(build, metrics) {
     travelScale: clampR(1 + (P.clearance - 0.1) * 3.5, 1, 1.6),
     dragCoefficient,
     // Capped at 0.85 g of extra load at 250 km/h: more compresses a low car onto its floor over crests.
-    downforce: Math.min(clampR(3.6 - 3.2 * (shape.height - 1.1) / 0.6, 0.2, 3.4) + kit, (0.85 * mass * 9.81) / (69.4 * 69.4)),
+    downforce: Math.min(clampR(3.6 - 3.2 * (shape.height - 1.1) / 0.6, 0.2, 3.4) + kit + wing, (0.85 * mass * 9.81) / (69.4 * 69.4)),
   };
 }
 

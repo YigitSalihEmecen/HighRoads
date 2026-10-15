@@ -331,7 +331,10 @@ compression *rate*), `_antiRoll` (bar rate derived from a target roll angle),
 vehicle.js was written against: body, wheel holders FL/FR/BL/BR (spin about X,
 steer about Y), metrics, paint/lamp setters, `dispose()`. Front is −Z; the body
 is NOT centred on the axle midpoint (`bodyFrontZ`/`bodyRearZ`), so the chassis
-collider is offset by `chassisCentreZ`.
+collider is offset by `chassisCentreZ`. `metrics` measure the SHELL: car_gen
+leaves its bolt-on accessories (plates, exhaust, spoiler, mirrors, antenna,
+grille, hood parts) out of the box, or mirrors would widen every collider and a
+mast would lift the CoM. Wings add downforce in `deriveSpec` (by `spType`).
 
 A **build** is the unit the garage edits and localStorage keeps:
 `{ seed, style, params, color, trim, engine, drive, gearbox, name }`.

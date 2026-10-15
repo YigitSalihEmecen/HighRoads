@@ -73,11 +73,15 @@ const ICONS = {
   dice: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12a8 8 0 11-2.3-5.6"/><path d="M20 4v4h-4"/></svg>',
 };
 
+/** car_gen's attachment groups; the rest of SPEC shapes the body. */
+const ATTACH_GROUPS = new Set(['Rims', 'Roof', 'Headlights', 'Tail lights', 'Fenders', 'Body kit', 'Plates', 'Exhaust', 'Spoiler', 'Mirrors', 'Antenna', 'Grille', 'Hood']);
+
 /** Which camera shot suits each parameter group. */
 const GROUP_SHOT = {
-  Wheels: 'wheel', Chassis: 'side', Ends: 'front', Surface: 'overview', Character: 'side', Sculpt: 'overview',
+  Wheels: 'wheel', Chassis: 'side', Nose: 'front', Tail: 'rear', Surface: 'overview', Character: 'side', Sculpt: 'overview',
   Greenhouse: 'side', Cabin: 'side', Rims: 'wheel', Roof: 'top', Headlights: 'front', 'Tail lights': 'rear',
-  Fenders: 'wheel', 'Body kit': 'side', Trim: 'side', Finish: 'paint',
+  Fenders: 'wheel', 'Body kit': 'side', Plates: 'rear', Exhaust: 'rear', Spoiler: 'rear', Mirrors: 'front',
+  Antenna: 'top', Grille: 'front', Hood: 'front', Trim: 'side', Finish: 'paint',
 };
 
 const FINISHES = [
@@ -589,7 +593,7 @@ class GarageUI {
     this.paramRows = this.paramRows || [];
     let first = true;
     for (const [group, rows] of SPEC) {
-      const groupTab = ['Rims', 'Roof', 'Headlights', 'Tail lights', 'Fenders', 'Body kit'].includes(group) ? 'attachments' : 'body';
+      const groupTab = ATTACH_GROUPS.has(group) ? 'attachments' : 'body';
       if (groupTab !== tab || group === 'Finish') continue;
       const g = el('div', 'p-group' + (first ? ' open' : ''));
       first = false;
