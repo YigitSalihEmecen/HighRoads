@@ -782,7 +782,7 @@ export const TRAFFIC = {
   noticeRange: 90,
   /** Flashed: slow to this fraction of cruise while pulling aside. */
   yieldSlow: 0.75,
-  /** Seconds to impact at which an oncoming driver flashes, swerves and leans on the horn. */
+  /** Seconds to impact at which an oncoming driver flashes and swerves. */
   alarmTime: 3.2,
 
   // ------------------------------------------------------------- impacts --

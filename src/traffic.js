@@ -14,7 +14,7 @@
  *    for whoever is behind in that lane (MOBIL's safety criterion) — the
  *    player included — signalling before they move;
  *  - pull aside when flashed, and when the player comes at them in their
- *    lane, brake, flash, sound the horn and swerve if there is room.
+ *    lane, brake, flash and swerve if there is room.
  * Each has a personality: desired speed, headway, how hard they accelerate.
  *
  * Every car is a different generated model from the `Fleet` (models.js).
@@ -72,9 +72,6 @@ export class Traffic {
     this.enabled = true;
     /** Night: everyone drives with lamps on. Set by the game from the sky. */
     this.lightsOn = false;
-    /** An AudioContext for horns; null keeps traffic silent. */
-    this.audio = null;
-    this.hornVolume = 0.5;
 
     this._pos = new THREE.Vector3();
     this._q = new THREE.Quaternion();
@@ -188,7 +185,6 @@ export class Traffic {
       cooldown: 0,
       yielding: 0,
       flashT: 0,
-      hornCd: 0,
       leaderIsPlayer: false,
 
       pitch: 0, pitchV: 0, roll: 0, rollV: 0,
@@ -257,7 +253,6 @@ export class Traffic {
 
     for (const car of sorted) {
       car.cooldown = Math.max(0, car.cooldown - dt);
-      car.hornCd = Math.max(0, car.hornCd - dt);
       car.flashT = Math.max(0, car.flashT - dt);
 
       if (car.spun > 0) {
@@ -339,9 +334,6 @@ export class Traffic {
     }
     car.leaderIsPlayer = lead.player;
     a = clamp(a, -TRAFFIC.emergencyDecel, car.aMax);
-
-    // A driver who has to stand on the brakes because of the player says so.
-    if (lead.player && a < -4.5 && car.hornCd <= 0) this._honk(car, P);
 
     car.accel = damp(car.accel, a, 6, dt);
     car.speed = Math.max(0, car.speed + car.accel * dt);
@@ -504,7 +496,6 @@ export class Traffic {
       const ttc = (d - car.halfLen - P.halfLen) / closing;
       if (ttc < TRAFFIC.alarmTime && P.along * car.dir < 0) {
         if (car.flashT <= 0) car.flashT = 1.4;
-        if (car.hornCd <= 0) this._honk(car, P);
         // Swerve away from the player if the other lane is the clearer one.
         const other = 1 - car.lane;
         const away = Math.abs(P.v - car.dir * this.lanes[other]) > Math.abs(P.v - car.v);
@@ -512,37 +503,6 @@ export class Traffic {
           this._beginChange(car, other, { signal: 0, duration: 1.6 });
         }
       }
-    }
-  }
-
-  /** A two-tone horn from the car's direction, quieter with distance. */
-  _honk(car, P) {
-    car.hornCd = 3 + this.rng() * 2;
-    const ctx = this.audio;
-    if (!ctx || ctx.state !== 'running') return;
-    const dist = Math.abs(car.s - P.s);
-    const level = this.hornVolume * 0.32 * clamp(1 - dist / 180, 0, 1);
-    if (level < 0.005) return;
-    const t = ctx.currentTime;
-    const len = 0.3 + this.rng() * 0.35;
-    const pitch = 0.9 + ((car.id * 0.137) % 0.22);
-    const out = ctx.createGain();
-    out.gain.setValueAtTime(0, t);
-    out.gain.linearRampToValueAtTime(level, t + 0.02);
-    out.gain.setValueAtTime(level, t + len);
-    out.gain.linearRampToValueAtTime(0, t + len + 0.06);
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = 2600;
-    lp.connect(out);
-    out.connect(ctx.destination);
-    for (const f of [415, 523]) {
-      const o = ctx.createOscillator();
-      o.type = 'square';
-      o.frequency.value = f * pitch;
-      o.connect(lp);
-      o.start(t);
-      o.stop(t + len + 0.08);
     }
   }
 

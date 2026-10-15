@@ -3,7 +3,7 @@
  *
  * One sheet, opened from the title, the garage and the pause menu. Each
  * `_page` is a tab: graphics, driving (gearbox, camera, tilt) and audio (the
- * engine simulator's buses and tone, wind, traffic horns).
+ * engine simulator's buses and tone, wind).
  */
 
 import { TiltSteering } from './input.js';
@@ -210,8 +210,6 @@ export class Settings {
     // Not an engine bus (see wind.js), so it gets its own control.
     this.wind = this._slider('Wind', 'air over the body, louder the faster you go',
       0, 1, this.game.wind.volume, (v) => this.game.wind.setVolume(v));
-    this.horns = this._slider('Horns', 'other drivers telling you what they think', 0, 1, this.game.traffic ? this.game.traffic.hornVolume : 0.5,
-      (v) => { if (this.game.traffic) this.game.traffic.hornVolume = v; });
 
     this._sub('Voice mix');
     this.busRows = {};

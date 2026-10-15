@@ -413,7 +413,6 @@ class Game {
     const ctx = this.powertrain.sim && this.powertrain.sim.ctx;
     this.wind.start(ctx);
     if (this.traffic) {
-      this.traffic.audio = ctx || null;
       if (restart) this.traffic.dispose();
       this.traffic.setEnabled(this.mode === 'traffic');
     }
