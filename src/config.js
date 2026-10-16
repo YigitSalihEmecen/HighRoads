@@ -226,7 +226,7 @@ export const TREES = {
     barkSize: 256,
     impostorHeight: 192,
     /** Size against `foliage.js` heights, which were drawn for the legacy trees. */
-    scale: 1.6,
+    scale: 2.08,
     /**
      * TreeGen level specs, nearest first (see tree_gen/src/lod.js). Its LOD0
      * (full, ~100k+ triangles) is never drawn in the game; these are its
