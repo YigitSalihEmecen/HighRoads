@@ -102,8 +102,8 @@ const CENTER = 2;
 function buildRoadColumns() {
   const hw = ROAD.halfWidth;
   const lane = ROAD.laneWidth;
-  const w = 0.2;          // painted line width
-  const gap = 0.16;       // between the two centre lines
+  const w = ROAD.lineWidth;
+  const gap = ROAD.centreGap;
 
   // Duplicated v positions give each painted stripe a hard edge; without the
   // duplicate, vertex colours smear the line across the whole lane.

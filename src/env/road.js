@@ -22,7 +22,7 @@
  */
 
 import * as THREE from 'three';
-import { ROAD_SURFACE } from '../config.js';
+import { ROAD, ROAD_SURFACE } from '../config.js';
 import { makeCanvas, rng, tileFbm, tileNoise, paint } from './textures.js';
 
 /** The far wear mottle, world-planar: R wear, centred on 0.5. */
@@ -229,6 +229,9 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
     uDamage: { value: new THREE.Vector4(S.patch[0], S.patch[1], S.sealShare, 3.7) },
     uPom: { value: new THREE.Vector3(S.pom.depth, S.pom.fade[0], S.pom.fade[1]) },
     uPomSteps: { value: new THREE.Vector2(S.pom.steps[0], S.pom.steps[1]) },
+    /** The markings, as chunks.js lays them: half width, lane, line width, centre gap; dash length. */
+    uPaint: { value: new THREE.Vector4(ROAD.halfWidth, ROAD.laneWidth, ROAD.lineWidth, ROAD.centreGap) },
+    uDash: { value: ROAD.dashLength },
   };
   /** Live: the probes flip features through these. */
   material.userData.uniforms = uniforms;
@@ -276,6 +279,8 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
           uniform vec4 uDamage;
           uniform vec3 uPom;
           uniform vec2 uPomSteps;
+          uniform vec4 uPaint;
+          uniform float uDash;
 
           // Sine-free hashes (Hoskins): stable for the large road coordinates.
           float fr_h1( float p ) { p = fract( p * 0.1031 ); p *= p + 33.33; p *= p + p; return fract( p ); }
@@ -284,6 +289,22 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
           float fr_n2( vec2 p ) {
             vec2 i = floor( p ), f = fract( p ); f = f * f * ( 3.0 - 2.0 * f );
             return mix( mix( fr_h2( i ), fr_h2( i + vec2( 1, 0 ) ), f.x ), mix( fr_h2( i + vec2( 0, 1 ) ), fr_h2( i + vec2( 1, 1 ) ), f.x ), f.y );
+          }
+          // A zero vector (a skirt face, where road space does not vary) would
+          // normalise to NaN, and a NaN normal lights as a blinding streak.
+          vec3 fr_unit( vec3 v, vec3 fallback ) { float l = dot( v, v ); return l > 1e-12 ? v * inversesqrt( l ) : fallback; }
+          // Is road-space (v, s) painted? The markings exactly as chunks.js
+          // lays them: edge lines, the solid double centre line, the dashed dividers.
+          // aa is the footprint in metres: 0 inside the march, a pixel's for colour.
+          float fr_in( float x, float a, float b, float aa ) { return smoothstep( a - aa, a + aa, x ) * ( 1.0 - smoothstep( b - aa, b + aa, x ) ); }
+          float fr_paintAt( vec2 vs, vec2 aa ) {
+            aa = max( aa, vec2( 1e-4 ) );
+            float av = abs( vs.x ), w = uPaint.z;
+            float edge = fr_in( av, uPaint.x - w, uPaint.x, aa.x );
+            float centre = fr_in( av, uPaint.w, uPaint.w + w, aa.x );
+            float ph = mod( vs.y, 2.0 * uDash );
+            float dash = fr_in( av, uPaint.y - w * 0.5, uPaint.y + w * 0.5, aa.x ) * fr_in( ph, 0.0, uDash, aa.y );
+            return max( max( edge, centre ), dash );
           }
           // Coverage of a line of half-width w at distance d, antialiased by the footprint fw.
           float fr_line( float d, float w, float fw ) { return clamp( ( w + fw - d ) / ( 2.0 * fw ), 0.0, 1.0 ) * min( 1.0, w / fw ); }
@@ -370,10 +391,14 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
           vec3 fr_p2 = cross( fr_dp2, fr_W ), fr_p1 = cross( fr_W, fr_dp1 );
           vec3 fr_T = fr_p2 * fr_gx.x + fr_p1 * fr_gy.x;
           vec3 fr_B = fr_p2 * fr_gx.y + fr_p1 * fr_gy.y;
-          fr_T = normalize( fr_T - fr_W * dot( fr_W, fr_T ) );
-          fr_B = normalize( fr_B - fr_W * dot( fr_W, fr_B ) );
+          fr_T = fr_unit( fr_T - fr_W * dot( fr_W, fr_T ), vec3( 1.0, 0.0, 0.0 ) );
+          fr_B = fr_unit( fr_B - fr_W * dot( fr_W, fr_B ), fr_unit( cross( fr_W, fr_T ), vec3( 0.0, 0.0, 1.0 ) ) );
           float fr_fade = 1.0 - smoothstep( uPom.y, uPom.z, fr_dist );
-          float fr_depth = uPom.x * fr_fade * ( 1.0 - fr_isPaint );
+          // Paint is a film a few millimetres proud of the binder, following
+          // the stone under it; a patch took the paint with it.
+          float fr_keep = 1.0 - fr_patch;
+          float fr_lee = 0.0;
+          float fr_depth = uPom.x * fr_fade * fr_W.y * fr_W.y;
           if ( fr_depth > 0.0005 ) {
             vec3 fr_V = normalize( cameraPosition - fr_wpos );
             vec3 fr_tv = vec3( dot( fr_V, fr_T ), dot( fr_V, fr_B ), max( dot( fr_V, fr_W ), 0.16 ) );
@@ -382,17 +407,27 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
             vec2 fr_mx = fr_gx * 2.0, fr_my = fr_gy * 2.0;
             float fr_layer = 1.0 / fr_n, fr_d = 0.0;
             vec2 fr_t = textureGrad( uAsphH, fr_uv, fr_mx, fr_my ).rg;
-            float fr_h = 1.0 - ( fr_t.r - fr_t.g * fr_dis * 0.5 );
+            float fr_h = 1.0 - mix( fr_t.r - fr_t.g * fr_dis * 0.5, 0.6 + 0.35 * fr_t.r, fr_paintAt( fr_uv * uTile.x, vec2( 0.0 ) ) * fr_keep );
             float fr_pd2 = 0.0, fr_ph = fr_h;
             for ( int i = 0; i < 16; i ++ ) {
               if ( float( i ) >= fr_n || fr_d >= fr_h ) break;
               fr_pd2 = fr_d; fr_ph = fr_h;
               fr_uv += fr_du; fr_d += fr_layer;
               fr_t = textureGrad( uAsphH, fr_uv, fr_mx, fr_my ).rg;
-              fr_h = 1.0 - ( fr_t.r - fr_t.g * fr_dis * 0.5 );
+              fr_h = 1.0 - mix( fr_t.r - fr_t.g * fr_dis * 0.5, 0.6 + 0.35 * fr_t.r, fr_paintAt( fr_uv * uTile.x, vec2( 0.0 ) ) * fr_keep );
             }
             float fr_a1 = fr_h - fr_d, fr_b1 = fr_ph - fr_pd2;
             fr_uv -= fr_du * clamp( fr_a1 / ( fr_a1 - fr_b1 - 1e-5 ), 0.0, 1.0 );
+            // What the ray hit decides paint, so a raised line's near edge
+            // stands over the asphalt beside it.
+            float fr_hitPaint = fr_paintAt( fr_uv * uTile.x, vec2( fr_fv, fr_fs ) );
+            // The paint's lee: asphalt the raised film shades from the sun.
+            #if NUM_DIR_LIGHTS > 0
+            vec3 fr_L = normalize( ( vec4( directionalLights[ 0 ].direction, 0.0 ) * viewMatrix ).xyz );
+            vec2 fr_lt = vec2( dot( fr_L, fr_T ), dot( fr_L, fr_B ) ) / max( dot( fr_L, fr_W ), 0.12 );
+            fr_lee = ( 1.0 - fr_hitPaint ) * fr_paintAt( fr_uv * uTile.x + fr_lt * fr_depth * 0.35, vec2( fr_fv, fr_fs ) ) * fr_keep;
+            #endif
+            fr_isPaint = mix( fr_isPaint, fr_hitPaint, step( 0.5, fr_fade ) );
           }
           vec4 fr_tex = textureGrad( uAsph, fr_uv, fr_gx, fr_gy );
 
@@ -408,17 +443,21 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
           fr_tone *= 1.0 + ( fr_mot - 0.5 ) * mix( 0.12, 0.42, fr_age );
           fr_tone *= 1.0 - 0.14 * fr_oil - 0.07 * fr_wp * fr_age;
           fr_tone *= 1.0 - 0.7 * fr_tex.g * fr_dis;
-          fr_tone *= 1.0 - 0.55 * fr_crk - 0.5 * fr_seal - 0.35 * fr_seam;
+          fr_tone *= 1.0 - 0.55 * fr_crk - 0.5 * fr_seal - 0.35 * fr_seam - 0.4 * fr_lee;
 
           // Paint: faded with the road's age, cracked with it, and gone under a patch.
-          vec3 fr_paint = diffuseColor.rgb * mix( 1.0, 0.62, fr_ageS * ( 0.6 + 0.4 * fr_n1( fr_s * 0.7 ) ) )
+          // Base colours from the constants (0xe9e3d2 paint, 0x46443f asphalt,
+          // linear) where the marched texel disagrees with the vertex colour.
+          float fr_vPaint = smoothstep( 0.34, 0.55, fr_lum );
+          vec3 fr_paint = mix( vec3( 0.815, 0.768, 0.644 ), diffuseColor.rgb, fr_vPaint )
+            * mix( 1.0, 0.62, fr_ageS * ( 0.6 + 0.4 * fr_n1( fr_s * 0.7 ) ) )
             * ( 1.0 - 0.6 * fr_crk - 0.5 * fr_seal ) * fr_far;
-          vec3 fr_asphalt = mix( diffuseColor.rgb, vec3( 0.061, 0.058, 0.050 ), fr_isPaint ) * fr_tone;
+          vec3 fr_asphalt = mix( diffuseColor.rgb, vec3( 0.061, 0.058, 0.050 ), fr_vPaint ) * fr_tone;
           diffuseColor.rgb = mix( fr_asphalt, fr_paint, fr_isPaint * ( 1.0 - fr_patch ) );
 
           // Relief the march does not carry, for the derivative bump: open
           // cracks cut down, patches stand a few millimetres proud.
-          float fr_bumpH = fr_patch * 0.004 - fr_crk * 0.012 - fr_seal * 0.002;
+          float fr_bumpH = fr_patch * 0.004 - fr_crk * 0.012 - fr_seal * 0.002 + fr_isPaint * fr_keep * 0.003;
         `)
         .replace('#include <roughnessmap_fragment>', /* glsl */`
           #include <roughnessmap_fragment>
@@ -432,7 +471,8 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
             // The asphalt's own normal at the marched texel, stronger as the stone shows.
             vec3 fr_tn = textureGrad( uAsphN, fr_uv, fr_gx, fr_gy ).xyz * 2.0 - 1.0;
             vec3 fr_nw = normalize( fr_T * fr_tn.x + fr_B * fr_tn.y + fr_W * fr_tn.z );
-            float fr_k = fr_nearW * mix( 0.4, 1.0, fr_age ) * ( 1.0 - fr_isPaint * ( 1.0 - fr_patch ) );
+            // Paint keeps some of the stone's relief: it is a film laid over it.
+            float fr_k = fr_nearW * mix( 0.4, 1.0, fr_age ) * ( 1.0 - 0.6 * fr_isPaint * fr_keep );
             normal = normalize( mix( normal, normalize( ( viewMatrix * vec4( fr_nw, 0.0 ) ).xyz ), fr_k ) );
             // Screen-space derivative bump (Mikkelsen 2010) of the cracks and patch edges.
             vec3 fr_dpx = dFdx( -vViewPosition ), fr_dpy = dFdy( -vViewPosition );

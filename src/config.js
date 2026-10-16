@@ -26,6 +26,9 @@ export const ROAD = {
   /** Lane width, metres — sized off the 3.28 m Military Vehicle. */
   laneWidth: 3.7,
   halfWidth: 7.4,
+  /** Painted line width, and the gap between the two centre lines. */
+  lineWidth: 0.2,
+  centreGap: 0.16,
   /** Paved shoulder beyond the lane markings, metres. */
   shoulder: 2.0,
 

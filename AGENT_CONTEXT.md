@@ -881,6 +881,21 @@ Cost (Metal, 2560×1440, road filling the view): the whole material ~2.5–4.6 m
 the march +0.4–0.8 of it. `probe/road.html` is the test sheet (every age, `?pom=0`).
 **Paint is detected by luminance**, no attribute needed: markings are geometry in
 the same mesh at `0xe9e3d2` against asphalt that never modulates past ~0x4a.
+Near the car the march ALSO knows the paint: `fr_paintAt` is the markings
+exactly as `buildRoadColumns` lays them (`ROAD.lineWidth`, `centreGap`,
+`dashLength`), so a line stands a few millimetres proud of the binder, its near
+edge overhangs what is behind it, and it shades a thin lee from the sun.
+
+**A NaN normal is a blinding streak.** The ribbon's skirts are vertical and
+road space does not vary across them, so the cotangent frame was a zero vector
+and `normalize` made NaN; lit and bloomed, the road's edges glowed. Every frame
+vector is built with `fr_unit` (a fallback for zero), the march is weighted by
+`W.y²`, and ground.js guards its planar frame the same way.
+
+**A chunk's last row ends a dash.** 120 m is a whole number of dashes, so every
+chunk ends on a dash boundary that is not doubled; the row took the NEXT dash's
+state and the paint faded over the last 3 m of every chunk. Regular rows take
+the state of the dash they end (`dashOn(s - 1e-4)`).
 
 The far wear mottle (`tileFar`) and the GROUND detail are still **planar in
 world XZ, not UV** — the sheet is parameterised in road

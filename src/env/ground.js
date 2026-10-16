@@ -317,8 +317,11 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           vec2 fr_suv = fr_wpos.xz / uSwardTile;
           vec2 fr_sgx = dFdx( fr_suv ), fr_sgy = dFdy( fr_suv );
           vec3 fr_W = normalize( fr_wnorm );
-          vec3 fr_T = normalize( vec3( 1.0, 0.0, 0.0 ) - fr_W * fr_W.x );
-          vec3 fr_B = normalize( vec3( 0.0, 0.0, 1.0 ) - fr_W * fr_W.z );
+          // A face along world X (or Z) would normalise a zero vector to NaN.
+          vec3 fr_T = vec3( 1.0, 0.0, 0.0 ) - fr_W * fr_W.x;
+          fr_T = dot( fr_T, fr_T ) > 1e-12 ? normalize( fr_T ) : vec3( 0.0, 0.0, 1.0 );
+          vec3 fr_B = vec3( 0.0, 0.0, 1.0 ) - fr_W * fr_W.z;
+          fr_B = dot( fr_B, fr_B ) > 1e-12 ? normalize( fr_B ) : vec3( 1.0, 0.0, 0.0 );
           {
             // WORLD normal: the view-space one called a bank facing the camera a cliff.
             vec3 fr_n = fr_W;
