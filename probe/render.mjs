@@ -21,7 +21,7 @@ const driveFor = Number(process.argv[3] || 25);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The whole project, statically. No build step, so this is the whole server. */
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.png': 'image/png',
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.png': 'image/png', '.woff2': 'font/woff2',
   '.fbx': 'application/octet-stream', '.obj': 'text/plain', '.mtl': 'text/plain' };
 const server = await new Promise((res) => {
   const s = http.createServer((req, res2) => {

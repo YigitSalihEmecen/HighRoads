@@ -68,6 +68,7 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 | `legacy/trees.js` | the LEGACY faceted low-poly trees (`?trees=legacy`), near and far tiers from one builder | 150–376 / **66–270** |
 | `bushes.js` | four shrub forms, clusters of faceted lumps | 112–183 |
 | `rocks.js` | convex boulders, slabs and scree, three size classes | 44–120 |
+| `signs.js` | road signs and gantries, built by Roadsign-gen (`roadsign_gen/` submodule), merged to 2–4 draws each | ~600 mean |
 | `road.js` | the carriageway's asphalt mask and its material patch | — |
 | `ground.js` | the terrain's detail texture and its material patch | — |
 

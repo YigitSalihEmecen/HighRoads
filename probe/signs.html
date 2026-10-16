@@ -1,0 +1,72 @@
+<!doctype html>
+<!--
+  The road-sign library's contact sheet (env/signs.js): every variant in a
+  row by role, under the game's exposure and lights, faces to the camera.
+  ?back=1 turns them round. probe/signs.mjs checks where they are placed.
+-->
+<meta charset="utf-8">
+<title>signs contact sheet</title>
+<style>html,body{margin:0;height:100%;background:#cfd8dc;overflow:hidden}</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { ATMOSPHERE } from '../src/config.js';
+import { createSignAssetsAsync } from '../src/env/signs.js';
+
+const q = new URLSearchParams(location.search);
+const W = window.innerWidth, H = window.innerHeight;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W, H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = ATMOSPHERE.exposure;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd3dde2);
+scene.add(new THREE.HemisphereLight(ATMOSPHERE.hemiSky, ATMOSPHERE.hemiGround, ATMOSPHERE.hemiIntensity));
+const sun = new THREE.DirectionalLight(ATMOSPHERE.sunColor, ATMOSPHERE.sunIntensity);
+sun.position.set(-30, 50, 60);
+sun.castShadow = true;
+Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, far: 300 });
+sun.shadow.mapSize.set(4096, 4096);
+scene.add(sun);
+
+const signs = await createSignAssetsAsync();
+let row = 0, tris = 0, n = 0;
+for (const [role, list] of signs.roles) {
+  const wide = role === 'portal' || role === 'cantilever';
+  const gap = wide ? 24 : 4.2;
+  list.forEach((v, i) => {
+    const o = signs.instance(v);
+    o.position.set((i - (list.length - 1) / 2) * gap, 0, -row * 9 - (wide ? 18 : 0));
+    if (q.get('back')) o.rotation.y = Math.PI;
+    scene.add(o);
+    tris += v.tris; n++;
+  });
+  row += wide ? 3 : 1;
+}
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600).rotateX(-Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: 0x93a86c, roughness: 1 }));
+ground.receiveShadow = true;
+scene.add(ground);
+
+const camera = new THREE.PerspectiveCamera(34, W / H, 0.5, 2000);
+// &cam=x,y,z,tx,ty,tz for a close look
+const cam = (q.get('cam') || `0,26,42,0,0,${-row * 4.2}`).split(',').map(Number);
+camera.position.set(cam[0], cam[1], cam[2]);
+camera.lookAt(cam[3], cam[4], cam[5]);
+renderer.render(scene, camera);
+window.SIGNS_STATS = { variants: n, meanTris: Math.round(tris / n),
+  roles: Object.fromEntries([...signs.roles].map(([r, l]) => [r, l.length])),
+  calls: renderer.info.render.calls };
+window.READY = true;
+</script>

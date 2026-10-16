@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, TERRAIN_COLORS, TILES } from './config.js';
+import { CHUNK, ROAD, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -193,9 +193,13 @@ function lateralAt(frame, rightFlat, v, outDir) {
 }
 
 export class ChunkManager {
-  constructor({ scene, world, RAPIER, path, terrain, anisotropy = 1, trees = null }) {
+  constructor({ scene, world, RAPIER, path, terrain, anisotropy = 1, trees = null, signs = null }) {
     this.scene = scene;
     this._treeAssets = trees;
+    /** env/signs.js library, built by main.js; null = no signs (and in the probes). */
+    this.signs = SIGNS.enabled ? signs : null;
+    this._signFrame = makeFrame();
+    this._signForeign = [];
     this.anisotropy = anisotropy;
     this.world = world;
     this.RAPIER = RAPIER;
@@ -716,6 +720,9 @@ export class ChunkManager {
     }
     lapq('..roadCollider');
 
+    if (this.signs) this._buildSigns(index, s0, s1, objects);
+    lapq('..signs');
+
     const extraColliders = [];
 
     const chunk = {
@@ -739,6 +746,99 @@ export class ChunkManager {
     };
     this.chunks.set(index, chunk);
     this.propQueue.push({ index, s0, s1, origin });
+  }
+
+  /**
+   * Road signs for one chunk, added to its `objects`. A pure function of the
+   * road and the chunk index: chevrons along the outside of sharp bends, a
+   * warning `curveLead` before a bend starts (and, back to the player, the
+   * oncoming side's), and one feature roll, kept `spacing` from the rest.
+   * Facing +1 = towards the player, -1 = towards oncoming traffic.
+   */
+  _buildSigns(index, s0, s1, objects) {
+    const S = SIGNS;
+    const roles = this.signs.roles;
+    const rng = mulberry32(hashInt(index * 0x2c1b3c6d + 0x51f15e));
+    const f = this._signFrame;
+    const curv = (s) => this.path.frameAt(s, f).curv;
+    const bent = (s) => s >= 0 && Math.abs(curv(s)) > S.bendCurv;
+    const pick = (role, dir = 0) => {
+      const list = (roles.get(role) || []).filter((v) => !dir || v.dir === dir);
+      return list.length ? list[Math.floor(rng() * list.length)] : null;
+    };
+    const taken = [];
+    const put = (variant, s, side, facing) => {
+      if (!variant) return;
+      const over = variant.role === 'portal';
+      const run = variant.role === 'chevron';
+      if (taken.some((t) => Math.abs(t.s - s) < S.spacing && !(run && t.run) && (over || t.over || t.side === side))) return;
+      const { box } = variant;
+      this.path.frameAt(s, f);
+      let v, y;
+      const right = this._rightFlat.crossVectors(f.tan, WORLD_UP).normalize();
+      const rx = right.x, rz = right.z;
+      if (variant.role === 'portal') {
+        v = 0;
+        const a = this.groundAt(s, S.gantryLeg, this._cA).y, b = this.groundAt(s, -S.gantryLeg, this._cB).y;
+        y = Math.min(a, b);
+        if (f.pos.y - y > S.gantryDrop) return;
+      } else {
+        // Local +x is the face's right: the road's right when it faces the player.
+        // The road is at local -side*facing; a cantilever's column is the far side.
+        const toward = -side * facing;
+        const reach = variant.role === 'cantilever' ? -(box.max.x - 0.6) : toward > 0 ? box.max.x : -box.min.x;
+        v = side * (EDGE + S.clearance + reach);
+        y = this.groundAt(s, v, this._cA).y;
+        if (variant.role === 'cantilever' && f.pos.y - y > S.gantryDrop) return;
+      }
+      const span = Math.abs(v) + Math.max(box.max.x, -box.min.x) + 4;
+      const corridor = this.path.corridorAt(s);
+      if (Math.min(corridor.left, corridor.right) < span) return;
+      const x = f.pos.x + rx * v, z = f.pos.z + rz * v;
+      if (this.path.foreignSegments(s, x, z, S.foreignRadius, this._signForeign)) return;
+      const obj = this.signs.instance(variant);
+      obj.position.set(x, y - S.sink, z);
+      obj.rotation.y = Math.atan2(-f.tan.x * facing, -f.tan.z * facing);
+      if (variant.role !== 'portal' && variant.role !== 'cantilever') {
+        // Set by hand and never straightened since.
+        obj.rotation.y += (rng() - 0.5) * 0.07;
+        obj.rotation.z = (rng() - 0.5) * 0.035;
+      }
+      obj.updateMatrix();
+      obj.matrixAutoUpdate = false;
+      this.scene.add(obj);
+      objects.push(obj);
+      taken.push({ s, side, run, over: over || variant.role === 'cantilever' });
+    };
+
+    const step = S.chevronStep;
+    // A run of chevrons along the whole of a bend that peaks sharp somewhere near.
+    const sharp = (s, sign) => [-60, -30, 0, 30, 60].some((d) => s + d >= 0 && curv(s + d) * sign > S.chevronCurv);
+    for (let s = Math.ceil(s0 / step) * step; s < s1; s += step) {
+      const sign = Math.sign(curv(s));
+      if (bent(s) && sharp(s, sign)) put(pick('chevron', sign), s, sign, 1);
+    }
+    // A bend starts where the road has run straight for `curveLead` and stays
+    // bent for `curveHold`; curvature hovering at the threshold is not a bend.
+    const starts = (s, d) => {
+      for (let t = 0; t <= S.curveHold; t += 10) if (!bent(s + d * t)) return false;
+      for (let t = 10; t <= S.curveLead; t += 10) if (bent(s - d * t)) return false;
+      return true;
+    };
+    for (let s = Math.ceil(s0 / 10) * 10; s < s1; s += 10) {
+      const ahead = s + S.curveLead, behind = s - S.curveLead;
+      if (starts(ahead, 1)) put(pick('curve', Math.sign(curv(ahead))), s, 1, 1);
+      if (behind - S.curveHold >= 0 && starts(behind, -1)) put(pick('curve', -Math.sign(curv(behind))), s, -1, -1);
+    }
+    if (rng() > S.featureChance) return;
+
+    let r = rng() * Object.values(S.mix).reduce((a, b) => a + b, 0);
+    let role = 'back';
+    for (const [k, w] of Object.entries(S.mix)) if ((r -= w) < 0) { role = k; break; }
+    const s = s0 + 15 + rng() * (s1 - s0 - 30);
+    if (role === 'back') put(pick(['speed', 'warn', 'guide'][Math.floor(rng() * 3)]), s, -1, -1);
+    else if (role === 'pennant') put(pick(role), s, -1, 1);
+    else put(pick(role), s, 1, 1);
   }
 
   /**

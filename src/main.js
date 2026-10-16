@@ -14,7 +14,7 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 
-import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE, TRAFFIC, TREES } from './config.js';
+import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE, TRAFFIC, TREES, SIGNS } from './config.js';
 import { deriveSpec, buildCarParams } from './cars.js';
 import { buildModel, mergeParts, generateBuild, finishBuild, newSeed, Fleet, DETAIL } from './models.js';
 import { smoothstep, clamp } from './util.js';
@@ -24,6 +24,7 @@ import { createTerrain } from './noise.js';
 import { RoadPath, makeFrame } from './path.js';
 import { ChunkManager } from './chunks.js';
 import { createTreeGenAssetsAsync } from './env/treegen.js';
+import { createSignAssetsAsync } from './env/signs.js';
 import { Traffic } from './traffic.js';
 import { RaycastVehicle } from './vehicle.js';
 import { ChaseCamera } from './camera.js';
@@ -107,6 +108,11 @@ export async function boot() {
   const treesReady = TREES.enabled && TREES.generator === 'treegen'
     ? createTreeGenAssetsAsync({ renderer: gfx.renderer }, (f) => { treeShare = f; })
     : Promise.resolve(null);
+  // Road signs (Roadsign-gen), a face painted per frame in the meantime.
+  const signsReady = SIGNS.enabled ? createSignAssetsAsync().catch((err) => {
+    console.warn('signs disabled:', err);
+    return null;
+  }) : Promise.resolve(null);
 
   // Every traffic car is its own generated design, built now so nothing is
   // generated mid-run. See models.Fleet.
@@ -116,9 +122,10 @@ export async function boot() {
   const growing = setInterval(() =>
     P(0.48 + treeShare * 0.1, `Growing trees · ${Math.round(treeShare * 100)} %`), 100);
   const trees = await treesReady.finally(() => clearInterval(growing));
+  const signs = await signsReady;
 
   const chunks = new ChunkManager({
-    scene: gfx.scene, world, RAPIER, path, terrain, trees,
+    scene: gfx.scene, world, RAPIER, path, terrain, trees, signs,
     // Grass is seen at a grazing angle; that is why anisotropic filtering.
     anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
   });

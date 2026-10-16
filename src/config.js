@@ -505,6 +505,53 @@ export const GROUND = {
  * Procedural stone — see `env/rocks.js`. Chips on the shoulder-to-grass verge,
  * talus spilling from cuttings.
  */
+/**
+ * Road signs — see `env/signs.js` (the library) and `chunks.js:_buildSigns`
+ * (where they go). Distances in metres along / across the road.
+ */
+export const SIGNS = {
+  enabled: true,
+  /** Roadsign-gen's level of detail: 1 = 768 px faces, 2 = 384 px and fewer segments. */
+  lod: 1,
+  /** Past this a sign is a few pixels: not drawn. */
+  drawDistance: 520,
+
+  /** Gap between the shoulder's edge and the near edge of a roadside sign. */
+  clearance: 1.3,
+  /** Sunk this far, so a post on a slope does not show daylight under its foot. */
+  sink: 0.15,
+  /** Nothing within this of another road, or within this of where the ground folds. */
+  foreignRadius: 30,
+
+  /** Chevrons: along a bend that is sharper than this (1/m) within 60 m, one every `chevronStep`. */
+  chevronCurv: 1 / 320,
+  chevronStep: 28,
+  /**
+   * A bend worth a warning: sharper than `bendCurv` for `curveHold`, after
+   * `curveLead` of straighter road. The warning stands `curveLead` before it.
+   */
+  bendCurv: 1 / 420,
+  curveLead: 120,
+  curveHold: 40,
+  /** No two signs on one side of the road closer than this (bar a run of chevrons). */
+  spacing: 26,
+
+  /** One roll per chunk; the weights of what it becomes. */
+  featureChance: 0.75,
+  mix: { speed: 0.17, warn: 0.17, guide: 0.18, marker: 0.12, pennant: 0.06, portal: 0.07, cantilever: 0.07, back: 0.16 },
+
+  /** Generator-seeded extras in the library (env/signs.js). */
+  seededVerge: 4,
+  seededOverhead: 4,
+  /** Gantry legs, either side of the centreline; faces shifted over the player's lanes. */
+  gantryLeg: 11.2,
+  gantryShift: 3.7,
+  /** A cantilever's span: its column on the verge, its arm over the near carriageway. */
+  cantileverSpan: 10.5,
+  /** Skip a gantry where the ground at a leg is this far below the road. */
+  gantryDrop: 1.2,
+};
+
 export const ROCKS = {
   enabled: true,
 
@@ -1135,6 +1182,8 @@ function applyGraphics() {
     BUSHES.samples = 600;
     BUSHES.cap = 72;
     ROCKS.samples = 2200;
+    SIGNS.lod = 2;
+    SIGNS.drawDistance = 400;
   } else if (level === 'low') {
     // The shortest draw distance, and a fog that ends it invisibly.
     CHUNK.ahead = 3;
@@ -1151,6 +1200,8 @@ function applyGraphics() {
     GRASS.enabled = false;
     BUSHES.enabled = false;
     ROCKS.enabled = false;
+    SIGNS.lod = 2;
+    SIGNS.drawDistance = 300;
 
     // The far tier, all the way in. `nearCap` = 0 builds no near meshes at all.
     TREES.samples = 900;

@@ -34,6 +34,7 @@ src/            30 modules + src/env/ (10, + legacy/)
 probe/          headless measurement (§10)
 car_gen/        car generator SUBMODULE (YigitSalihEmecen/Car-gen) — every car is generated; DO NOT EDIT here
 tree_gen/       tree generator SUBMODULE (YigitSalihEmecen/Tree-Gen) — every tree is grown; change it in its own repo, then bump
+roadsign_gen/   road-sign generator SUBMODULE (YigitSalihEmecen/Roadsign-gen) — TypeScript; we import its built lib/roadsign.js (§4.14b)
 style_examples/ reference art the low-poly foliage was built against
 engine_sim/     vendored sibling — DO NOT EDIT
 ```
@@ -42,7 +43,7 @@ engine_sim/     vendored sibling — DO NOT EDIT
 |---|---|
 | `chunks.js` | terrain/road mesh, colliders, streaming, **every scatter** |
 | `forest.js` | the TreeGen canopy's draw: per-tree level of detail + culling over world-wide instanced meshes (§4.11b) |
-| `config.js` | all tunables, **19 blocks** + the graphics levels |
+| `config.js` | all tunables, **23 blocks** + the graphics levels |
 | `vehicle.js` | raycast vehicle: suspension, tyres, aero, stability |
 | `main.js` | boot (with progress), `Game`, build → vehicle lifecycle, fixed-step loop, studio branch, recovery |
 | `path.js` | centreline spline, Frenet frames, arc-length projection |
@@ -872,6 +873,48 @@ chips along a bank and the odd stone in a field without any being a special case
   algae. The table lived inline in `_buildRocks` until it was the only colour
   decision in the project not in `config.js`.
 
+### 4.14b Road signs (`roadsign_gen/`, `env/signs.js`, `chunks.js:_buildSigns`)
+
+Roadsign-gen is TypeScript + Vite; HighRoads has no build step, so the
+submodule ships **`lib/roadsign.js`** — its generator (`src/api/core.ts`, no
+exporters, no React) bundled to plain ESM with `three` bare. Change it in its
+own repo, `npm run build:lib`, commit the bundle, bump the pointer. Panel faces
+are painted on a canvas ONCE, so `loadSignFonts` (its `public/fonts/`) is
+awaited before the library builds, or every face falls back to sans-serif.
+
+**The library** (`env/signs.js`, built at boot beside the trees, a frame per
+assembly): ~30 assemblies, each tagged with a ROLE — `chevron`, `curve` (both
+with a turn direction), `speed`, `warn`, `guide`, `marker`, `pennant`,
+`portal`, `cantilever`. Most are curated configs; `seededVerge`/`seededOverhead`
+more are the generator's own seeds (route trees, gantries) re-spanned to the
+road. Each is merged to **one vertex-coloured hardware mesh** (one material for
+the whole library) **plus one mesh per painted face**: 2–4 draw calls, ~600
+triangles mean. A placed sign is a `THREE.LOD` whose far level is empty
+(`drawDistance`).
+
+**Placement** is a pure function of the road and the chunk index, built in
+`_build` (signs need no sheet):
+
+| what | where |
+|---|---|
+| chevrons, every `chevronStep` | along the outside of a bend (`|curv| > bendCurv`) that peaks over `chevronCurv` within 60 m |
+| curve warning | `curveLead` before a bend that holds `curveHold` after `curveLead` of straighter road; the oncoming side's, back to the player |
+| one feature roll per chunk | `mix`: speed, warning, guide, marker, gantries (portal over the road, cantilever over the near lanes), a no-passing pennant on the left, or a sign for oncoming traffic (its back) |
+
+Curvature hovers around any threshold, so "a bend" needs the hold and the
+straight run before it — without them one bend fired 76 warnings in 7 km.
+`spacing` keeps signs apart on one side, chevron runs excepted. Skipped where
+another road is within `foreignRadius`, where the fold guard's corridor is
+narrower than the sign, and gantries where a leg's ground is `gantryDrop`
+below the road.
+
+**`groundAt` syncs the field.** `_build` extends the road AFTER the tiles'
+`field.sync()` that frame, so new road was not yet carved: signs stood 4–13 m
+above or below the verge. `probe/signs.mjs` checks the foot height.
+
+No colliders, like the trees. Medium/low graphics: `lod` 2 (384 px faces),
+shorter `drawDistance`.
+
 ### 4.15 Tyre effects (`fx.js`)
 
 Both driven by ONE quantity, `wheel.slipAmount` — the same number the skid audio
@@ -1135,8 +1178,8 @@ density, which is a look decision, not a free one.
 
 ## 5. The config contract
 
-`config.js` exports **22** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `TREES`,
-`BUSHES`, `GRASS`, `ROAD_SURFACE`, `GROUND`, `ROCKS`, `WIND`, `FX`, `VEHICLE`,
+`config.js` exports **23** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `TREES`,
+`BUSHES`, `GRASS`, `ROAD_SURFACE`, `GROUND`, `SIGNS`, `ROCKS`, `WIND`, `FX`, `VEHICLE`,
 `TRAFFIC`, `CAMERA`, `TITLE`, `ATMOSPHERE`, `SCORE`, `TERRAIN_COLORS`, `TILES`,
 `BIOME`, `WATER` — plus
 `GRAPHICS_LEVELS` and `graphicsLevel`/`setGraphicsLevel`.
@@ -1557,6 +1600,7 @@ npm run probe
 | `traffic.mjs` | spawn distance, stalls, overlaps, lane error, population, Δv |
 | `score.mjs` | the near-miss mechanic, without physics |
 | `props.mjs` | LEGACY canopy and understorey: per-species counts both tiers, determinism, **whether the far tier is the same tree**, caps, batches, cost, clearance, float, and that the scatter is LUMPY |
+| `signs.mjs` | road-sign placement against a stub library: per km by role, nothing on the shoulder, foot level with the road, chevrons on the outside of bends, facing, determinism; `LIST=1` prints each chunk's. `signs.html` is the library's contact sheet (`&cam=x,y,z,tx,ty,tz`) |
 | `forest.mjs` | the TreeGen canopy: triangles per level, determinism, scatter caps/clearance/float/lumpiness, the forest's per-frame LOD pass (§4.11b). `forest.html` is its contact sheet (`?level=N`, `?species=oak`) |
 | `handling.mjs` | steering by speed, slide recovery, drift, rollover safety |
 | `smooth.mjs` | is the car smooth **on screen** under jitter and hitches |
