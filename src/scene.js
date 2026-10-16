@@ -44,38 +44,28 @@ THREE.ShaderChunk.opaque_fragment = THREE.ShaderChunk.opaque_fragment.replace(
  */
 
 /**
- * The FINISH pass: radial speed blur and the grade (split tone, S-curve,
- * vignette) in one full-screen pass. They were two, and the blur's nine taps
- * ran even with the car standing still — measured, the pair cost ~130 ms of a
- * SwiftShader 720p frame. The blur is a uniform branch, so at zero strength
- * it costs nothing.
+ * The FINISH: radial speed blur and the grade (split tone, S-curve, vignette),
+ * spliced into the OutputPass ahead of its tone mapping, so the whole post
+ * chain ends in ONE full-screen pass instead of two (a 2× display reads and
+ * writes ~40 MB of half-float per pass). The blur is a uniform branch, so at
+ * zero strength it costs nothing.
  */
-const FINISH_SHADER = {
+const FINISH = {
   uniforms: {
-    tDiffuse: { value: null },
     uStrength: { value: 0 },
     uInner: { value: 0.16 },
     uAmount: { value: 0.16 },
     uWarm: { value: new THREE.Color(0xffd9ac) },
     uCool: { value: new THREE.Color(0xa8bcd8) },
   },
-  vertexShader: /* glsl */ `
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse;
+  pars: /* glsl */ `
     uniform float uStrength;
     uniform float uInner;
     uniform float uAmount;
     uniform vec3 uWarm;
     uniform vec3 uCool;
-    varying vec2 vUv;
-
-    void main() {
+  `,
+  body: /* glsl */ `
       vec4 c = texture2D(tDiffuse, vUv);
       vec2 toCentre = vUv - vec2(0.5);
       if (uStrength > 0.0005) {
@@ -106,17 +96,31 @@ const FINISH_SHADER = {
       float d = distance(vUv, vec2(0.5));
       c.rgb *= mix(1.0 - uAmount, 1.0, smoothstep(0.80, 0.30, d));
       gl_FragColor = c;
-    }
   `,
 };
 
+/** OutputPass (tone mapping + sRGB) with the FINISH run on its input first. */
+function finishOutput(OutputPass) {
+  const pass = new OutputPass();
+  Object.assign(pass.uniforms, THREE.UniformsUtils.clone(FINISH.uniforms));
+  const src = pass.material.fragmentShader;
+  const read = 'gl_FragColor = texture2D( tDiffuse, vUv );';
+  if (!src.includes(read)) throw new Error('OutputShader changed: FINISH cannot be spliced in');
+  pass.material.fragmentShader = src
+    .replace('varying vec2 vUv;', 'varying vec2 vUv;' + FINISH.pars)
+    .replace(read, FINISH.body);
+  return pass;
+}
+
 export async function createScene(container) {
+  // No MSAA on the canvas: the scene renders into the composer's target and
+  // the canvas only ever receives one full-screen triangle.
   const renderer = new THREE.WebGLRenderer({
-    antialias: true,
+    antialias: false,
     powerPreference: 'high-performance',
     stencil: false,
   });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, ATMOSPHERE.maxPixelRatio));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   // Neutral rather than ACES: its shoulder crushes highlights into glare.
@@ -182,11 +186,12 @@ export async function createScene(container) {
       fragmentShader: SKY_FRAG,
       side: THREE.BackSide,
       depthWrite: false,
-      depthTest: false,
       fog: false,
     })
   );
-  sky.renderOrder = -1000;
+  // Last of the opaques, at the far plane (SKY_VERT): its clouds are shaded
+  // only where nothing else covers the pixel, not under every hill as well.
+  sky.renderOrder = 1000;
   sky.frustumCulled = false;
   scene.add(sky);
 
@@ -197,38 +202,40 @@ export async function createScene(container) {
   let vignette = null;
   let bloomPass = null;
   try {
-    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { ShaderPass }, { OutputPass }] =
+    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }] =
       await Promise.all([
         import('three/addons/postprocessing/EffectComposer.js'),
         import('three/addons/postprocessing/RenderPass.js'),
         import('three/addons/postprocessing/UnrealBloomPass.js'),
-        import('three/addons/postprocessing/ShaderPass.js'),
         import('three/addons/postprocessing/OutputPass.js'),
       ]);
 
     composer = new EffectComposer(renderer);
     renderPass = new RenderPass(scene, camera);
     composer.addPass(renderPass);
-    const bloom = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      ATMOSPHERE.bloomStrength,
-      0.7,
-      ATMOSPHERE.bloomThreshold
-    );
-    // Quarter resolution (the pass halves what it is given): at strength 0.1
-    // the bloom is a soft glow, and its dozen blur passes were ~90 ms of a
-    // SwiftShader 720p frame at half resolution.
-    const bloomSize = bloom.setSize.bind(bloom);
-    bloom.setSize = (w, h) => bloomSize(Math.max(2, w / 2), Math.max(2, h / 2));
-    composer.addPass(bloom);
-    bloomPass = bloom;
-    vignette = new ShaderPass(FINISH_SHADER);
+    // Medium and Low have none (bloomStrength 0): ~0.8 ms of a 6 ms frame
+    // at 1.5x, for a glow most scenes never show.
+    if (ATMOSPHERE.bloomStrength > 0) {
+      const bloom = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        ATMOSPHERE.bloomStrength,
+        0.7,
+        ATMOSPHERE.bloomThreshold
+      );
+      // Quarter resolution (the pass halves what it is given): at strength 0.1
+      // the bloom is a soft glow, and its dozen blur passes were ~90 ms of a
+      // SwiftShader 720p frame at half resolution.
+      const bloomSize = bloom.setSize.bind(bloom);
+      bloom.setSize = (w, h) => bloomSize(Math.max(2, w / 2), Math.max(2, h / 2));
+      composer.addPass(bloom);
+      bloomPass = bloom;
+    }
+    vignette = finishOutput(OutputPass);
     // Drive the config value instead of the shader's hard-coded default.
     vignette.uniforms.uAmount.value = ATMOSPHERE.vignette;
     vignette.uniforms.uInner.value = ATMOSPHERE.speedBlurInner;
     composer.addPass(vignette);
     if (ATMOSPHERE.speedBlur > 0) speedBlur = vignette;
-    composer.addPass(new OutputPass()); // tone mapping + sRGB happen here
     composer.setSize(window.innerWidth, window.innerHeight);
   } catch (err) {
     console.warn('[highroads] post-processing unavailable, rendering direct.', err);
@@ -292,13 +299,13 @@ export async function createScene(container) {
   /**
    * Dynamic resolution. The frame's wall time (rAF to rAF) is smoothed; if it
    * stays over budget for ~1 s the render pixel ratio steps down, and after
-   * ~4 s of clear headroom it steps back up. Bounded to [75 % of the device
-   * ratio (never under 1.0), the device ratio capped at 2]. On a fill-bound
-   * GPU — a high-DPI laptop or phone — this is the difference between a
-   * steady 60 and a stutter at 40, for a softening few notice in motion.
+   * ~4 s of clear headroom it steps back up. Bounded to [`minPixelRatio`,
+   * the device ratio capped at `maxPixelRatio`]. On a fill-bound GPU — a
+   * high-DPI laptop or phone — this is the difference between a steady 60 and
+   * a stutter at 40, for a softening few notice in motion.
    */
-  const baseRatio = Math.min(window.devicePixelRatio, 2);
-  const minRatio = Math.min(baseRatio, Math.max(1, baseRatio * 0.75));
+  const baseRatio = Math.min(window.devicePixelRatio, ATMOSPHERE.maxPixelRatio);
+  const minRatio = Math.min(baseRatio, ATMOSPHERE.minPixelRatio);
   let ratio = baseRatio, ema = 16.7, over = 0, under = 0;
   function adapt(frameMs) {
     if (!(frameMs > 0) || frameMs > 250) return;      // a tab switch, not load

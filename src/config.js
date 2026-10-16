@@ -933,6 +933,14 @@ export const ATMOSPHERE = {
   shadowRadius: 78,
   shadowMapSize: 2048,
 
+  /**
+   * Render resolution as a multiple of CSS pixels, capped below the display's
+   * own: a 2× laptop panel at 2.0 is 5 MP shaded per frame, at 1.5 it is 2.9.
+   * Dynamic resolution (scene.js:adapt) may drop to `minPixelRatio` under load.
+   */
+  maxPixelRatio: 1.5,
+  minPixelRatio: 1,
+
   /** Post-processing. Bloom is now a hint of glow, not a glare. */
   bloomStrength: 0.10,
   bloomThreshold: 0.95,
@@ -1098,6 +1106,8 @@ function applyGraphics() {
     // Half the draw distance, thickened fog to hide the closer seam.
     CHUNK.ahead = 4;
     ATMOSPHERE.fogDensity = 0.0024;
+    ATMOSPHERE.maxPixelRatio = 1.25;
+    ATMOSPHERE.bloomStrength = 0;
     CAMERA.far = 1100;
     TILES.radius = 1050;    // fog 0.0024 is 99 % by ~900 m; was 1500, past the far plane
     TILES.levels = 5;
@@ -1129,6 +1139,9 @@ function applyGraphics() {
     // The shortest draw distance, and a fog that ends it invisibly.
     CHUNK.ahead = 3;
     ATMOSPHERE.fogDensity = 0.0034;
+    ATMOSPHERE.maxPixelRatio = 1;
+    ATMOSPHERE.minPixelRatio = 0.75;
+    ATMOSPHERE.bloomStrength = 0;
     CAMERA.far = 760;
     TILES.radius = 720;     // fog 0.0034 is 99 % by ~630 m; was 1000, past the far plane
     TILES.levels = 5;

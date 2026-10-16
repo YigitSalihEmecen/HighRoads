@@ -952,6 +952,8 @@ no storage).
 | near canopy | 150/chunk | 95 | **0** |
 | far canopy | 760 | 380 | 300 |
 | TreeGen levels | 4 (polygon leaves near) | 3 (cards from 0 m) | 2 (coarse cards, billboard) |
+| render resolution (× CSS px) | ≤ 1.5, dynamic to 1.0 | ≤ 1.25 | 1.0, dynamic to 0.75 |
+| bloom | on | off | off |
 | grass / shrubs / stone | on | thinned | **off** |
 | worst-case foliage in view | 723k tris | 302k | 95k |
 
