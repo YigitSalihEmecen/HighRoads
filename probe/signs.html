@@ -65,7 +65,7 @@ const cam = (q.get('cam') || `0,26,42,0,0,${-row * 4.2}`).split(',').map(Number)
 camera.position.set(cam[0], cam[1], cam[2]);
 camera.lookAt(cam[3], cam[4], cam[5]);
 renderer.render(scene, camera);
-window.SIGNS_STATS = { variants: n, meanTris: Math.round(tris / n),
+window.SHEET = { variants: n, meanTris: Math.round(tris / n),
   roles: Object.fromEntries([...signs.roles].map(([r, l]) => [r, l.length])),
   /** Per role: the tallest variant and the lowest face bottom of an overhead one, metres. */
   heights: Object.fromEntries([...signs.roles].map(([r, l]) => [r, Math.max(...l.map((v) => v.box.max.y)).toFixed(1)])),

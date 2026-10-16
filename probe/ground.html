@@ -63,6 +63,6 @@ for (let i = 0; i < 5; i++) frame();
 const n = 30, f0 = performance.now();
 for (let i = 0; i < n; i++) frame();
 window.GROUND_MS = ((performance.now() - f0) / n).toFixed(2);
-window.SIGNS_STATS = { frameMs: window.GROUND_MS, buildMs: Math.round(buildMs) };
+window.SHEET = { frameMs: window.GROUND_MS, buildMs: Math.round(buildMs) };
 window.READY = true;
 </script>

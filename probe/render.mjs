@@ -57,7 +57,10 @@ fs.mkdirSync(OUT, { recursive: true });
 const chrome = spawn(CHROME, [
   '--headless=new',
   // Software GL: without these the page never gets a WebGL context at all.
-  '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+  // GPU=1: the machine's GPU (Metal on a Mac) at a Retina scale — for looks and
+  // costs SwiftShader cannot judge (shader-heavy surfaces). Default: SwiftShader.
+  ...(process.env.GPU ? ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist']
+    : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']),
   '--disable-gpu-sandbox', '--mute-audio', '--ignore-certificate-errors',
   // Chrome refuses to start sandboxed as root (containers, CI).
   ...(process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
@@ -113,7 +116,8 @@ ws.addEventListener('message', (e) => {
   }
 });
 await send('Emulation.setDeviceMetricsOverride',
-  { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
+  process.env.GPU ? { width: 1512, height: 945, deviceScaleFactor: 2, mobile: false }
+    : { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
 // SKY=night (any sky.js preset) and CAM=cinematic (any CAM_MODES entry)
 // pick the look to shoot.
 const skyQ = process.env.SKY ? `&sky=${encodeURIComponent(process.env.SKY)}` : '';
