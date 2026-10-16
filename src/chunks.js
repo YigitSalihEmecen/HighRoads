@@ -1237,6 +1237,7 @@ export class ChunkManager {
 
     // ---- the canopy ------------------------------------------------------
 
+    const grow = this.forest ? TREES.treegen.scale : 1;
     if (this.trees) {
       // The guild field at the chunk's middle, sampled once, only to weight
       // which species the chunk commits to.
@@ -1443,7 +1444,7 @@ export class ChunkManager {
 
         // Height in metres, modulated by VIGOUR (oldest at the stand's heart)
         // and, for a few, sapling height so woodland regenerates underneath.
-        let height = lerp(kind.height[0], kind.height[1], rng() * rng() + 0.15);
+        let height = lerp(kind.height[0], kind.height[1], rng() * rng() + 0.15) * grow;
         height *= lerp(1, 1 - TREES.vigour, edgeness);
         if (rng() < TREES.saplings) height *= 0.30 + rng() * 0.25;
         // Slight non-uniform squash, so a repeated variant does not read as a
@@ -1518,7 +1519,7 @@ export class ChunkManager {
           }
           if (!pick) continue;
           const kind = FOLIAGE[pick];
-          const height = lerp(kind.height[0], kind.height[1], drng() * drng() + 0.15);
+          const height = lerp(kind.height[0], kind.height[1], drng() * drng() + 0.15) * grow;
           p.set(wx - origin.x, wy - origin.y - 0.2, wz - origin.z);
           this._groundColor(wx, wz, wy, 1, smp.d, this._color);
           const gk = TREES.groundTint;

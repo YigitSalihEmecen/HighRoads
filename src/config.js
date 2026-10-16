@@ -222,23 +222,30 @@ export const TREES = {
     maxBranches: 4000,
     barkSize: 256,
     impostorHeight: 192,
+    /** Size against `foliage.js` heights, which were drawn for the legacy trees. */
+    scale: 1.6,
     /**
      * TreeGen level specs, nearest first (see tree_gen/src/lod.js). Its LOD0
      * (full, ~100k+ triangles) is never drawn in the game; these are its
      * LOD1-4: simplified bark with thinned polygon leaves, two card levels
-     * with their own atlases, and the lit billboard.
+     * with their own atlases, and the lit billboard. `from` is the camera
+     * distance, metres, where a level takes over (±13 m per tree).
      */
     lods: [
-      { error: 0.002, leafDetail: 0.35, keep: 0.25 },
+      { from: 0, error: 0.002, leafDetail: 0.35, keep: 0.25 },
       // Cards are painted from the leaf outlines, and a tile is 10-20 px:
       // coarse outlines cost a third and cannot be seen.
-      { error: 0.004, perCard: 6, cardSpan: 0.05, atlas: 512, keep: 0.4, leafDetail: 0.3 },
-      { error: 0.008, perCard: 16, cardSpan: 0.1, atlas: 256, keep: 0.4, leafDetail: 0.3 },
-      { impostor: true, error: 0.016 },
+      { from: 60, error: 0.008, perCard: 12, cardSpan: 0.07, atlas: 512, keep: 0.3, leafDetail: 0.3 },
+      // The widest band, so the cheapest mesh: big cards, a coarse skeleton.
+      { from: 160, error: 0.016, perCard: 32, cardSpan: 0.14, atlas: 256, keep: 0.3, leafDetail: 0.3 },
+      // The billboard reads flat up close: only out in the haze.
+      { from: 560, impostor: true, error: 0.016 },
     ],
-    /** A level is drawn once its error is this many pixels on screen. */
-    lodPixels: 1.5,
-    /** Levels (from the nearest) that cast shadows. */
+    /**
+     * Trees drawn at these levels (from the nearest) cast shadows — through
+     * the last mesh level's geometry, not their own (forest.js): the shadow
+     * of a 56k-triangle crown and of its 1.3k-triangle cards look the same.
+     */
     shadowLevels: 2,
   },
 
@@ -1105,8 +1112,8 @@ function applyGraphics() {
     TREES.farFade = [430, 470];
     TREES.loneFadeIn = [300, 460];
     // No polygon-leaf level: cards from the first metre.
-    TREES.treegen.lods = TREES.treegen.lods.slice(1);
-    TREES.treegen.lodPixels = 2;
+    TREES.treegen.lods = TREES.treegen.lods.slice(1)
+      .map((L, i) => ({ ...L, from: [0, 150, 360][i] }));
     TREES.treegen.shadowLevels = 1;
 
     // Grass, shrubs and stone scale down together.
@@ -1142,8 +1149,8 @@ function applyGraphics() {
     TREES.farFadeIn = [6, 16];
     TREES.loneFadeIn = [6, 16];
     TREES.farFade = [280, 345];
-    TREES.treegen.lods = TREES.treegen.lods.slice(2);
-    TREES.treegen.lodPixels = 2.5;
+    TREES.treegen.lods = TREES.treegen.lods.slice(2)
+      .map((L, i) => ({ ...L, from: [0, 250][i] }));
     TREES.treegen.shadowLevels = 0;
     TREES.treegen.impostorHeight = 128;
   }

@@ -5,10 +5,9 @@
  * Chunks hand over their placed trees (`addChunk`) and take them back when
  * they stream out (`removeChunk`). Each frame every tree is measured against
  * the camera once: culled against the frustum (grown by `margin`, so a tree
- * just outside the view still casts its shadow into it), given the level whose
- * simplification error is about `TREES.treegen.lodPixels` on screen at that
- * distance — TreeGen's own `lodDistances` rule, scaled by the tree's size —
- * and packed into that level's instance buffers. One InstancedMesh per
+ * just outside the view still casts its shadow into it), given the last level
+ * whose `from` distance (metres, `TREES.treegen.lods`) it is past, and packed
+ * into that level's instance buffers. One InstancedMesh per
  * variant × level × part for the whole world, so the draw count follows the
  * species in view, not the chunks loaded.
  *
@@ -22,10 +21,13 @@
  * driven.
  */
 import * as THREE from 'three';
-import { TREES } from './config.js';
+import { ATMOSPHERE, TREES } from './config.js';
 
 const _frustum = new THREE.Frustum();
 const _pv = new THREE.Matrix4();
+/** Every bucket of a kind: one per level, and the shadow casters. */
+const need = (b) => (b && b.n < b.cap ? b : null);
+const all = (kind) => [...kind.buckets, kind.buckets.caster].filter(Boolean);
 const smooth = (a, b, x) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
@@ -55,9 +57,11 @@ export class Forest {
       this.ids.set(variant, id);
       this.kinds.push({
         variant,
-        // Extent in tree heights, as lodDistances measures it.
+        // Extent in tree heights, for the culling sphere.
         size: Math.max(1, variant.radius * 2),
         buckets: variant.levels.map(() => null),
+        // The last mesh (not billboard) level: what near trees cast shadows with.
+        casterLevel: variant.levels.findLastIndex((L) => !L.impostor),
       });
     }
     return id;
@@ -100,9 +104,15 @@ export class Forest {
 
   removeChunk(key) { this.chunks.delete(key); }
 
-  /** The instanced meshes for one variant at one level, grown to hold `need`. */
-  _bucket(kind, level, need) {
-    let b = kind.buckets[level];
+  /**
+   * The instanced meshes for one variant at one level, grown to hold `need`.
+   * `caster` is the shadow-only set: the cheapest mesh level, drawn with all
+   * its instances in the shadow pass and none in the main one. (three culls
+   * the shadow pass by the MAIN camera's layers, so layers cannot do this.)
+   */
+  _bucket(kind, level, need, caster = false) {
+    const slot = caster ? 'caster' : level;
+    let b = kind.buckets[slot];
     if (b && b.cap >= need) return b;
     const cap = Math.max(64, (b ? b.cap : 0) * 2, need);
     const matrix = new THREE.InstancedBufferAttribute(new Float32Array(cap * 16), 16);
@@ -114,7 +124,6 @@ export class Forest {
       colour.array.set(b.colour.array);
       for (const m of b.meshes) { this.scene.remove(m); m.dispose(); }
     }
-    const shadow = level < TREES.treegen.shadowLevels && !kind.variant.levels[level].impostor;
     const meshes = kind.variant.levels[level].parts.map((part) => {
       const m = new THREE.InstancedMesh(part.geometry, part.material, cap);
       m.instanceMatrix = matrix;
@@ -122,8 +131,12 @@ export class Forest {
       m.count = 0;
       m.visible = false;
       m.frustumCulled = false;
-      m.castShadow = shadow;
-      m.receiveShadow = true;
+      m.castShadow = caster;
+      m.receiveShadow = !caster;
+      if (caster) {
+        m.onBeforeShadow = () => { m.count = m.userData.n; };
+        m.onBeforeRender = () => { m.count = 0; };
+      }
       m.matrixAutoUpdate = false;
       m.position.copy(this.anchor);
       m.updateMatrix();
@@ -131,15 +144,27 @@ export class Forest {
       return m;
     });
     b = { cap, matrix, colour, meshes, n: b ? b.n : 0, tris: kind.variant.levels[level].tris };
-    kind.buckets[level] = b;
+    kind.buckets[slot] = b;
     return b;
+  }
+
+  /** Appends one tree to bucket `b`: the linear part scaled by `f`, the origin anchor-relative. */
+  _write(b, rec, i, f, ax, ay, az) {
+    const { pos, lin, col } = rec;
+    const w = b.n++;
+    const m = b.matrix.array, o = w * 16, l = i * 9;
+    m[o] = lin[l] * f; m[o + 1] = lin[l + 1] * f; m[o + 2] = lin[l + 2] * f; m[o + 3] = 0;
+    m[o + 4] = lin[l + 3] * f; m[o + 5] = lin[l + 4] * f; m[o + 6] = lin[l + 5] * f; m[o + 7] = 0;
+    m[o + 8] = lin[l + 6] * f; m[o + 9] = lin[l + 7] * f; m[o + 10] = lin[l + 8] * f; m[o + 11] = 0;
+    m[o + 12] = pos[i * 3] - ax; m[o + 13] = pos[i * 3 + 1] - ay; m[o + 14] = pos[i * 3 + 2] - az; m[o + 15] = 1;
+    const c = b.colour.array;
+    c[w * 3] = col[i * 3]; c[w * 3 + 1] = col[i * 3 + 1]; c[w * 3 + 2] = col[i * 3 + 2];
   }
 
   /**
    * @param {THREE.PerspectiveCamera} camera
-   * @param {number} viewHeight drawing-buffer height in pixels
    */
-  update(camera, viewHeight) {
+  update(camera) {
     const G = TREES.treegen;
     const specs = this.assets.specs;
     camera.updateMatrixWorld();
@@ -154,21 +179,20 @@ export class Forest {
     const moved = ax !== this.anchor.x || ay !== this.anchor.y || az !== this.anchor.z;
     if (moved) this.anchor.set(ax, ay, az);
 
-    // Metres of error that make one pixel at distance 1, then the distance
-    // per tree-metre at which each level's error falls to `lodPixels`.
-    const perPixel = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(1, viewHeight);
-    const reach = specs.map((L, i) => (i === 0 ? 0 : L.error / (G.lodPixels * perPixel)));
+    const reach = specs.map((L) => L.from ?? 0);
     const levels = specs.length;
     const [lone0, lone1] = TREES.loneFadeIn;
     const [far0, far1] = TREES.farFade;
+    // The shadow box is ±shadowRadius about the car; a low sun throws further.
+    const shadowReach = ATMOSPHERE.shadowRadius * 1.6;
 
-    for (const kind of this.kinds) for (const b of kind.buckets) if (b) b.n = 0;
+    for (const kind of this.kinds) for (const b of all(kind)) b.n = 0;
     let total = 0, drawn = 0;
     const perLevel = new Array(levels).fill(0);
     let tris = 0;
 
     for (const rec of this.chunks.values()) {
-      const { pos, lin, col, h, jit, lone, kind: kinds } = rec;
+      const { pos, h, jit, lone, kind: kinds } = rec;
       for (let i = 0; i < rec.n; i++) {
         total++;
         const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
@@ -191,17 +215,14 @@ export class Forest {
         if (!inside) continue;
 
         let level = 0;
-        while (level + 1 < levels && d >= reach[level + 1] * size) level++;
-        const b = kind.buckets[level] && kind.buckets[level].n < kind.buckets[level].cap
-          ? kind.buckets[level] : this._bucket(kind, level, (kind.buckets[level]?.n ?? 0) + 1);
-        const w = b.n++;
-        const m = b.matrix.array, o = w * 16, l = i * 9;
-        m[o] = lin[l] * f; m[o + 1] = lin[l + 1] * f; m[o + 2] = lin[l + 2] * f; m[o + 3] = 0;
-        m[o + 4] = lin[l + 3] * f; m[o + 5] = lin[l + 4] * f; m[o + 6] = lin[l + 5] * f; m[o + 7] = 0;
-        m[o + 8] = lin[l + 6] * f; m[o + 9] = lin[l + 7] * f; m[o + 10] = lin[l + 8] * f; m[o + 11] = 0;
-        m[o + 12] = px - ax; m[o + 13] = py - ay; m[o + 14] = pz - az; m[o + 15] = 1;
-        const c = b.colour.array;
-        c[w * 3] = col[i * 3]; c[w * 3 + 1] = col[i * 3 + 1]; c[w * 3 + 2] = col[i * 3 + 2];
+        while (level + 1 < levels && d >= reach[level + 1]) level++;
+        const b = need(kind.buckets[level]) || this._bucket(kind, level, (kind.buckets[level]?.n ?? 0) + 1);
+        this._write(b, rec, i, f, ax, ay, az);
+        // Near trees cast through their cheapest mesh, not their drawn one.
+        if (level < G.shadowLevels && d < shadowReach && kind.casterLevel >= 0) {
+          const c = need(kind.buckets.caster) || this._bucket(kind, kind.casterLevel, (kind.buckets.caster?.n ?? 0) + 1, true);
+          this._write(c, rec, i, f, ax, ay, az);
+        }
         drawn++;
         perLevel[level]++;
         tris += b.tris;
@@ -209,10 +230,9 @@ export class Forest {
     }
 
     for (const kind of this.kinds) {
-      for (const b of kind.buckets) {
-        if (!b) continue;
+      for (const b of all(kind)) {
         for (const mesh of b.meshes) {
-          mesh.count = b.n;
+          mesh.count = mesh.userData.n = b.n;
           mesh.visible = b.n > 0;
           if (moved) { mesh.position.copy(this.anchor); mesh.updateMatrix(); }
         }
@@ -234,7 +254,7 @@ export class Forest {
 
   dispose() {
     for (const kind of this.kinds) {
-      for (const b of kind.buckets) if (b) for (const m of b.meshes) { this.scene.remove(m); m.dispose(); }
+      for (const b of all(kind)) for (const m of b.meshes) { this.scene.remove(m); m.dispose(); }
     }
     this.kinds.length = 0;
     this.ids.clear();

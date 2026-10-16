@@ -700,12 +700,22 @@ still picks a colourway; bark is TreeGen's.
 
 **Levels** (`TREES.treegen.lods`; Medium drops the first, Low the first two):
 
-| | what | tris (mean) |
-|---|---|---|
-| 0 | bark simplified 0.2 % of size, polygon leaves at keep 0.25 | ~56k |
-| 1 | 0.4 %, leaf-cluster cards (6 leaves/pair), 512 px atlas | ~18k |
-| 2 | 0.8 %, cards (16/pair), 256 px atlas | ~5k |
-| 3 | billboard: 3 crossed quads | 6 |
+| | what | from (high) | tris (mean) |
+|---|---|---|---|
+| 0 | bark simplified 0.2 % of size, polygon leaves at keep 0.25 | 0 m | ~56k |
+| 1 | 0.8 %, leaf-cluster cards (12 leaves/pair), 512 px atlas | 60 m | ~6k |
+| 2 | 1.6 %, cards (32/pair), 256 px atlas | 160 m | ~1.3k |
+| 3 | billboard: 3 crossed quads | 560 m | 6 |
+
+`from` is plain camera distance (±13 m jitter per tree), not a screen-error
+rule: the billboard reads flat up close, so it is kept out in the haze, and
+level 2 holds the widest band — hence the cheapest mesh. Medium and Low set
+their own `from` (`applyGraphics`). Measured headless at 1600×900: L0 out to
+90 m put ~40 trees at 56k each in view and halved the frame rate.
+
+Trees are drawn **×`TREES.treegen.scale` (1.6)** of the `foliage.js` heights,
+applied in the scatter before the crown-spacing test, so stands thin out
+rather than interpenetrate.
 
 TreeGen's own LOD0 (100k–600k) is never drawn. The billboard is an **albedo +
 view-space normal atlas** (`kit.js:bakeImpostor`), so it is lit by the game's
@@ -724,11 +734,12 @@ builds synchronously, untextured, no billboards.
 
 **Drawing** (`forest.js`). Chunks hand their placed trees to the forest
 (`addChunk`; `_dispose` removes them). Each frame every tree is measured once:
-frustum test (grown 25 m for shadows), then the level whose error is
-`TREES.treegen.lodPixels` on screen at that distance — TreeGen's
-`lodDistances` rule, ×the tree's size — and it is written into that level's
+frustum test (grown 25 m for shadows), then the last level whose `from` it
+is past — and it is written into that level's
 instance buffers. One InstancedMesh per variant × level × part for the WORLD,
-so draws follow species in view, not chunks loaded. ~0.15 ms for 2,300 trees.
+so draws follow species in view, not chunks loaded. Trees drawn at the first
+`shadowLevels` levels cast shadows through the last mesh level's geometry, a
+shadow-only bucket (§4.25). ~0.15 ms for 2,300 trees.
 Fades are CPU-side scale-about-the-base: `farFade` at the draw distance, and
 `loneFadeIn` for far-only trees (the dense far stands), exactly the legacy
 semantics. Matrices are rewritten relative to an anchor snapped to the camera
@@ -748,7 +759,7 @@ Traps:
   of the distant woodland was invisible; in the forest a non-lone tree is drawn
   at any distance.
 - TreeGen trees are 100× the legacy triangles at the nearest level. Level 0
-  is only ever a handful of trees (within ~36 m for a 15 m tree at 1080p).
+  is kept to 60 m: ~10-20 trees in view.
 
 ### 4.12 Ground cover — THREE TIERS (`env/grass.js` + `chunks.js`)
 

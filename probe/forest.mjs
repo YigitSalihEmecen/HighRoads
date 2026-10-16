@@ -129,28 +129,28 @@ const f = path.frameAt(center * CHUNK.length + 60);
 cam.position.copy(f.pos).addScaledVector(f.tan, -6).add(new THREE.Vector3(0, 2.2, 0));
 cam.lookAt(f.pos.clone().addScaledVector(f.tan, 40).add(new THREE.Vector3(0, 1.5, 0)));
 cam.updateProjectionMatrix();
-chunks.forest.update(cam, 1080);
+chunks.forest.update(cam);
 const st = { ...chunks.forest.stats };
 t0 = performance.now();
-for (let i = 0; i < 60; i++) chunks.forest.update(cam, 1080);
+for (let i = 0; i < 60; i++) chunks.forest.update(cam);
 const lodMs = (performance.now() - t0) / 60;
 console.log(`\n  in view at 1080p: ${st.drawn} of ${st.total} trees — per level ${st.perLevel.join(' / ')}`);
 check('canopy triangles in view', st.tris <= 6000000, `${st.tris.toLocaleString()}, budget 6,000,000`);
 check('LOD pass cost', lodMs < 4, `${lodMs.toFixed(2)} ms per frame for ${st.total} trees`);
 
-// A row of 15 m oaks straight ahead, 8 m to 600 m out: every level must be
+// A row of 15 m oaks straight ahead, 8 m to 800 m out: every level must be
 // drawn somewhere along it, nearest first.
 chunks.forest.chunks.clear();
 const fwd = cam.getWorldDirection(new THREE.Vector3()).setY(0).normalize();
 const oak = trees.library.get('oak')[0];
 const row = [];
-for (let d = 8; d < 600; d *= 1.08) {
+for (let d = 8; d < 800; d *= 1.08) {
   const m = new THREE.Matrix4().makeScale(15, 15, 15)
     .setPosition(fwd.x * d, cam.position.y - 2, fwd.z * d);
   row.push({ variant: oak, matrix: m, origin: cam.position.clone().setY(0), colour: [1, 1, 1], lone: false });
 }
 chunks.forest.addChunk(-1, row);
-chunks.forest.update(cam, 1080);
+chunks.forest.update(cam);
 const lv = chunks.forest.stats.perLevel;
 check('every level is drawn along a row', lv.every((n) => n > 0), `${lv.join(' / ')} of ${row.length}`);
 
