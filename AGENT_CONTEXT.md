@@ -79,7 +79,7 @@ road, the sheet and the streaming window.
 | `grass.js` | crossed-card tufts: roadside, woodland-floor and far tiers | 4 |
 | `rocks.js` | fractured convex boulders, slabs, scree | 20–80 |
 | `ground.js` | terrain detail texture + material patch | — |
-| `road.js` | asphalt mask + material patch | — |
+| `road.js` | the road in road space: sections, wheel paths, patches, cracks, POM asphalt | — |
 | `water.js` | lake surfaces: polar mesh + water shader (§4.21) | — |
 
 ### `engine_sim/` is a submodule — bump the pointer, never edit inside it
@@ -857,16 +857,33 @@ The sward let the grass thin: `GRASS.density` 3.0 → 1.9, the wood tier 1.1 →
 0.75 (grass measured ~1.5 ms GPU a frame at 2268×1417). Medium: march 4–12
 layers, no self-shadow, 512². Low: the turf's look, no march.
 
-**`road.js`**: `asphaltTexture` paints R aggregate (fBm bed + bimodal chip
-lattice — the bimodal part is what reads as stones in bitumen), G wear, B cracks
-(thresholded ridged noise, because a crack is a line). Two tile scales, the near
-one faded out before it aliases. Roughness 0.95 with polished wheel paths — dry
-asphalt is 0.92–0.98, and the old 0.68 put a sheen down the whole carriageway.
-**Paint is detected by luminance**, no attribute needed: markings are geometry in
-the same mesh at `0xe9e3d2` against asphalt that never modulates past ~0x4a. Paint
-takes the wear and cracks but not the aggregate — paint is a film laid ON stones.
+**`road.js`** draws the carriageway in **ROAD space**: the ribbon carries
+`roadUV` (across, along mod 7680 m — a multiple of the chunk and of every
+road-space period, so it stays precise in a float) and `roadAge` (each
+carriageway's resurfacing age), so wear follows the lanes, not world XZ.
 
-Both are **planar in world XZ, not UV** — the sheet is parameterised in road
+| layer | how |
+|---|---|
+| sections | `chunks.js:roadAges`, a pure function of `s`: a seam at each `sectionCell` start (shifted `SEAM_SHIFT` off the dash and row grids) and one hashed inside; each carriageway its own age unless `fullWidth`. A seam is a DOUBLED ROW, so the age steps instead of blending over 2.5 m |
+| age | 0 fresh black binder hiding its stone (`fresh`) → 1 bleached grey (`old`, ~3× the base albedo), stone exposed, blotchy (road-space mottle), more cracks, rougher |
+| wheel paths, oil | Gaussians across each lane: polished tracks at ±0.85 m, a dark stain down the middle |
+| patches | one chance per lane per 16 m (`patch`, by age): a rectangle inside the lane, younger than its road, with a sealed seam; it covers paint and every crack under it |
+| cracks | transverse every ≤9 m, longitudinal at the lane joint and in the outer wheel path; `sealShare` become wide glossy tar bands. Antialiased by footprint (`fr_line`), faded by `crackFade` |
+| distress | alligator cells and ravelling pits, IN the texture, shown only in old wheel paths |
+
+The asphalt texel is GROWN (`asphaltMaps`: binder, superellipse chips, pits,
+Voronoi cell walls ~4 texels wide — thinner and the mips erase them) and
+ray-marched like the turf (§4.13 sward), with an RG height — base, and the
+distress depth the road's age lowers it by. The frame is the **cotangent frame
+from screen derivatives** (Schüler 2013) because road space bends. Hashes are
+sine-free (Hoskins): `sin` of a large road coordinate is not stable on GPUs.
+Cost (Metal, 2560×1440, road filling the view): the whole material ~2.5–4.6 ms,
+the march +0.4–0.8 of it. `probe/road.html` is the test sheet (every age, `?pom=0`).
+**Paint is detected by luminance**, no attribute needed: markings are geometry in
+the same mesh at `0xe9e3d2` against asphalt that never modulates past ~0x4a.
+
+The far wear mottle (`tileFar`) and the GROUND detail are still **planar in
+world XZ, not UV** — the sheet is parameterised in road
 space where columns run 2.4 m to 34 m, so a UV map would stretch thirty-fold
 across one hillside. Planar lines up across seams by construction. Both are
 `NoColorSpace`: they are modulation masks, not colours.
@@ -1646,6 +1663,7 @@ npm run probe
 | `uishot.mjs` | **what the interface looks like**, 17 viewports + overflow report. Needs Chrome |
 | `render.mjs` | **what the GAME looks like**, through SwiftShader. Needs Chrome. `SKY=night`, `CAM=chase`, `TAG=prefix-`, `EVAL='js'` |
 | `vista.mjs` | aerial views of the world: `[seed] [s] [sky]`. Needs Chrome |
+| `sheet.mjs` | screenshots a `probe/*.html` contact sheet (`signs`, `ground`, `road`) and prints its `window.SHEET`; `GPU=1` for Metal — SwiftShader cannot judge shader looks or costs. `render.mjs` takes `GPU=1` too |
 | `perf.mjs` | **where a frame goes** (`?perf` profiler), draw calls, triangles; `INSPECT=` for GPU attribution (§4.25). Needs Chrome |
 | `stream.mjs` | the streaming hitch profile at a set speed, no renderer (§4.25) |
 

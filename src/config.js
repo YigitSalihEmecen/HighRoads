@@ -452,28 +452,54 @@ export const GRASS = {
  * The carriageway surface — see `env/road.js`.
  */
 export const ROAD_SURFACE = {
-  /** One mask, three channels: aggregate, wear, cracks. */
-  textureSize: 512,
+  /**
+   * The asphalt, grown at boot (env/road.js): binder, aggregate chips and a
+   * distress layer (ravelling pits, alligator cracking), texels a side over
+   * `tile` metres of ROAD space (across, along) — so wear follows the lanes.
+   */
+  textureSize: 1024,
+  tile: 2.0,
+  /** Chips per square metre of tile, and the share that are pale stone. */
+  chips: 5200,
+  paleChips: 0.12,
+  /** Alligator cells across the tile, and how many survive as cracks. */
+  alligatorCells: 11,
 
-  /** Metres per tile, near and far — deliberately not a round ratio. */
-  tileNear: 2.4,
+  /** The far wear mottle: metres per tile, and how hard it modulates. */
   tileFar: 17,
-
-  /** How much of each mask reaches the albedo. */
-  contrastNear: 1.10,
   contrastFar: 0.62,
-
-  /** Where the aggregate stops, metres. */
+  /** Where the aggregate's grain stops, metres. */
   nearFade: [26, 90],
 
-  /** Dry asphalt. Real values are 0.92-0.98; wet would be under 0.4. */
-  roughness: 0.95,
-  /** How far the wear channel may polish the surface back down. */
-  polish: 0.22,
+  /** Dry asphalt, fresh to old. Real values are 0.85-0.98; wet would be under 0.4. */
+  roughness: [0.86, 0.97],
+  /** Wheel paths polish, sealant shines. */
+  polish: 0.07,
+  sealGloss: 0.32,
 
-  /** Ridged noise above this becomes a crack, and this much darker. */
-  crackThreshold: 0.72,
-  crackDepth: 0.42,
+  /**
+   * RESURFACING. The road is laid in sections — a pure function of `s`: one
+   * seam at every multiple of `sectionCell` and one more somewhere inside it —
+   * each carriageway its own age unless the whole width was done at once
+   * (`fullWidth` of the time). Age 0 is fresh black; 1 is bleached, chipped,
+   * cracked grey. A seam is a doubled row of the ribbon, so it is crisp.
+   */
+  sectionCell: 420,
+  fullWidth: 0.55,
+  ages: [0.04, 0.3, 0.58, 0.9],
+  /** Colour multipliers on the base asphalt, fresh and old. */
+  fresh: [0.74, 0.75, 0.8],
+  old: [2.9, 2.82, 2.6],
+
+  /** Patch repairs: chance per lane per 16 m, at age 0 and at age 1. */
+  patch: [0.05, 0.42],
+  /** Cracks: transverse every 9 m at most; share sealed with tar. */
+  sealShare: 0.45,
+  /** Cracks thin out to nothing over this distance, metres. */
+  crackFade: [60, 180],
+
+  /** Parallax occlusion on the asphalt: relief depth (m), fade (m), layers. */
+  pom: { depth: 0.016, fade: [4, 18], steps: [3, 10] },
 };
 
 /**
@@ -1223,6 +1249,7 @@ function applyGraphics() {
     SIGNS.drawDistance = 400;
     GROUND.sward.size = 512;
     GROUND.sward.steps = [4, 12];
+    ROAD_SURFACE.pom.steps = [2, 6];
     GROUND.sward.fade = [6, 24];
     GROUND.sward.shadow = 0;
   } else if (level === 'low') {
@@ -1246,6 +1273,8 @@ function applyGraphics() {
     // The turf's look without its march.
     GROUND.sward.size = 512;
     GROUND.sward.depth = 0;
+    ROAD_SURFACE.textureSize = 512;
+    ROAD_SURFACE.pom.depth = 0;
 
     // The far tier, all the way in. `nearCap` = 0 builds no near meshes at all.
     TREES.samples = 900;

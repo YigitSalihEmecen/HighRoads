@@ -1,0 +1,98 @@
+<!doctype html>
+<!--
+  The road material on its own (env/road.js): a straight 400 m ribbon with the
+  game's lane markings, its sections stepping through every resurfacing age
+  (right carriageway 0 → 1 every 50 m, the left a step behind), under the
+  game's sun. Seen from a chase camera unless &cam=x,y,z,tx,ty,tz.
+  ?pom=0 switches the march off. window.SHEET.frameMs is the GPU-synced
+  frame time (node probe/sheet.mjs road.html, GPU=1 for a real one).
+-->
+<meta charset="utf-8">
+<title>road sheet</title>
+<style>html,body{margin:0;height:100%;background:#cfd8dc;overflow:hidden}</style>
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+               "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { ATMOSPHERE, ROAD, ROAD_SURFACE } from '../src/config.js';
+const q = new URLSearchParams(location.search);
+if (q.get('pom') === '0') ROAD_SURFACE.pom.depth = 0;
+const { createRoadAssets } = await import('../src/env/road.js');
+
+const W = innerWidth, H = innerHeight;
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(W, H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = ATMOSPHERE.exposure;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd3dde2);
+scene.add(new THREE.HemisphereLight(ATMOSPHERE.hemiSky, ATMOSPHERE.hemiGround, ATMOSPHERE.hemiIntensity));
+const sun = new THREE.DirectionalLight(ATMOSPHERE.sunColor, ATMOSPHERE.sunIntensity);
+sun.position.set(-40, 30, -60);
+scene.add(sun);
+
+const t0 = performance.now();
+const road = createRoadAssets({ anisotropy: renderer.capabilities.getMaxAnisotropy() });
+const buildMs = performance.now() - t0;
+
+// Columns as chunks.js builds them: edge lines, a dashed divider each side,
+// the solid double centre line. [v, paint?]
+const hw = ROAD.halfWidth, lane = ROAD.laneWidth, w = 0.2, gap = 0.16;
+const cols = [[-hw, 1], [-hw + w, 1], [-hw + w, 0], [-lane - w / 2, 0], [-lane - w / 2, 2], [-lane + w / 2, 2],
+  [-lane + w / 2, 0], [-gap - w, 0], [-gap - w, 1], [-gap, 1], [-gap, 0], [gap, 0], [gap, 1], [gap + w, 1],
+  [gap + w, 0], [lane - w / 2, 0], [lane - w / 2, 2], [lane + w / 2, 2], [lane + w / 2, 0], [hw - w, 0], [hw - w, 1], [hw, 1]];
+const ages = ROAD_SURFACE.ages;
+const rows = [];
+for (let s = 0; s <= 400; s += 1.5) {
+  const seam = s > 0 && Math.abs(s % 50) < 0.75;
+  if (seam) rows.push({ s: Math.round(s / 50) * 50, k: Math.round(s / 50) - 1 });
+  rows.push({ s, k: Math.floor(s / 50) });
+}
+const nv = cols.length, nu = rows.length;
+const pos = [], col = [], uv = [], age = [], idx = [];
+const asphalt = new THREE.Color(0x46443f).multiplyScalar(1.0), paint = new THREE.Color(0xe9e3d2);
+for (const r of rows) {
+  for (const [v, p] of cols) {
+    pos.push(v, 0, -r.s);
+    const isPaint = p === 1 || (p === 2 && Math.floor(r.s / 3) % 2 === 0);
+    const c = isPaint ? paint : asphalt;
+    col.push(c.r, c.g, c.b);
+    uv.push(v, r.s);
+    age.push(ages[(r.k + 3) % 4], ages[r.k % 4]);
+  }
+}
+for (let j = 0; j < nu - 1; j++) for (let i = 0; i < nv - 1; i++) {
+  const a = j * nv + i, b = a + 1, c = a + nv, d = c + 1;
+  idx.push(a, b, c, b, d, c);
+}
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+geo.setAttribute('roadUV', new THREE.Float32BufferAttribute(uv, 2));
+geo.setAttribute('roadAge', new THREE.Float32BufferAttribute(age, 2));
+geo.setIndex(idx);
+geo.computeVertexNormals();
+scene.add(new THREE.Mesh(geo, road.material));
+const verge = new THREE.Mesh(new THREE.PlaneGeometry(400, 400).rotateX(-Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: 0x6f8a55, roughness: 1 }));
+verge.position.set(0, -0.02, -180);
+scene.add(verge);
+
+const camera = new THREE.PerspectiveCamera(60, W / H, 0.1, 1000);
+const cam = (q.get('cam') || '1.85,1.7,4,1.2,0,-30').split(',').map(Number);
+camera.position.set(cam[0], cam[1], cam[2]);
+camera.lookAt(cam[3], cam[4], cam[5]);
+
+const gl = renderer.getContext(), px = new Uint8Array(4);
+const frame = () => { renderer.render(scene, camera); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); };
+for (let i = 0; i < 5; i++) frame();
+const n = 30, f0 = performance.now();
+for (let i = 0; i < n; i++) frame();
+window.SHEET = { frameMs: ((performance.now() - f0) / n).toFixed(2), buildMs: Math.round(buildMs) };
+window.READY = true;
+</script>

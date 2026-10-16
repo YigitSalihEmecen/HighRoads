@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES } from './config.js';
+import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -36,6 +36,35 @@ function dashOn(s, half) {
 }
 
 const EDGE = ROAD.halfWidth + ROAD.shoulder;
+
+/**
+ * The road's along-coordinate is handed to the shader modulo this, so it
+ * stays precise in a float. A multiple of the chunk length (no chunk straddles
+ * a wrap) and of every road-space period env/road.js uses.
+ */
+const ROAD_S_PERIOD = 7680;
+/** Section cells start this far past each `sectionCell` multiple: off the dash and row grids. */
+const SEAM_SHIFT = 1.37;
+
+/**
+ * Resurfacing age of each carriageway at `s` — [left, right], 0 fresh .. 1
+ * old. A pure function of `s`: a seam where each `sectionCell` starts and
+ * one at a hashed point inside it (`roadSeam`).
+ */
+function roadAges(s, out) {
+  const S = ROAD_SURFACE;
+  const c = Math.floor((s - SEAM_SHIFT) / S.sectionCell);
+  const id = c * 2 + (s >= roadSeam(c) ? 1 : 0);
+  const pick = (h) => S.ages[Math.floor((h / 4294967296) * S.ages.length)];
+  const h = hashInt(id * 0x27d4eb2f + 0x165667b1);
+  out[1] = pick(hashInt(h + 1));
+  out[0] = (h / 4294967296) < S.fullWidth ? out[1] : pick(hashInt(h + 2));
+  return out;
+}
+function roadSeam(c) {
+  const L = ROAD_SURFACE.sectionCell;
+  return c * L + SEAM_SHIFT + L * (0.2 + 0.6 * (hashInt(c * 0x9e3779b1 + 7) / 4294967296));
+}
 
 function buildLateralOffsets() {
   // Every entry derived and strictly increasing: a literal would break the
@@ -1056,6 +1085,17 @@ export class ChunkManager {
     const stations = [];
     for (let k = 0; k <= CHUNK.segmentsU; k++) stations.push({ s: s0 + k * step, mark: false });
     for (let k = Math.ceil(s0 / half); k * half < s1; k++) stations.push({ s: k * half, mark: true });
+    // Resurfacing seams: a doubled row, so the age steps instead of blending.
+    const L = ROAD_SURFACE.sectionCell;
+    for (let c = Math.floor((s0 - SEAM_SHIFT) / L); c * L + SEAM_SHIFT < s1; c++) {
+      for (const x of [c * L + SEAM_SHIFT, roadSeam(c)]) {
+        if (x <= s0 || x >= s1 || Math.abs(x / half - Math.round(x / half)) < 1e-3) continue;
+        // The seam's doubled row replaces a regular row at the same station.
+        const r = stations.findIndex((st) => !st.mark && !st.seam && Math.abs(st.s - x) < 1e-4);
+        if (r >= 0) stations.splice(r, 1);
+        stations.push({ s: x, seam: true });
+      }
+    }
     stations.sort((a, b) => a.s - b.s || (a.mark ? -1 : 1));
 
     const rows = [];
@@ -1070,6 +1110,9 @@ export class ChunkManager {
       if (st.mark) {
         rows.push({ s: st.s, dash: dashOn(st.s - half * 0.5, half) });
         rows.push({ s: st.s, dash: dashOn(st.s + half * 0.5, half) });
+      } else if (st.seam) {
+        rows.push({ s: st.s, dash: dashOn(st.s, half), side: -1 });
+        rows.push({ s: st.s, dash: dashOn(st.s, half), side: 1 });
       } else {
         rows.push({ s: st.s, dash: dashOn(st.s, half) });
       }
@@ -1078,6 +1121,12 @@ export class ChunkManager {
     const nu = rows.length;
     const positions = new Float32Array(nu * nv * 3);
     const colors = new Float32Array(nu * nv * 3);
+    // Road space for env/road.js: (across, along mod ROAD_S_PERIOD) in metres,
+    // and each carriageway's resurfacing age.
+    const roadUV = new Float32Array(nu * nv * 2);
+    const roadAge = new Float32Array(nu * nv * 2);
+    const sBase = Math.floor(s0 / ROAD_S_PERIOD) * ROAD_S_PERIOD;
+    const age = [0, 0];
     const indices = new Uint32Array((nu - 1) * (nv - 1) * 6);
 
     // Neutral-warm grey: env/road.js multiples the base, so a dark, blue base
@@ -1090,6 +1139,7 @@ export class ChunkManager {
 
     for (let j = 0; j < nu; j++) {
       const { s, dash } = rows[j];
+      roadAges(s + (rows[j].side || 0) * 1e-3, age);
       this.path.frameAt(s, frame);
       rightFlat.crossVectors(frame.tan, WORLD_UP).normalize();
       const slope = Math.tan(frame.bank);
@@ -1110,6 +1160,10 @@ export class ChunkManager {
         colors[k * 3 + 0] = c.r;
         colors[k * 3 + 1] = c.g;
         colors[k * 3 + 2] = c.b;
+        roadUV[k * 2] = col.v;
+        roadUV[k * 2 + 1] = s - sBase;
+        roadAge[k * 2] = age[0];
+        roadAge[k * 2 + 1] = age[1];
       }
     }
 
@@ -1128,6 +1182,8 @@ export class ChunkManager {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('roadUV', new THREE.BufferAttribute(roadUV, 2));
+    geometry.setAttribute('roadAge', new THREE.BufferAttribute(roadAge, 2));
     geometry.setIndex(new THREE.BufferAttribute(indices, 1));
     geometry.computeVertexNormals();
     geometry.computeBoundingSphere();
