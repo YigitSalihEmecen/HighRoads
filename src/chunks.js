@@ -502,6 +502,8 @@ export class ChunkManager {
 
   /** Ground height at an arbitrary (s, v). Allocates a frame; not for hot loops. */
   groundAt(s, v, out = new THREE.Vector3()) {
+    // Road generated since the tiles last synced is not carved yet.
+    this.field.sync();
     const f = this.path.frameAt(s, this._frame);
     this._rightFlat.crossVectors(f.tan, WORLD_UP).normalize();
     if (Math.abs(v) <= ROAD.halfWidth) {

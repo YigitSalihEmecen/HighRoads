@@ -21,3 +21,7 @@
 	path = tree_gen
 	url = https://github.com/YigitSalihEmecen/Tree-Gen.git
 	branch = main
+[submodule "roadsign_gen"]
+	path = roadsign_gen
+	url = https://github.com/YigitSalihEmecen/Roadsign-gen.git
+	branch = main
