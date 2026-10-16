@@ -419,6 +419,17 @@ during loading (style-weighted toward ordinary cars), painted from a weighted
 road palette on each spawn, three retired for new designs behind each garage
 wipe. Nothing is generated mid-run.
 
+**Draw calls.** A car_gen car is ~35 body parts and 4 × 5 wheel parts, every
+one a draw call in the main pass and again in the shadow pass — traffic alone
+was ~700 of ~1,100 calls a frame. `models.js:mergeParts` merges the body per
+material (car_gen leaves every part untransformed in one group, so the paint
+shader's object-space masks are unaffected; the roof stays apart for
+`setTrimColor`) — the driven car too. Past `TRAFFIC.lodDistance` (70 m along
+the road) a car swaps to `buildProxy`: body and wheels at rest in ONE mesh,
+coloured per vertex from each part's material, one shared material for every
+far car (`paint()` re-colours it on spawn). Indicator markers are drawn only
+while lit.
+
 **Drivers**: IDM car-following (`_idm`: desired speed, time headway, jam gap,
 comfortable/emergency braking) against whatever is in the path — other cars
 either way, spun cars, and the player. Corner speed `√(a/κ)` looked up 25/60/110 m

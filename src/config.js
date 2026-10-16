@@ -792,6 +792,8 @@ export const TRAFFIC = {
   wave: 0.45,
   /** Distinct generated cars in the pool (models.js Fleet). */
   fleetSize: 18,
+  /** Past this (metres along the road) a car is drawn as one merged mesh. */
+  lodDistance: 70,
 
   /** Populated band, and where inside it a car may appear — cars spawn in the haze. */
   spawnMin: 430,

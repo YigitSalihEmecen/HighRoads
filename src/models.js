@@ -12,6 +12,8 @@
  * never repeats itself and nothing is generated mid-run.
  */
 
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createCar, randomParams, PRESETS, sanitize, clone, OPTIONS } from '../car_gen/src/index.js';
 import { CAR_COLORS, BODY_STYLES, carName, bodyShape, characterOf, deriveSpec, roadColour } from './cars.js';
 import { mulberry32, hashString } from './util.js';
@@ -167,7 +169,135 @@ function finish(model, P) {
   paint.roughness = 0.6 + 0.4 * P.rough;
 }
 
+/** The mesh `setTrimColor` re-materials (the cabin roof), found by trying it; null if none. */
+function findRoof(model) {
+  const M = model.materials;
+  const before = new Map();
+  model.body.traverse((o) => { if (o.isMesh) before.set(o, o.material); });
+  const trim = M.trim.color.clone(), contrast = model.params.contrastRoof;
+  model.setTrimColor(0);
+  let roof = null;
+  model.body.traverse((o) => { if (o.isMesh && o.material === M.trim) roof = o; });
+  if (roof) roof.material = before.get(roof);
+  M.trim.color.copy(trim);
+  model.params.contrastRoof = contrast;
+  return roof;
+}
+
+/**
+ * One mesh per material instead of one per part, for a car that will not be
+ * edited again (the driven one, traffic): ~35 body parts share ~18 materials,
+ * and each part was a draw call in the main pass and another in the shadow
+ * pass. car_gen adds every part to one group untransformed, so the paint
+ * shader's object-space masks see the same positions. The roof stays apart:
+ * `setTrimColor` swaps its material.
+ */
+export function mergeParts(model) {
+  const inner = model.body.children[0];
+  const roof = findRoof(model);
+  const groups = new Map();
+  for (const o of inner.children) {
+    if (!o.isMesh || !o.visible || o === roof || !o.matrix.equals(IDENTITY) || !o.geometry.index) continue;
+    const attrs = Object.entries(o.geometry.attributes).map(([k, a]) => `${k}${a.itemSize}`).sort().join();
+    const key = `${o.material.uuid}|${attrs}|${o.renderOrder}|${o.castShadow}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(o);
+  }
+  const made = [];
+  for (const parts of groups.values()) {
+    if (parts.length < 2) continue;
+    const geometry = mergeGeometries(parts.map((o) => o.geometry));
+    if (!geometry) continue;
+    const [first] = parts;
+    const mesh = new THREE.Mesh(geometry, first.material);
+    mesh.castShadow = first.castShadow;
+    mesh.receiveShadow = first.receiveShadow;
+    mesh.renderOrder = first.renderOrder;
+    for (const o of parts) inner.remove(o);
+    inner.add(mesh);
+    made.push(geometry);
+  }
+  const dispose = model.dispose;
+  model.dispose = () => { dispose(); for (const g of made) g.dispose(); };
+  return model;
+}
+
+const IDENTITY = new THREE.Matrix4();
+
 /* ----------------------------------------------------------------- fleet -- */
+
+/** Every far traffic car shares one program and one material. */
+const PROXY_MATERIAL = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.15 });
+const GLASS_TINT = new THREE.Color(0x161c22);
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _n = new THREE.Matrix3();
+
+/**
+ * A traffic car past `TRAFFIC.lodDistance`: body and wheels at rest, merged
+ * into ONE mesh coloured per vertex from each part's material — one draw call
+ * instead of ~60 (×2 with the shadow pass). Paint is re-coloured on `paint()`;
+ * see-through parts other than the glass are left out.
+ */
+function buildProxy(model) {
+  const M = model.materials;
+  const roof = findRoof(model);
+
+  const geos = [], paint = [], roofRange = [0, 0];
+  let verts = 0;
+  const add = (mesh, matrix) => {
+    const m = mesh.material;
+    const glass = m === M.glass;
+    if (m.transparent && !glass) return;
+    const src = mesh.geometry;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', src.attributes.position.clone());
+    if (src.attributes.normal) g.setAttribute('normal', src.attributes.normal.clone());
+    g.setIndex(src.index ? src.index.clone() : null);
+    if (!g.index) g.setIndex([...Array(g.attributes.position.count).keys()]);
+    if (!g.attributes.normal) g.computeVertexNormals();
+    g.applyMatrix4(matrix);
+    const n = g.attributes.position.count;
+    const c = glass ? GLASS_TINT : m.color || GLASS_TINT;
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    if (mesh === roof) { roofRange[0] = verts; roofRange[1] = verts + n; } else if (m === M.paint) paint.push([verts, verts + n]);
+    verts += n;
+    geos.push(g);
+  };
+
+  model.body.updateMatrixWorld(true);
+  model.body.traverse((o) => { if (o.isMesh && o.visible) add(o, o.matrixWorld); });
+  const { trackHalf: tr, wheelbaseHalf: wb, wheelRadius: r } = model.metrics;
+  const layout = [[-tr, -wb], [tr, -wb], [-tr, wb], [tr, wb]];
+  ['FL', 'FR', 'BL', 'BR'].forEach((k, i) => {
+    const w = model.wheels[k];
+    const keep = [w.position.clone(), w.rotation.clone()];
+    w.position.set(layout[i][0], r + model.camber.lift, layout[i][1]);
+    w.rotation.set(0, 0, model.camber.tilt[i], 'YZX');
+    w.updateMatrixWorld(true);
+    w.traverse((o) => { if (o.isMesh && o.visible) add(o, o.matrixWorld); });
+    w.position.copy(keep[0]); w.rotation.copy(keep[1]);
+    w.updateMatrixWorld(true);
+  });
+
+  const geometry = mergeGeometries(geos);
+  for (const g of geos) g.dispose();
+  const mesh = new THREE.Mesh(geometry, PROXY_MATERIAL);
+  mesh.castShadow = mesh.receiveShadow = true;
+  mesh.visible = false;
+  const colour = geometry.attributes.color;
+  const fill = ([a, b], c) => { for (let i = a; i < b; i++) colour.setXYZ(i, c.r, c.g, c.b); };
+  return {
+    mesh,
+    /** Matches the proxy to the model's current paint and roof. */
+    paint() {
+      for (const range of paint) fill(range, M.paint.color);
+      fill(roofRange, roof && roof.material === M.trim ? M.trim.color : M.paint.color);
+      colour.needsUpdate = true;
+    },
+    dispose() { geometry.dispose(); },
+  };
+}
 
 /** Road traffic is mostly ordinary cars. Weights per style; `null` is free generation. */
 const TRAFFIC_MIX = [
@@ -205,7 +335,9 @@ export class Fleet {
     const build = generateBuild(seed, pickStyle(this.rng));
     const model = buildModel(build, DETAIL.traffic);
     const spec = deriveSpec(build, model.metrics);
-    const entry = { seed, build, model, mass: spec.mass, name: build.name };
+    const proxy = buildProxy(model);
+    mergeParts(model);
+    const entry = { seed, build, model, proxy, mass: spec.mass, name: build.name };
     this.free.push(entry);
     return entry;
   }
@@ -224,6 +356,7 @@ export class Fleet {
     if (!this.free.length) return false;
     const old = this.free.shift();
     old.model.dispose();
+    old.proxy.dispose();
     this.buildOne();
     return true;
   }
@@ -238,6 +371,7 @@ export class Fleet {
     entry.model.setTrimColor(rng() < 0.12 ? roadColour(rng) : null);
     entry.model.setBrake(0);
     entry.model.setHeadlights(false, false);
+    entry.proxy.paint();
     return entry;
   }
 

@@ -24,8 +24,9 @@ const chunks = new ChunkManager({
 // A stand-in for models.Fleet: three body sizes, enough cars that the pool never runs dry.
 const mk = (i, len, wid) => ({
   seed: 'p' + i, mass: 1100 + 120 * (i % 7), build: { style: ['sedan', 'suv', 'hatch'][i % 3] },
+  proxy: { mesh: new THREE.Object3D(), paint() {} },
   model: {
-    body: new THREE.Group(),
+    body: new THREE.Group().add(new THREE.Group()),
     wheels: { FL: new THREE.Group(), FR: new THREE.Group(), BL: new THREE.Group(), BR: new THREE.Group() },
     metrics: {
       trackHalf: wid * 0.82, wheelbaseHalf: len * 0.62, wheelRadius: 0.36, wheelWidth: 0.26,

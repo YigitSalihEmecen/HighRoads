@@ -39,7 +39,6 @@ function laneOffsets() {
 /** Indicator lamps: one geometry, two shared materials swapped per blink. */
 const MARKER_GEO = new THREE.BoxGeometry(0.14, 0.055, 0.03);
 const MARKER_ON = new THREE.MeshStandardMaterial({ color: 0xffa21f, emissive: 0xff8a00, emissiveIntensity: 6 });
-const MARKER_OFF = new THREE.MeshStandardMaterial({ color: 0x5a3a12, emissive: 0x000000, roughness: 0.4 });
 
 export class Traffic {
   /**
@@ -111,14 +110,16 @@ export class Traffic {
       entry.markerSpots = this._markerSpots(model);
     }
     const marker = ([mx, my, mz]) => {
-      const mesh = new THREE.Mesh(MARKER_GEO, MARKER_OFF);
+      const mesh = new THREE.Mesh(MARKER_GEO, MARKER_ON);
+      mesh.visible = false;
       mesh.position.set(mx, my, mz);
       group.add(mesh);
       return mesh;
     };
     const [fl, rl, fr, rr] = entry.markerSpots;
     const markers = { left: [marker(fl), marker(rl)], right: [marker(fr), marker(rr)] };
-    return { group, wheels, markers, model, metrics: m };
+    model.body.add(entry.proxy.mesh);
+    return { group, wheels, markers, model, proxy: entry.proxy.mesh, detail: [model.body.children[0], ...wheels], metrics: m };
   }
 
   /** Where the body's skin is at each corner, lamp height: [FL, RL, FR, RR] as [x, y, z]. */
@@ -217,6 +218,8 @@ export class Traffic {
     model.body.rotation.set(0, 0, 0);
     model.setBrake(0);
     model.setHeadlights(false, false);
+    for (const o of car.inst.detail) o.visible = true;
+    car.inst.proxy.visible = false;
     this.fleet.release(car.entry);
     const i = this.cars.indexOf(car);
     if (i >= 0) this.cars.splice(i, 1);
@@ -261,6 +264,7 @@ export class Traffic {
         this._drive(car, dt);
       }
       this._place(car, dt);
+      this._lod(car);
       this._lamps(car);
     }
 
@@ -506,6 +510,16 @@ export class Traffic {
     }
   }
 
+  /** Past `TRAFFIC.lodDistance` along the road a car is its one-mesh proxy (models.js). */
+  _lod(car) {
+    const d = Math.abs(car.s - this._player.s);
+    const far = d > TRAFFIC.lodDistance + (car.far ? -10 : 0);
+    if (far === car.far) return;
+    car.far = far;
+    for (const o of car.inst.detail) o.visible = !far;
+    car.inst.proxy.visible = far;
+  }
+
   /* ------------------------------------------------------------- lamps -- */
 
   _lamps(car) {
@@ -520,8 +534,9 @@ export class Traffic {
     const on = Math.sin(this._clock * Math.PI * 3 + car.id) > 0;
     const left = car.hazard || car.signal < 0;
     const right = car.hazard || car.signal > 0;
-    for (const m of car.inst.markers.left) m.material = left && on ? MARKER_ON : MARKER_OFF;
-    for (const m of car.inst.markers.right) m.material = right && on ? MARKER_ON : MARKER_OFF;
+    // Unlit, a marker is a sliver of amber plastic nobody sees: not drawn.
+    for (const m of car.inst.markers.left) m.visible = left && on && !car.far;
+    for (const m of car.inst.markers.right) m.visible = right && on && !car.far;
   }
 
   /* ----------------------------------------------------------- population -- */

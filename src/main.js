@@ -16,7 +16,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 
 import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE, TRAFFIC, TREES } from './config.js';
 import { deriveSpec, buildCarParams } from './cars.js';
-import { buildModel, generateBuild, finishBuild, newSeed, Fleet, DETAIL } from './models.js';
+import { buildModel, mergeParts, generateBuild, finishBuild, newSeed, Fleet, DETAIL } from './models.js';
 import { smoothstep, clamp } from './util.js';
 import { PERF } from './perf.js';
 import { applySky, saveSky, SKY_PRESETS, SKY_NAMES } from './sky.js';
@@ -315,7 +315,7 @@ class Game {
    */
   applyBuild() {
     const build = this.build;
-    const model = buildModel(build, DETAIL.player);
+    const model = mergeParts(buildModel(build, DETAIL.player));
     const spec = deriveSpec(build, model.metrics);
     const params = buildCarParams(spec, model.metrics, VEHICLE, Math.abs(WORLD.gravity));
 
