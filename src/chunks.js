@@ -1114,7 +1114,11 @@ export class ChunkManager {
         rows.push({ s: st.s, dash: dashOn(st.s, half), side: -1 });
         rows.push({ s: st.s, dash: dashOn(st.s, half), side: 1 });
       } else {
-        rows.push({ s: st.s, dash: dashOn(st.s, half) });
+        // The state of the dash this row ENDS. A row at a dash boundary that
+        // is not doubled (the chunk's last, s1 — 120 m is a whole number of
+        // dashes) otherwise takes the next dash's state, and the paint fades
+        // across the last segment of every chunk.
+        rows.push({ s: st.s, dash: dashOn(st.s - 1e-4, half) });
       }
     }
 

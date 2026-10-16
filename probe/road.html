@@ -47,11 +47,14 @@ const cols = [[-hw, 1], [-hw + w, 1], [-hw + w, 0], [-lane - w / 2, 0], [-lane -
   [-lane + w / 2, 0], [-gap - w, 0], [-gap - w, 1], [-gap, 1], [-gap, 0], [gap, 0], [gap, 1], [gap + w, 1],
   [gap + w, 0], [lane - w / 2, 0], [lane - w / 2, 2], [lane + w / 2, 2], [lane + w / 2, 0], [hw - w, 0], [hw - w, 1], [hw, 1]];
 const ages = ROAD_SURFACE.ages;
+// Rows every 1.5 m; doubled where a section (every 50 m) or a dash (every
+// 3 m) ends, so each side of the boundary has its own colour and age.
 const rows = [];
+const dashOn = (s) => Math.floor(s / 3) % 2 === 0;
 for (let s = 0; s <= 400; s += 1.5) {
-  const seam = s > 0 && Math.abs(s % 50) < 0.75;
-  if (seam) rows.push({ s: Math.round(s / 50) * 50, k: Math.round(s / 50) - 1 });
-  rows.push({ s, k: Math.floor(s / 50) });
+  const k = Math.floor(s / 50);
+  if (s > 0 && s % 3 === 0) rows.push({ s, k: s % 50 === 0 ? k - 1 : k, dash: dashOn(s - 0.01) });
+  rows.push({ s, k, dash: dashOn(s + 0.01) });
 }
 const nv = cols.length, nu = rows.length;
 const pos = [], col = [], uv = [], age = [], idx = [];
@@ -59,7 +62,7 @@ const asphalt = new THREE.Color(0x46443f).multiplyScalar(1.0), paint = new THREE
 for (const r of rows) {
   for (const [v, p] of cols) {
     pos.push(v, 0, -r.s);
-    const isPaint = p === 1 || (p === 2 && Math.floor(r.s / 3) % 2 === 0);
+    const isPaint = p === 1 || (p === 2 && r.dash);
     const c = isPaint ? paint : asphalt;
     col.push(c.r, c.g, c.b);
     uv.push(v, r.s);
