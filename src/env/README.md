@@ -70,7 +70,7 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 | `rocks.js` | convex boulders, slabs and scree, three size classes | 44–120 |
 | `signs.js` | road signs and gantries, built by Roadsign-gen (`roadsign_gen/` submodule), merged to 2–4 draws each | ~600 mean |
 | `road.js` | the carriageway's asphalt mask and its material patch | — |
-| `ground.js` | the terrain's detail texture and its material patch | — |
+| `ground.js` | the terrain's detail texture and material patch, and the SWARD: a grown turf heightfield ray-marched (POM) near the car | — |
 
 ## The canopy
 

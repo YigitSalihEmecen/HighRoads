@@ -499,6 +499,38 @@ export const GROUND = {
   macroTile: 371,
   /** Strength of the screen-space detail bump. */
   bump: 0.045,
+
+  /**
+   * The SWARD: a generated tile of turf, ray-marched (parallax occlusion) on
+   * green ground near the camera — see env/ground.js. Its albedo fades with
+   * `nearFade`; the march with `fade`, and costs nothing past it.
+   */
+  sward: {
+    enabled: true,
+    /** Texels a side, and metres of ground the tile covers. */
+    size: 1024,
+    tile: 3.0,
+    /** Per square metre of tile: tufts of blades, and pebbles in the soil. */
+    tufts: 70,
+    pebbles: 22,
+    /** Share of tufts gone to straw. */
+    dryShare: 0.16,
+    /** Relief depth, metres, from the soil to the tallest blade. */
+    depth: 0.1,
+    /** The march fades out over this distance, metres. */
+    fade: [8, 26],
+    /** Layers marched looking straight down, and along the ground. */
+    steps: [4, 14],
+    /** Anisotropic taps on the colour fetch (the march takes none). */
+    anisotropy: 8,
+    /** Self-shadow strength, 0..1: four more fetches per pixel; 0 skips them. */
+    shadow: 0.6,
+    /** How strongly the turf's luminance, and its occlusion, reach the albedo. */
+    contrast: 0.85,
+    occlusion: 0.7,
+    /** Dry blades and bare soil, as a multiplier on the ground colour. */
+    dry: [1.08, 0.92, 0.6],
+  },
 };
 
 /**
@@ -1189,6 +1221,10 @@ function applyGraphics() {
     ROCKS.samples = 2200;
     SIGNS.lod = 2;
     SIGNS.drawDistance = 400;
+    GROUND.sward.size = 512;
+    GROUND.sward.steps = [4, 12];
+    GROUND.sward.fade = [6, 24];
+    GROUND.sward.shadow = 0;
   } else if (level === 'low') {
     // The shortest draw distance, and a fog that ends it invisibly.
     CHUNK.ahead = 3;
@@ -1207,6 +1243,9 @@ function applyGraphics() {
     ROCKS.enabled = false;
     SIGNS.lod = 2;
     SIGNS.drawDistance = 300;
+    // The turf's look without its march.
+    GROUND.sward.size = 512;
+    GROUND.sward.depth = 0;
 
     // The far tier, all the way in. `nearCap` = 0 builds no near meshes at all.
     TREES.samples = 900;

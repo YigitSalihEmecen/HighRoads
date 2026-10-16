@@ -789,7 +789,8 @@ terrain. A tier is a plain **descriptor** in `ChunkManager.grassTiers` — one
 | card | 7 blades, short | 7 blades, long + wide | same as roadside |
 | lift | 1.20–1.55 | 1.02–1.28 | 1.20–1.55 |
 | fade | out 75→125 | out 50→80 | in 60→115, out 190→280 |
-| placed | ~13,700/chunk | — | ~1,900/chunk |
+| density | 1.9 (was 3.0 before the sward) | 0.75 | from roadside |
+| placed | ~8,700/chunk | — | ~1,900/chunk |
 
 Atlas is 128 px a sheet (64 px a kind). Sized against the car: the old
 0.55–1.25 m tufts buried it to the windows.
@@ -826,6 +827,35 @@ grass lies down in a direction), G rock (ridged, so creases are lines), B soil
 (texel-scale grain so mipmapping removes it with distance). Slope picks between
 them by the same normal the palette uses. **Two scales, 5.5 m and 28 m** — not a
 round ratio, so they beat with a ~154 m period for one extra fetch.
+
+**The sward — parallax occlusion on grass.** `swardMaps` GROWS a 3 m tile of
+turf at boot (1024², ~0.3 s): tufts of tapering blades radiating from a crown,
+tallest at the root, lying down toward the tip, over soil crumbs and pebbles.
+Three data textures (a canvas premultiplies): albedo (luminance normalised to a
+mean of 1 with its occlusion, dry/soil, occlusion, height), a tangent-space
+normal map, and the height ALONE as R8. On green ground (`vColor.g` over its
+red and blue: not scree, snow or sand), flat, within `nearFade`, the shader
+marches the view ray through the heightfield (Tatarchuk 2006: linear layers,
+then interpolate the last two), adds a 4-tap self-shadow toward the sun, and
+takes the turf's colour and normal at the hit. The frame is world X and Z
+laid onto the slope — the planar mapping's own tangents.
+
+What made it affordable (2560×1440, ground filling the view, M4): **17 ms → 3.7
+ms**. The march reads the R8 height with NO anisotropy, one mip coarser
+(`textureGrad`, gradients from the unmarched UV, so the loop is legal and keeps
+its mip); anisotropy only on the final colour fetch. Layers by view angle and
+distance (`steps` 4–14), none past `fade` (the branch skips the march). In the
+real game the march is within noise: on 21.1 ms, off 21.3 ms (A/B on the live
+uniform, `material.userData.uniforms`). `probe/ground.html` is the test sheet
+(`?pom=0`, `?sward=0`; `window.GROUND_MS`).
+
+**Flat vs rock is decided by the WORLD normal.** It used `vNormal` — view
+space — so a grass bank facing the camera was called a cliff and got the
+triplanar rock detail. The sward made it obvious.
+
+The sward let the grass thin: `GRASS.density` 3.0 → 1.9, the wood tier 1.1 →
+0.75 (grass measured ~1.5 ms GPU a frame at 2268×1417). Medium: march 4–12
+layers, no self-shadow, 512². Low: the turf's look, no march.
 
 **`road.js`**: `asphaltTexture` paints R aggregate (fBm bed + bimodal chip
 lattice — the bimodal part is what reads as stones in bitumen), G wear, B cracks
@@ -911,6 +941,11 @@ below the road.
 **`groundAt` syncs the field.** `_build` extends the road AFTER the tiles'
 `field.sync()` that frame, so new road was not yet carved: signs stood 4–13 m
 above or below the verge. `probe/signs.mjs` checks the foot height.
+
+**Sizes.** Roadside assemblies are scaled whole by `scale` (1.2) before the
+merge, so the box placement reads is the scaled one. Gantries are not scaled
+(their legs must stay at `gantryLeg`): `overheadLift` raises the pole (faces
+clear ~6 m) and `overheadScale` grows and spreads the faces.
 
 No colliders, like the trees. Medium/low graphics: `lod` 2 (384 px faces),
 shorter `drawDistance`.

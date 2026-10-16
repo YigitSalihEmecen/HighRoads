@@ -1,0 +1,68 @@
+<!doctype html>
+<!--
+  The terrain material on its own (env/ground.js): a gently rolling patch of
+  grass under the game's sun, seen from a driver's height, to judge the sward
+  and its parallax. ?pom=0 switches the march off; &cam=x,y,z,tx,ty,tz.
+  window.GROUND_MS is the mean GPU-synced frame time of the scene.
+-->
+<meta charset="utf-8">
+<title>ground sheet</title>
+<style>html,body{margin:0;height:100%;background:#cfd8dc;overflow:hidden}</style>
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+               "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { ATMOSPHERE, GROUND, TERRAIN_COLORS } from '../src/config.js';
+const q = new URLSearchParams(location.search);
+if (q.get('pom') === '0') GROUND.sward.depth = 0;
+if (q.get('sward') === '0') GROUND.sward.enabled = false;
+const { createGroundAssets } = await import('../src/env/ground.js');
+
+const W = innerWidth, H = innerHeight;
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(W, H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = ATMOSPHERE.exposure;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd3dde2);
+scene.add(new THREE.HemisphereLight(ATMOSPHERE.hemiSky, ATMOSPHERE.hemiGround, ATMOSPHERE.hemiIntensity));
+const sun = new THREE.DirectionalLight(ATMOSPHERE.sunColor, ATMOSPHERE.sunIntensity);
+sun.position.set(-60, 35, -40);
+scene.add(sun);
+
+const t0 = performance.now();
+const ground = createGroundAssets({ anisotropy: renderer.capabilities.getMaxAnisotropy() });
+const buildMs = performance.now() - t0;
+const geo = new THREE.PlaneGeometry(400, 400, 200, 200).rotateX(-Math.PI / 2);
+const pos = geo.attributes.position, col = new Float32Array(pos.count * 3);
+const a = new THREE.Color(TERRAIN_COLORS.grassLow), b = new THREE.Color(TERRAIN_COLORS.grassDry);
+for (let i = 0; i < pos.count; i++) {
+  const x = pos.getX(i), z = pos.getZ(i);
+  pos.setY(i, Math.sin(x * 0.05) * 1.2 + Math.cos(z * 0.04) * 1.5);
+  const c = a.clone().lerp(b, x > 60 ? 1 : 0);
+  col.set([c.r, c.g, c.b], i * 3);
+}
+geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+geo.computeVertexNormals();
+scene.add(new THREE.Mesh(geo, ground.material));
+
+const camera = new THREE.PerspectiveCamera(60, W / H, 0.1, 1000);
+const cam = (q.get('cam') || '0,2.6,8,0,0,-20').split(',').map(Number);
+camera.position.set(cam[0], cam[1], cam[2]);
+camera.lookAt(cam[3], cam[4], cam[5]);
+
+const gl = renderer.getContext(), px = new Uint8Array(4);
+const frame = () => { renderer.render(scene, camera); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); };
+for (let i = 0; i < 5; i++) frame();
+const n = 30, f0 = performance.now();
+for (let i = 0; i < n; i++) frame();
+window.GROUND_MS = ((performance.now() - f0) / n).toFixed(2);
+window.SIGNS_STATS = { frameMs: window.GROUND_MS, buildMs: Math.round(buildMs) };
+window.READY = true;
+</script>
