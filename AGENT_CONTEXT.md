@@ -1094,6 +1094,30 @@ What was found and done, heaviest first:
 | 60 fps at the start, 20-30 fps ten seconds later | the full world streaming in — and tree/shrub/rock batches had `frustumCulled = false` (the wind shader "moves vertices"), so every batch in every loaded chunk drew every frame, shadow map included. Measured: of the instances drawn, ~11 % of trees and ~15 % of grass were actually in view | `instcull.js`: per-instance culling of tree/shrub/rock batches against the camera frustum grown by 25 m (so shadows cast into view from just outside survive), packed to the front of the instance buffers each frame; grass chunks split into 8 parts (4 × 30 m along the road × either side), each with its own bounds. Trees drawn 3130 → ~450-520 instances (408k → ~60k tris); grass 43k → 30k |
 | Fill on weak / high-DPI GPUs | fixed pixel ratio | `gfx.adapt`: dynamic resolution, down after ~1 s over budget, back after ~4 s of headroom, floor 75 % of the device ratio (≥ 1.0) |
 
+**Second pass (TreeGen canopy, Apple M4 through ANGLE/Metal, 2× display).**
+Headless Chrome with `--use-angle=metal`, so a real GPU: the attribution above
+(hide a category, time `render() + readPixels`) run A/B/A five times per
+category, medians, because the GPU is shared with whatever else the machine
+runs. `EXT_disjoint_timer_query_webgl2` exists there but its per-pass numbers
+are not credible (a full-screen copy "took" 14 ms) — do not trust them.
+
+| Cost | Cause | Fix |
+|---|---|---|
+| ~1,100 draw calls, `render()` 8.6 ms of CPU a frame | every car part a mesh (§4.8) | `mergeParts`, far-traffic proxies, unlit markers hidden: ~385 calls, 1.7 ms |
+| GPU time ∝ pixels (15 / 26 / 37-45 ms at 1× / 1.5× / 2×) | 2× panel rendered at 2× | `ATMOSPHERE.maxPixelRatio` 1.5 (graphics table) |
+| Near-tree shadows: 6M triangles in the worst frames | trees at L0/L1 cast with their own 56k / 6k meshes | `forest.js` caster buckets: the last mesh level's geometry (~1.3k), all instances in `onBeforeShadow`, none in the main pass (`onBeforeRender` zeroes `count`). three culls the shadow pass by the MAIN camera's layers, so layers cannot do this |
+| `Lakes.at` 5 % of the main thread | nine string-keyed Map lookups per terrain sample | the 3 × 3 neighbourhood cached per cell |
+| Sky ~0.9 ms | drawn first under everything, depth test off | last of the opaques at the far plane (`SKY_VERT` already wrote z = w) |
+| One full-screen pass too many | FINISH was its own pass before OutputPass | spliced into OutputPass (`scene.js:finishOutput`); canvas MSAA off (the scene renders into the composer's non-MSAA target anyway) |
+| Grass fragments | PBR at roughness 0.95 | `MeshLambertMaterial` |
+
+| 15 s at ~140 km/h, 2× panel | before | after |
+|---|---|---|
+| fps mean / p99 frame | 43 / 33 ms | 60 (vsync) / 16.8 ms |
+| main-thread frame | 15.6 ms (p95 24.7) | 3.5 ms (p95 7.4) |
+| draw calls | 737 | 384 |
+| triangles, p95 | 6.0 M | 3.6 M |
+
 Measured, same harness before and after:
 
 | | before | after |
