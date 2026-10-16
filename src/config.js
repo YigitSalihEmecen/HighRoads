@@ -370,7 +370,7 @@ export const GRASS = {
   enabled: true,
 
   /** Tufts per square metre at the verge, before rejections. An ask, not a count. */
-  density: 3.0,
+  density: 1.9,
   /** Lateral band: from the paved edge out to here, metres. */
   halfExtent: 46,
   /** Full density out to here, then tapering to nothing at `halfExtent`. */
@@ -413,7 +413,7 @@ export const GRASS = {
     /** Lateral band, metres. Trees start at `CHUNK.plantClear`; this follows. */
     halfExtent: 90,
     /** Tufts per square metre asked, before `floor` scales it down. */
-    density: 1.1,
+    density: 0.75,
     /** Height range, metres. */
     height: [0.44, 0.96],
     /** Nearly square, so neighbours overlap into a surface. */
@@ -541,6 +541,11 @@ export const SIGNS = {
   enabled: true,
   /** Roadsign-gen's level of detail: 1 = 768 px faces, 2 = 384 px and fewer segments. */
   lod: 1,
+  /** Every roadside sign, post and all, against the generator's own sizes. */
+  scale: 1.2,
+  /** Gantries: pole height, and the faces' size, against the generator's. */
+  overheadLift: 1.35,
+  overheadScale: 1.25,
   /** Past this a sign is a few pixels: not drawn. */
   drawDistance: 520,
 
@@ -573,11 +578,6 @@ export const SIGNS = {
   seededOverhead: 4,
   /** Gantry legs, either side of the centreline; faces shifted over the player's lanes. */
   gantryLeg: 11.2,
-  /** Every roadside sign, post and all, against the generator's own sizes. */
-  scale: 1.2,
-  /** Gantries: pole height, and the faces' size, against the generator's. */
-  overheadLift: 1.35,
-  overheadScale: 1.25,
   gantryShift: 3.7,
   /** A cantilever's span: its column on the verge, its arm over the near carriageway. */
   cantileverSpan: 10.5,
@@ -585,6 +585,10 @@ export const SIGNS = {
   gantryDrop: 1.2,
 };
 
+/**
+ * Procedural stone — see `env/rocks.js`. Chips on the shoulder-to-grass verge,
+ * talus spilling from cuttings.
+ */
 export const ROCKS = {
   enabled: true,
 
@@ -617,10 +621,6 @@ export const ROCKS = {
     [0.62, 0.60, 0.58],  // light warm granite
     [0.46, 0.46, 0.47],  // cool slate
     [0.52, 0.47, 0.40],  // earthy warm stone
-/**
- * Procedural stone — see `env/rocks.js`. Chips on the shoulder-to-grass verge,
- * talus spilling from cuttings.
- */
     [0.43, 0.39, 0.34],  // dark earth stone
     [0.64, 0.61, 0.55],  // sandy limestone
     [0.35, 0.34, 0.33],  // charcoal basalt
@@ -1213,7 +1213,7 @@ function applyGraphics() {
     TREES.treegen.shadowLevels = 1;
 
     // Grass, shrubs and stone scale down together.
-    GRASS.density = 2.0;
+    GRASS.density = 1.3;
     GRASS.far.ahead = 2;
     GRASS.far.fadeOut = [150, 220];
     BUSHES.samples = 600;
