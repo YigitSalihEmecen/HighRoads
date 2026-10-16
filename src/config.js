@@ -502,10 +502,6 @@ export const GROUND = {
 };
 
 /**
- * Procedural stone — see `env/rocks.js`. Chips on the shoulder-to-grass verge,
- * talus spilling from cuttings.
- */
-/**
  * Road signs — see `env/signs.js` (the library) and `chunks.js:_buildSigns`
  * (where they go). Distances in metres along / across the road.
  */
@@ -545,6 +541,11 @@ export const SIGNS = {
   seededOverhead: 4,
   /** Gantry legs, either side of the centreline; faces shifted over the player's lanes. */
   gantryLeg: 11.2,
+  /** Every roadside sign, post and all, against the generator's own sizes. */
+  scale: 1.2,
+  /** Gantries: pole height, and the faces' size, against the generator's. */
+  overheadLift: 1.35,
+  overheadScale: 1.25,
   gantryShift: 3.7,
   /** A cantilever's span: its column on the verge, its arm over the near carriageway. */
   cantileverSpan: 10.5,
@@ -584,6 +585,10 @@ export const ROCKS = {
     [0.62, 0.60, 0.58],  // light warm granite
     [0.46, 0.46, 0.47],  // cool slate
     [0.52, 0.47, 0.40],  // earthy warm stone
+/**
+ * Procedural stone — see `env/rocks.js`. Chips on the shoulder-to-grass verge,
+ * talus spilling from cuttings.
+ */
     [0.43, 0.39, 0.34],  // dark earth stone
     [0.64, 0.61, 0.55],  // sandy limestone
     [0.35, 0.34, 0.33],  // charcoal basalt

@@ -67,6 +67,11 @@ camera.lookAt(cam[3], cam[4], cam[5]);
 renderer.render(scene, camera);
 window.SIGNS_STATS = { variants: n, meanTris: Math.round(tris / n),
   roles: Object.fromEntries([...signs.roles].map(([r, l]) => [r, l.length])),
+  /** Per role: the tallest variant and the lowest face bottom of an overhead one, metres. */
+  heights: Object.fromEntries([...signs.roles].map(([r, l]) => [r, Math.max(...l.map((v) => v.box.max.y)).toFixed(1)])),
+  clearance: Math.min(...[...signs.roles].filter(([r]) => r === 'portal' || r === 'cantilever')
+    .flatMap(([, l]) => l.flatMap((v) => v.parts.filter((p) => p.material.map)
+      .map((p) => p.geometry.boundingBox.min.y)))).toFixed(1),
   calls: renderer.info.render.calls };
 window.READY = true;
 </script>

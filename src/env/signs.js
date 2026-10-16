@@ -136,6 +136,12 @@ function catalogue() {
   add('guide', guide(['Marlow Ridge   6', 'Northgate   24'], '14'));
   add('guide', guide(['Old Mill   3', 'Stanton   19', 'Corbridge   47']));
 
+  // Taller and larger than the generator's: a highway gantry clears trucks
+  // and is read at speed. Spans stay put; the faces spread with their scale.
+  const overhead = (a) => {
+    a.structure.poleHeight *= SIGNS.overheadLift;
+    for (const s of a.signs) { s.scale *= SIGNS.overheadScale; s.xOffset *= SIGNS.overheadScale; }
+  };
   // The generator's own regional assemblies, for variety: the first few seeds
   // that come out as roadside stacks, and a few overhead ones re-spanned.
   let verge = 0, over = 0;
@@ -151,11 +157,13 @@ function catalogue() {
       over++;
       // Legs either side of the whole carriageway, faces over the player's lanes.
       a.structure.gantrySpan = 2 * SIGNS.gantryLeg;
+      overhead(a);
       for (const s of a.signs) s.xOffset += SIGNS.gantryShift;
       add('portal', a);
     } else if (t === 'cantilever' && over < SIGNS.seededOverhead) {
       over++;
       a.structure.gantrySpan = SIGNS.cantileverSpan;
+      overhead(a);
       add('cantilever', a);
     }
   }
@@ -239,6 +247,7 @@ export async function createSignAssetsAsync(onProgress = () => {}) {
   for (let i = 0; i < list.length; i++) {
     const { role, dir, config } = list[i];
     const built = buildRoadSignAssemblyScene(normalizeSignConfig(config), SIGNS.lod, false, null);
+    if (role !== 'portal' && role !== 'cantilever') built.rootGroup.scale.setScalar(SIGNS.scale);
     const variant = { role, dir, ...merge(built.rootGroup) };
     all.push(variant);
     if (!roles.has(role)) roles.set(role, []);
