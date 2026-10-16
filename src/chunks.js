@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, ROCKS, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES } from './config.js';
+import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -17,11 +17,9 @@ import { makeFrame } from './path.js';
 import { createGrassAssets } from './env/grass.js';
 import { createGroundAssets } from './env/ground.js';
 import { createRoadAssets } from './env/road.js';
-import { createRockAssets } from './env/rocks.js';
 import { createTreeAssets } from './env/legacy/trees.js';
 import { createTreeGenAssets } from './env/treegen.js';
 import { Forest } from './forest.js';
-import { createBushAssets } from './env/bushes.js';
 import { TerrainField, ROAD_SINK } from './terrainfield.js';
 import { PERF } from './perf.js';
 import { InstanceCuller } from './instcull.js';
@@ -302,10 +300,9 @@ export class ChunkManager {
 
     // A tier is a plain descriptor; everything that differs is a number, so
     // `_buildGrass` is one function.
-    this.rockQueue = [];
     this.canopyQueue = [];
     this.sheetQueue = [];
-    /** Per-instance view culling for trees, shrubs and rocks (instcull.js). */
+    /** Per-instance view culling for the legacy trees (instcull.js). */
     this.culler = new InstanceCuller();
     this.grassTiers = [];
     if (this.grass) {
@@ -393,7 +390,6 @@ export class ChunkManager {
     this.time += dt;
     if (this.grass) this.grass.setTime(this.time);
     if (this.trees) this.trees.setTime(this.time);
-    if (this.bushes) this.bushes.setTime(this.time);
   }
 
   _buildSharedAssets() {
@@ -414,12 +410,10 @@ export class ChunkManager {
         : createTreeAssets();
     /** TreeGen trees are drawn by the forest, one level of detail each (forest.js). */
     this.forest = this.trees && treegen ? new Forest(this.scene, this.trees) : null;
-    this.bushes = BUSHES.enabled ? createBushAssets() : null;
+    /** Shrubs are TreeGen bushes in the same library, so only with the forest. */
+    this.bushes = this.forest && BUSHES.enabled;
 
     this.grass = GRASS.enabled ? createGrassAssets({ anisotropy: this.anisotropy }) : null;
-
-    /** Procedural stone. See env/rocks.js — texture for the verge, not scenery. */
-    this.rocks = ROCKS.enabled ? createRockAssets() : null;
   }
 
   /**
@@ -556,7 +550,7 @@ export class ChunkManager {
   update(carS, budget = CHUNK.buildPerFrame) {
     // Every stage below shares ONE frame budget: once streaming has spent
     // CHUNK.frameBudgetMs this frame, the remaining builds wait for the next.
-    // Without it a tile, a prop scatter, a grass chunk and a rock scatter could
+    // Without it a tile, a prop scatter and a grass chunk could
     // all land in the same frame (a 97 ms hitch, probe/stream.mjs).
     const frameT0 = performance.now();
     // Scaled by the smoothed frame time: ~30 % of a frame, never under the
@@ -622,8 +616,6 @@ export class ChunkManager {
           const g = tier.queue.indexOf(i);
           if (g >= 0) tier.queue.splice(g, 1);
         }
-        const r = this.rockQueue.indexOf(i);
-        if (r >= 0) this.rockQueue.splice(r, 1);
         const c = this.canopyQueue.indexOf(i);
         if (c >= 0) this.canopyQueue.splice(c, 1);
       }
@@ -639,14 +631,11 @@ export class ChunkManager {
       if (PERF.on) { const t = performance.now(); PERF.add('.canopy', t - tp); tp = t; }
       this._updateGrass(carS, spent() < B ? frameT0 + B : 0);
       if (PERF.on) { const t = performance.now(); PERF.add('.grass', t - tp); tp = t; }
-      this._updateRocks(carS, spent() < B ? 1 : 0);
-      if (PERF.on) { const t = performance.now(); PERF.add('.rocks', t - tp); tp = t; }
     } else {
       // Eviction still has to run every frame, or a departed chunk keeps its
       // cover.
       this._updateCanopy(carS, 0);
       this._updateGrass(carS, 0);
-      this._updateRocks(carS, 0);
     }
     this._cullGrass(carS);
   }
@@ -697,10 +686,8 @@ export class ChunkManager {
     this.road.dispose();
     if (this.forest) this.forest.dispose();
     if (this.trees) this.trees.dispose();
-    if (this.bushes) this.bushes.dispose();
     if (this.ground) this.ground.dispose();
     if (this.grass) this.grass.dispose();
-    if (this.rocks) this.rocks.dispose();
   }
 
   // ---------------------------------------------------------------- build --
@@ -770,8 +757,6 @@ export class ChunkManager {
       grassEmpty: false,
       grassFarEmpty: false,
       grassWoodEmpty: false,
-      rocks: null,
-      rocksEmpty: false,
     };
     this.chunks.set(index, chunk);
     this.propQueue.push({ index, s0, s1, origin });
@@ -995,7 +980,7 @@ export class ChunkManager {
 
   /**
    * Advance pending sheets, nearest chunk first, for at most `budgetMs`.
-   * A chunk's scatter (props, grass, rocks) waits for its sheet.
+   * A chunk's scatter (props, grass) waits for its sheet.
    */
   _stepSheets(center, budgetMs) {
     const t0 = performance.now();
@@ -1292,7 +1277,7 @@ export class ChunkManager {
    * one frame was a 25-45 ms hitch. Returns the objects to add.
    */
   *_propsJob(index, s0, s1, origin) {
-    if (!this.trees && !this.bushes) return [];
+    if (!this.trees) return [];
     const chunk = this.chunks.get(index);
     if (!chunk || !chunk.sheet) return [];
 
@@ -1710,7 +1695,7 @@ export class ChunkManager {
         const mx = p.x + origin.x, mz = p.z + origin.z;
         vegetation(this.terrain, mx, mz, p.y + origin.y - this.terrain.continent(mx, mz), 0.1, 50, field);
       }
-      const chosen = commit(SHRUB_NAMES, this.bushes.library, BUSHES.picks,
+      const chosen = commit(SHRUB_NAMES, this.trees.library, BUSHES.picks,
         (n) => (0.08 + guildAffinity(SHRUBS[n], field)) * SHRUBS[n].weight);
       const kinds = [...chosen.keys()];
       const weights = new Array(kinds.length);
@@ -1770,7 +1755,7 @@ export class ChunkManager {
 
         const name = kinds[ki];
         const kind = SHRUBS[name];
-        const variant = this.bushes.library.get(name)[chosen.get(name)];
+        const variant = this.trees.library.get(name)[chosen.get(name)];
         const height = lerp(kind.height[0], kind.height[1], rng());
         const wobble = 0.85 + rng() * 0.3;
 
@@ -1785,10 +1770,8 @@ export class ChunkManager {
         // On the terrain field (see plant()), sunk a little so no shrub is
         // ever seen standing on a stalk.
         p.y = this._groundY(wx, wz, 2) - origin.y - height * 0.05;
-        this._setLocalMatrix(p, height * wobble * 1.6, height,
-          height * wobble * 1.6, rng() * Math.PI * 2);
-        push(`b:${name}`, variant.geometry, this.bushes.material,
-          this._mat, this._color, false);
+        this._setLocalMatrix(p, height * wobble, height, height * wobble, rng() * Math.PI * 2);
+        toForest(variant, false);
         placed++;
       }
     }
@@ -2256,214 +2239,6 @@ export class ChunkManager {
     }
     mesh.geometry.dispose();
     mesh.dispose();
-  }
-
-  /**
-   * Scatters one chunk's stone.
-   *
-   * Stone is placed by interpolating the terrain sheet's vertices like the
-   * grass (on the drawn surface), on the shoulder-to-grass band where loose
-   * stone collects, denser the steeper the ground. It takes NO ground colour:
-   * stone is mineral, and the verge's green on a chip reads as algae.
-   */
-  _buildRocks(index, s0, s1, origin) {
-    this._ensureSheet(index);
-    const chunk = this.chunks.get(index);
-    if (!this.rocks || !chunk || !chunk.sheet) return null;
-
-    // `colors` deliberately not destructured: stone's hue is ROCKS.palette.
-    const { positions } = chunk.sheet;
-    const lat = this.lateral;
-    const nv = lat.length;
-    const nu = CHUNK.segmentsU;
-    const rowLen = (s1 - s0) / nu;
-    const rng = mulberry32(hashInt(index) ^ 0x9b1c3d77);
-
-    const inner = Math.max(EDGE, ROCKS.band[0]);
-    const outer = ROCKS.band[1];
-    if (!(outer > inner)) return null;
-
-    const buckets = new Map();
-    const names = Object.keys(this.rocks.classes);
-    // Seeded window into each class's variants, so a reload comes back the same.
-    const offsets = {};
-    for (const k of names) offsets[k] = Math.floor(rng() * this.rocks.classes[k].variants.length);
-    const p = this._cA;
-
-    for (let n = 0; n < ROCKS.samples; n++) {
-      // Uniform over the grid, not area: biases toward the near columns, which
-      // is where the verge's stone belongs.
-      const j = Math.floor(rng() * nu);
-      const i = Math.floor(rng() * (nv - 1));
-      const width = Math.abs(lat[i + 1] - lat[i]);
-      if (width < 1e-4) continue;
-
-      const fu = rng();
-      const fv = rng();
-      const av = Math.abs(lat[i] + fv * (lat[i + 1] - lat[i]));
-      if (av < inner || av > outer) continue;
-
-      const a = j * nv + i;
-      const b = a + 1;
-      const c = a + nv;
-      const d = c + 1;
-
-      // Same quad split as _buildTerrain: a,b,c then b,d,c.
-      let i0, i1, i2, w0, w1, w2;
-      if (fu + fv <= 1) {
-        i0 = a; i1 = b; i2 = c;
-        w1 = fv; w2 = fu; w0 = 1 - fv - fu;
-      } else {
-        i0 = b; i1 = d; i2 = c;
-        w1 = fu + fv - 1; w2 = 1 - fv; w0 = 1 - w1 - w2;
-      }
-
-      const ya = positions[a * 3 + 1];
-      const gv = (positions[b * 3 + 1] - ya) / width;
-      const gu = (positions[c * 3 + 1] - ya) / rowLen;
-      const slope = Math.sqrt(gu * gu + gv * gv);
-
-      // Steeper ground is stone and scree; the shoulder-to-grass verge fills in.
-      const scree = smoothstep(ROCKS.screeSlope * 0.55, ROCKS.screeSlope, slope);
-      const vergeWeight = 1 - smoothstep(inner, inner + 5.5, av);
-      const chance = lerp(0.40, 0.96, Math.max(scree, vergeWeight * 0.85));
-      if (rng() > chance) continue;
-
-      // Scree dominates on a face; the mix table decides on open ground.
-      const mix = scree > 0.5 ? ROCKS.screeMix : ROCKS.mix;
-      let roll = rng();
-      let name = names[0];
-      for (const k of names) {
-        roll -= mix[k] || 0;
-        if (roll <= 0) { name = k; break; }
-      }
-      const cls = this.rocks.classes[name];
-      // A chunk uses a subset: two variants per class caps draw calls at six,
-      // while the whole library still appears because which two is seeded.
-      const pick = Math.floor(rng() * ROCKS.variantsPerChunk);
-      const variant = (offsets[name] + pick) % cls.variants.length;
-
-      p.set(
-        positions[i0 * 3] * w0 + positions[i1 * 3] * w1 + positions[i2 * 3] * w2,
-        positions[i0 * 3 + 1] * w0 + positions[i1 * 3 + 1] * w1 + positions[i2 * 3 + 1] * w2,
-        positions[i0 * 3 + 2] * w0 + positions[i1 * 3 + 2] * w1 + positions[i2 * 3 + 2] * w2
-      );
-      // Height from the terrain field, not the sheet: the scatter sheet is a
-      // coarse road-space grid that is no longer drawn, and its chords sat
-      // metres off the world-space tiles — every prop floated (or sank).
-      p.y = this._groundY(p.x + origin.x, p.z + origin.z, 4) - origin.y;
-
-      // The band is in sheet columns; on a bend the interpolated point can land
-      // nearer the road than its column says. Ask the field.
-      if (this.field.roadDistance(p.x + origin.x, p.z + origin.z) < inner - 0.2) continue;
-
-      const size = lerp(cls.spec.size[0], cls.spec.size[1], rng() * rng());
-      // Firmly bedded (38-58% buried) so nothing floats or perches on a corner.
-      p.y -= size * lerp(0.38, 0.58, rng());
-
-      const key = name + ':' + variant;
-      let bucket = buckets.get(key);
-      if (!bucket) {
-        bucket = {
-          geometry: cls.variants[variant],
-          shadow: cls.spec.shadow !== false,
-          mats: [],
-          cols: [],
-        };
-        buckets.set(key, bucket);
-      }
-
-      // Orient along the slope normal so the bottom rests against the hill.
-      const slopeLen = Math.hypot(gu, gv, 1.0) || 1.0;
-      const ny = 1.0 / slopeLen, nx = -gu / slopeLen, nz = -gv / slopeLen;
-      const yaw = rng() * Math.PI * 2;
-      const cy = Math.cos(yaw), sy = Math.sin(yaw);
-
-      // Orthonormal basis tilted with the terrain slope; right = up x fwd.
-      const upX = nx, upY = ny, upZ = nz;
-      let fwdX = cy - (cy * upX + sy * upZ) * upX;
-      let fwdY = -(cy * upX + sy * upZ) * upY;
-      let fwdZ = sy - (cy * upX + sy * upZ) * upZ;
-      const fwdLen = Math.hypot(fwdX, fwdY, fwdZ) || 1.0;
-      fwdX /= fwdLen; fwdY /= fwdLen; fwdZ /= fwdLen;
-      const rX = upY * fwdZ - upZ * fwdY;
-      const rY = upZ * fwdX - upX * fwdZ;
-      const rZ = upX * fwdY - upY * fwdX;
-
-      bucket.mats.push(
-        rX * size, rY * size, rZ * size, 0,
-        upX * size, upY * size, upZ * size, 0,
-        fwdX * size, fwdY * size, fwdZ * size, 0,
-        p.x, p.y, p.z, 1
-      );
-
-      // A mineral hue from ROCKS.palette, not the ground's colour: a rock does not
-      // photosynthesise, and the verge's green reads as algae.
-      const pal = ROCKS.palette[Math.floor(rng() * ROCKS.palette.length)];
-      const bright = lerp(ROCKS.shade[0], ROCKS.shade[1], rng());
-      bucket.cols.push(pal[0] * bright, pal[1] * bright, pal[2] * bright);
-    }
-
-    if (!buckets.size) return null;
-    const meshes = [];
-    for (const bucket of buckets.values()) {
-      const count = bucket.cols.length / 3;
-      const mesh = new THREE.InstancedMesh(bucket.geometry, this.rocks.material, count);
-      mesh.instanceMatrix = new THREE.InstancedBufferAttribute(new Float32Array(bucket.mats), 16);
-      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(bucket.cols), 3);
-      // Scree never casts: a 15 cm chip is ~3 texels of shadow noise.
-      mesh.castShadow = bucket.shadow;
-      mesh.receiveShadow = true;
-      mesh.userData.rock = true;
-      meshes.push(mesh);
-    }
-    return meshes;
-  }
-
-  _updateRocks(carS, budget) {
-    if (!this.rocks) return;
-    const center = Math.floor(carS / CHUNK.length);
-    const lo = center - ROCKS.behind;
-    const hi = center + ROCKS.ahead;
-
-    for (const [i, chunk] of this.chunks) {
-      const wanted = i >= lo && i <= hi;
-      if (wanted && chunk.sheet && !chunk.rocks && !chunk.rocksEmpty && !this.rockQueue.includes(i)) {
-        this.rockQueue.push(i);
-      } else if (!wanted && chunk.rocks) {
-        for (const mesh of chunk.rocks) {
-          this.scene.remove(mesh);
-          mesh.dispose();
-          const at = chunk.objects.indexOf(mesh);
-          if (at >= 0) chunk.objects.splice(at, 1);
-        }
-        chunk.rocks = null;
-      }
-    }
-
-    this.rockQueue.sort((a, b) => Math.abs(a - center) - Math.abs(b - center));
-    while (this.rockQueue.length && budget > 0) {
-      const i = this.rockQueue.shift();
-      const chunk = this.chunks.get(i);
-      if (!chunk || chunk.rocks || i < lo || i > hi) continue;
-      const s0 = i * CHUNK.length;
-      const meshes = this._buildRocks(i, s0, s0 + CHUNK.length, chunk.origin);
-      if (meshes) {
-        for (const mesh of meshes) {
-          mesh.position.copy(chunk.origin);
-          mesh.matrixAutoUpdate = false;
-          mesh.updateMatrix();
-          this.scene.add(mesh);
-          chunk.objects.push(mesh);
-          this.culler.add(mesh);
-        }
-        chunk.rocks = meshes;
-      } else {
-        chunk.rocks = null;
-        chunk.rocksEmpty = true;
-      }
-      budget--;
-    }
   }
 
   /** Adds and removes ground cover as the car moves. Grass lives shorter than

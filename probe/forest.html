@@ -5,7 +5,7 @@
 
     ?level=N          every species, both variants, at level N, in a grid
                       (&names=pine,oak for some of them)
-    ?species=oak      one species, every level side by side at one size
+    ?species=oak      one species (or shrub), every level side by side at one size
 
   Wind is held still. Add &sky=1 for the game's sky colour as background.
 -->
@@ -25,7 +25,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { ATMOSPHERE, TREES } from '../src/config.js';
-import { FOLIAGE } from '../src/foliage.js';
+import { FOLIAGE, SHRUBS } from '../src/foliage.js';
 import { createTreeGenAssetsAsync } from '../src/env/treegen.js';
 
 const q = new URLSearchParams(location.search);
@@ -68,7 +68,8 @@ const camera = new THREE.PerspectiveCamera(30, W / H, 0.5, 2000);
 if (species) {
   // one row: every level of variant 0, then variant 1 behind it
   const [v0, v1] = trees.library.get(species);
-  const h = (FOLIAGE[species].height[0] + FOLIAGE[species].height[1]) / 2;
+  const { height } = FOLIAGE[species] || SHRUBS[species];
+  const h = (height[0] + height[1]) / 2;
   const gap = h * Math.max(0.7, v0.radius * 2.3);
   const n = trees.specs.length;
   for (let i = 0; i < n; i++) {

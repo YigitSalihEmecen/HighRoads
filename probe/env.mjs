@@ -1,16 +1,15 @@
 /**
  * env.mjs — measures the scenery outside the near grass tier.
  *
- * Covers the far grass tier, trees, bushes, rocks and ground detail.
+ * Covers the far grass tier, trees, bushes and ground detail.
  */
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import { WORLD, CHUNK, GRASS, ROCKS, ROAD } from '../src/config.js';
+import { WORLD, CHUNK, GRASS, ROAD } from '../src/config.js';
 import { createTerrain } from '../src/noise.js';
 import { RoadPath } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
-import { createRockAssets } from '../src/env/rocks.js';
 
 const seed = process.argv[2] || 'highroads-01';
 let bad = 0;
@@ -20,41 +19,6 @@ const check = (ok, label, detail) => {
 };
 
 console.log(`\nseed "${seed}" — procedural environment assets\n`);
-
-/* ---------------------------------------------------------------- rocks -- */
-
-const rocks = createRockAssets();
-let rockTris = 0;
-let rockVariants = 0;
-let worstFloat = 0;
-let worstSpan = 0;
-for (const [name, cls] of Object.entries(rocks.classes)) {
-  for (const g of cls.variants) {
-    const pos = g.attributes.position.array;
-    rockTris += pos.length / 9;
-    rockVariants++;
-    let minY = Infinity, maxXZ = 0;
-    for (let i = 0; i < pos.length; i += 3) {
-      if (pos[i + 1] < minY) minY = pos[i + 1];
-      const h = Math.hypot(pos[i], pos[i + 2]);
-      if (h > maxXZ) maxXZ = h;
-    }
-    worstFloat = Math.max(worstFloat, Math.abs(minY));
-    worstSpan = Math.max(worstSpan, Math.abs(maxXZ - 0.5));
-  }
-}
-check(rockVariants > 0, 'rock variants built',
-  `${rockVariants} across ${Object.keys(rocks.classes).length} classes`);
-check(rockTris / rockVariants < 130, 'triangles per rock',
-  `${(rockTris / rockVariants).toFixed(0)} mean, ${rockTris} for the whole library`);
-// Rocks are unit-normalised to stand on y = 0, or the scatter cannot know
-  // whether they float or are buried.
-  check(worstFloat < 1e-5, 'every rock stands on y = 0',
-    `worst offset ${(worstFloat * 1000).toFixed(3)} mm`);
-  // If the half-extent is not 0.5, "a 40 cm rock" is not 40 cm.
-  check(worstSpan < 1e-5, 'every rock normalised to unit width',
-    `worst error ${(worstSpan * 1000).toFixed(3)} mm`);
-  rocks.dispose();
 
 /* -------------------------------------------------------------- scatter -- */
 
@@ -73,10 +37,9 @@ chunks.preload(CHUNK.length * 2);
 for (let i = 0; i < 3000; i++) {
   chunks.update(CHUNK.length * 2);
   if (i > 40 && !chunks.pending.length && !chunks.sheetQueue.length && !chunks.propQueue.length
-      && !chunks.propJob && !chunks.rockQueue.length && chunks.grassTiers.every((t) => !t.queue.length && !t.job)) break;
+      && !chunks.propJob && chunks.grassTiers.every((t) => !t.queue.length && !t.job)) break;
 }
 
-const EDGE = ROAD.halfWidth + ROAD.shoulder;
 const tier = chunks.grassTiers.find((t) => t.key === 'grassFar');
 
 if (!tier) {
@@ -130,47 +93,6 @@ if (!tier) {
     'far tier outlives its own lateral band',
     `fades at ${GRASS.far.fadeOut[0]} m, band is ${GRASS.far.halfExtent} m`);
 }
-
-/* ------------------------------------------------------------ the stone -- */
-
-let rInst = 0, rTris = 0, rCost = 0, rWorstLat = 0, rOnRoad = 0, rBatches = 0;
-const rChunks = 4;
-for (let i = 2; i < 2 + rChunks; i++) {
-  const s0 = i * CHUNK.length;
-  const origin = chunks.chunks.get(i).origin;
-  // The sheet is built over several frames in the game (chunks._stepSheets);
-  // finish it here so the timing is the scatter alone.
-  chunks._ensureSheet(i);
-  const t0 = performance.now();
-  const meshes = chunks._buildRocks(i, s0, s0 + CHUNK.length, origin);
-  rCost += performance.now() - t0;
-  if (!meshes) continue;
-  rBatches += meshes.length;
-  for (const mesh of meshes) {
-    rInst += (mesh.userData.total ?? mesh.count);
-    rTris += (mesh.geometry.attributes.position.array.length / 9) * (mesh.userData.total ?? mesh.count);
-    const m = mesh.instanceMatrix.array;
-    for (let k = 0; k < (mesh.userData.total ?? mesh.count); k++) {
-      const p = new THREE.Vector3(m[k * 16 + 12] + origin.x, 0, m[k * 16 + 14] + origin.z);
-      const s = path.projectPoint(p, s0 + CHUNK.length * 0.5);
-      const lat = Math.abs(path.lateralOffset(p, s));
-      rWorstLat = Math.max(rWorstLat, lat);
-      // Distance to the road is the terrain field's definition now (the dense
-      // centreline); projectPoint's arc-length search disagrees by ~0.3 m on a bend.
-      if (chunks.field.roadDistance(p.x, p.z) < EDGE - 0.5) rOnRoad++;
-    }
-  }
-}
-check(rInst > 0, 'stone places anything at all', `${rInst} over ${rChunks} chunks`);
-check(rOnRoad === 0, 'no stone on the carriageway or shoulder',
-  `${rOnRoad} of ${rInst} inside ${EDGE.toFixed(1)} m`);
-check(rWorstLat <= ROCKS.band[1] + 2, 'stone stays inside its band',
-  `furthest ${rWorstLat.toFixed(1)} m of ${ROCKS.band[1]}`);
-check(rTris / rChunks < 40000, 'stone triangle budget',
-  `${(rTris / rChunks).toFixed(0)} per chunk, ` +
-  `${((rTris / rChunks) * (ROCKS.behind + ROCKS.ahead + 1)).toFixed(0)} alive against ~109,000 of terrain`);
-check(rBatches / rChunks < 16, 'draw batches per chunk', `${(rBatches / rChunks).toFixed(1)}`);
-check(rCost / rChunks < 8, 'stone scatter cost', `${(rCost / rChunks).toFixed(1)} ms per chunk`);
 
 /* ------------------------------------------------------------ tyre effects -- */
 

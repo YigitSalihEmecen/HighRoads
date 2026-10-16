@@ -27,7 +27,6 @@
 <script type="module">
 import * as THREE from 'three';
 import { createTreeAssets } from '../src/env/legacy/trees.js';
-import { createBushAssets } from '../src/env/bushes.js';
 import { createGrassAssets } from '../src/env/grass.js';
 import { GRASS, ATMOSPHERE } from '../src/config.js';
 
@@ -57,11 +56,10 @@ sun.shadow.mapSize.set(2048, 2048);
 scene.add(sun);
 
 const trees = createTreeAssets();
-const bushes = createBushAssets();
 const grass = createGrassAssets();
 
 // Fade off: window way past anything, fade-in already complete.
-for (const u of [trees.uniforms.near, trees.uniforms.far, bushes.uniforms]) {
+for (const u of [trees.uniforms.near, trees.uniforms.far]) {
   u.uFade.value.set(1e6, 1e6 + 1);
   u.uFadeIn.value.set(-2, -1);
   u.uFadeLone.value.set(-2, -1);
@@ -98,14 +96,6 @@ for (const [name, variants] of trees.library) {
   far.forEach((p, v) => put(p, trees.farMaterial,
     x0 + SPECIES_GAP * 0.5 + (v - 1) * VARIANT_GAP, zb - ROW, TALL));
   i++;
-}
-
-// Shrubs across the very front, at their own scale. Their hue is baked in, as
-// the trees' is, so no tint is needed here.
-let b = 0;
-const nb = [...bushes.library.values()].reduce((a, v) => a + v.length, 0);
-for (const [, variants] of bushes.library) {
-  for (const p of variants) put(p, bushes.material, (b++ - (nb - 1) / 2) * 3.1, 14, 2.6);
 }
 
 /**

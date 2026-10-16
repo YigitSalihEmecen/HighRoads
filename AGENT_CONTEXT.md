@@ -72,12 +72,10 @@ road, the sheet and the streaming window.
 |---|---|---|
 | `textures.js` | canvas helpers, seeded PRNG, **tileable** noise/fBm/ridged, `paint()` | — |
 | `lowpoly.js` | faceted-solid primitives: warped lumps, tapering tubes, conifer skirts | — |
-| `treegen.js` | the canopy: 16 species as TreeGen parameter sets, four levels each, worker pool (§4.11b) | ~56k / 18k / 5k / 6 |
+| `treegen.js` | the canopy: 16 species as TreeGen parameter sets, plus the 10 shrubs as TreeGen bushes, four levels each, worker pool (§4.11b) | ~56k / 6k / 1.3k / 6; shrubs ~10k up close |
 | `treegen.worker.js` | TreeGen meshing + card atlas painting off the main thread | — |
 | `legacy/trees.js` | LEGACY faceted low-poly trees, near and far tiers from ONE builder (`?trees=legacy`) | 105–500 / **30–254** |
-| `bushes.js` | four shrub forms, clusters of faceted lumps | 75–115 |
 | `grass.js` | crossed-card tufts: roadside, woodland-floor and far tiers | 4 |
-| `rocks.js` | fractured convex boulders, slabs, scree | 20–80 |
 | `ground.js` | terrain detail texture + material patch | — |
 | `road.js` | the road in road space: sections, wheel paths, patches, cracks, POM asphalt | — |
 | `water.js` | lake surfaces: polar mesh + water shader (§4.21) | — |
@@ -489,7 +487,9 @@ the real scene, so what you choose is what you drive, paint included.
   cannot do it: asked to cross 15 m it either crawls or snaps. **Controls are
   live from frame one.** The fly-in belongs to the Drive button only (#65).
 
-### 4.11 Foliage — faceted low-poly (`foliage.js`, `env/lowpoly.js`, `env/legacy/trees.js`, `env/bushes.js`, `chunks.js`)
+### 4.11 Foliage — faceted low-poly (`foliage.js`, `env/lowpoly.js`, `env/legacy/trees.js`, `chunks.js`)
+
+The faceted shrubs (`env/bushes.js`) were removed: shrubs are TreeGen bushes now (§4.11b).
 
 > **The trees in this section are now the LEGACY generator** — kept whole in
 > `env/legacy/trees.js`, selectable from Settings › Graphics › Trees or
@@ -693,6 +693,15 @@ its own site and repo): Weber & Penn parametric trees with generated bark and
 real leaves. HighRoads uses its library entry points — `lod.js:buildLods` (mesh
 once, derive every level) and `kit.js:dressLevels` / `bakeImpostor` — and never
 edits it; changes go to Tree-Gen first, then the submodule pointer moves.
+
+**Shrubs are TreeGen bushes** (`tree_gen/src/bush.js`): a clump of `stems`
+parametric stems from one stool, each leaning outward, merged into one
+skeleton, so they mesh, LOD and bake exactly like a tree. One preset per
+`foliage.js:SHRUBS` name; `env/treegen.js` builds them into the same library
+(leaf colour from `SHRUBS[*].palettes`, `BUSHES.variants/maxLeaves/maxBranches`,
+`BUSHES.windStrength` on their own uniforms), and `forest.js` draws them with
+the trees, fading at the variant's `fade` (`BUSHES.fade`) instead of
+`TREES.farFade`. Only with the TreeGen generator — legacy mode has no shrubs.
 
 **Species.** `treegen.js:TREEGEN_SPECIES` maps each of the 16 HighRoads species
 (the same names `foliage.js` and `biomes.js` use — nothing about placement or
@@ -912,28 +921,10 @@ the detail map's alpha degraded the RGB through premultiplied mips), and a
 gradient, `GROUND.bump`) — relief without tangents. `road.js` adds patch
 repairs in G and tar snakes (sealed cracks, darker and glossy) in B.
 
-### 4.14 Stone (`env/rocks.js` + `chunks.js`)
+### 4.14 Stone — removed
 
-Not scenery — **texture**. Chips along the shoulder, scree out of a cutting, the
-occasional boulder. A rock is a subdivided icosahedron, displaced by two octaves,
-squashed, then **clipped against random half-space planes** — which is what a
-fracture is; without it the result is a potato. Normals FLAT.
-
-One rule does the work: **the steeper the ground, the more likely stone is and
-the more of it is scree** — that single smoothstep gives talus under a cutting,
-chips along a bank and the odd stone in a field without any being a special case.
-
-- **A chunk uses a WINDOW into the variant library** (`variantsPerChunk` 2 per
-  class). Every distinct geometry is another draw call; the full library was
-  eleven batches for a hundred rocks. Now 6.0.
-- **Scree never casts a shadow** — the cascade is 4 cm a texel, so a 15 cm chip's
-  shadow is noise, and there are more chips than everything else together.
-- **Stone does NOT take the ground's colour.** It draws from `ROCKS.palette`, a
-  fixed set of mineral greys and browns. This is the one documented exception to
-  `src/env/`'s rule 5, and the reason is that the rule is about things that
-  *grow*: sampling the verge gave every chip the grass's green, which reads as
-  algae. The table lived inline in `_buildRocks` until it was the only colour
-  decision in the project not in `config.js`.
+The verge rocks (`env/rocks.js`, `ROCKS`, `_buildRocks`/`_updateRocks`) were
+removed along with the faceted shrubs: too low-poly next to the TreeGen canopy.
 
 ### 4.14b Road signs (`roadsign_gen/`, `env/signs.js`, `chunks.js:_buildSigns`)
 

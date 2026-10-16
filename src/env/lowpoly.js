@@ -1,7 +1,7 @@
 /**
  * env/lowpoly.js — faceted solids.
  *
- * The shared primitive layer under trees.js and bushes.js: three shapes and
+ * The shared primitive layer under legacy/trees.js: three shapes and
  * one accumulator. Nothing above this layer touches a vertex.
  */
 

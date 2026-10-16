@@ -12,14 +12,18 @@
  * variant still picks the colourway (three seasons of maple) and the biomes
  * look as they did; bark is TreeGen's.
  *
+ * The shrubs are TreeGen bushes (`tree_gen/src/bush.js`, one preset per
+ * `foliage.js:SHRUBS` name) in the same library, drawn by the same forest
+ * with their own wind and fade (`BUSHES`).
+ *
  * Triangles per tree at the default levels: ~25-40k / ~8-12k / ~1.5-3k / 6.
  */
 
 import * as THREE from 'three';
-import { TREES } from '../config.js';
-import { TREE_FORMS } from '../foliage.js';
-import { generateTree, mergeParams } from '../../tree_gen/src/tree.js';
+import { BUSHES, TREES } from '../config.js';
+import { SHRUBS, TREE_FORMS } from '../foliage.js';
 import { SPECIES } from '../../tree_gen/src/species.js';
+import { BUSHES as BUSH_PRESETS, generateBush } from '../../tree_gen/src/bush.js';
 import { buildLods } from '../../tree_gen/src/lod.js';
 import { dressLevels, barkMaterial } from '../../tree_gen/src/kit.js';
 
@@ -111,6 +115,14 @@ export const TREEGEN_SPECIES = {
   },
 };
 
+const isBush = (name) => !(name in TREEGEN_SPECIES);
+const defOf = (name) => TREEGEN_SPECIES[name] || { from: name };
+const presetOf = (name) => SPECIES[defOf(name).from] || BUSH_PRESETS[name];
+/** Seeds and bark textures are keyed by position in this list. */
+const KEYS = [...Object.keys(TREEGEN_SPECIES), ...Object.keys(BUSH_PRESETS)];
+const defaultNames = () => [...Object.keys(TREEGEN_SPECIES),
+  ...(BUSHES.enabled ? Object.keys(SHRUBS).filter((n) => n in BUSH_PRESETS) : [])];
+
 const hex = (rgb) => `#${new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2],
   THREE.LinearSRGBColorSpace).getHexString()}`;
 
@@ -186,22 +198,23 @@ function normalise(levels) {
 /** One job per species variant, in library order: everything a worker needs. */
 function plan(names) {
   const G = TREES.treegen;
-  const keys = Object.keys(TREEGEN_SPECIES);
   const jobs = [];
   for (const name of names) {
-    const def = TREEGEN_SPECIES[name];
-    const preset = SPECIES[def.from];
-    const pal = TREE_FORMS[name]?.palettes;
-    for (let v = 0; v < G.variants; v++) {
+    const def = defOf(name);
+    const preset = presetOf(name);
+    const bush = isBush(name);
+    const pal = (bush ? SHRUBS : TREE_FORMS)[name]?.palettes;
+    const caps = bush ? BUSHES : G;
+    for (let v = 0; v < caps.variants; v++) {
       const params = {
         ...preset.params, ...def.params, scaleV: 0,
         // Seeded from species and variant, never the world seed.
-        seed: (0x7ee5 + keys.indexOf(name) * 131 + v * 7919) >>> 0,
-        maxLeaves: G.maxLeaves, maxBranches: G.maxBranches,
+        seed: (0x7ee5 + KEYS.indexOf(name) * 131 + v * 7919) >>> 0,
+        maxLeaves: caps.maxLeaves, maxBranches: caps.maxBranches,
       };
       const p = pal ? pal[v % pal.length] : null;
       jobs.push({
-        name, v, params,
+        name, v, params, bush,
         leaves: params.leaves !== 0 ? { shape: params.leafShape,
           colors: p ? [hex(p[1]), hex(p[0])] : preset.palette.leaf.summer } : null,
         growth: preset.growth ? { ...preset.growth, detail: 1 } : null,
@@ -214,16 +227,18 @@ function plan(names) {
 /** The library being filled, and `add` to dress one variant's geometry into it. */
 function makeLibrary(o, names) {
   const G = TREES.treegen;
-  const keys = Object.keys(TREEGEN_SPECIES);
   const uniforms = {
     uTime: { value: 0 },
     uWind: { value: new THREE.Vector2(TREES.windDir.x, TREES.windDir.z).normalize() },
     uWindStrength: { value: TREES.windStrength },
     uWindSpeed: { value: TREES.windSpeed },
   };
+  // Tip travel is in metres, not tree heights: a shrub sways less.
+  const shrubUniforms = { ...uniforms, uWindStrength: { value: BUSHES.windStrength } };
+  const windOf = (name) => (isBush(name) ? shrubUniforms : uniforms);
   const specs = G.lods.map((L) => ({ ...L }));
   /** species -> [{ radius, levels: [{ parts: [{ geometry, material, leafy }], tris }] }] */
-  const library = new Map(names.map((n) => [n, new Array(G.variants)]));
+  const library = new Map(names.map((n) => [n, new Array((isBush(n) ? BUSHES : G).variants)]));
   const barks = new Map();
   const tris = new Array(specs.length).fill(0);
   let done = 0;
@@ -231,10 +246,9 @@ function makeLibrary(o, names) {
   // One bark texture per species: every variant shares it.
   const barkFor = (name) => {
     if (!barks.has(name)) {
-      const def = TREEGEN_SPECIES[name];
-      const bark = barkMaterial({ ...SPECIES[def.from].palette.bark, ...def.bark },
-        { size: G.barkSize, seed: 0x5eed + keys.indexOf(name) });
-      windify(bark, uniforms, false);
+      const bark = barkMaterial({ ...presetOf(name).palette.bark, ...defOf(name).bark },
+        { size: G.barkSize, seed: 0x5eed + KEYS.indexOf(name) });
+      windify(bark, windOf(name), false);
       barks.set(name, bark);
     }
     return barks.get(name);
@@ -251,21 +265,21 @@ function makeLibrary(o, names) {
     const out = levels.map((level, i) => {
       let n = 0;
       for (const part of level.parts) {
-        if (part.material !== bark) windify(part.material, uniforms, part.name === 'Foliage');
+        if (part.material !== bark) windify(part.material, windOf(job.name), part.name === 'Foliage');
         n += part.geometry.index ? part.geometry.index.count / 3 : 0;
       }
-      tris[i] += n;
+      if (!job.bush) tris[i] += n;
       return { parts: level.parts, tris: n, impostor: !!specs[i].impostor, dispose: level.dispose };
     });
-    library.get(job.name)[job.v] = { height: 1, radius, levels: out };
-    done++;
+    library.get(job.name)[job.v] = { height: 1, radius, levels: out, fade: job.bush ? BUSHES.fade : null };
+    if (!job.bush) done++;
   };
 
   const assets = {
     library,
     specs,
     uniforms,
-    /** Mean triangles per tree at each level, for the probes' budget lines. */
+    /** Mean triangles per tree (not shrub) at each level, for the probes' budget lines. */
     get trianglesPerLevel() { return tris.map((t) => t / Math.max(1, done)); },
     setTime(t) { uniforms.uTime.value = t; },
     dispose() {
@@ -281,7 +295,7 @@ function makeLibrary(o, names) {
 
 /** One variant on this thread. */
 function grow(job, specs) {
-  const tree = generateTree(mergeParams(job.params));
+  const tree = generateBush(job.params);
   const geos = buildLods(tree, specs, { detail: TREES.treegen.detail, leaves: job.leaves, growth: job.growth });
   return { geos, center: tree.bounds.center };
 }
@@ -291,7 +305,7 @@ function grow(job, specs) {
  * @param {object} o { renderer (bakes billboards; none headless), names }
  */
 export function createTreeGenAssets(o = {}) {
-  const names = o.names || Object.keys(TREEGEN_SPECIES);
+  const names = o.names || defaultNames();
   const L = makeLibrary(o, names);
   for (const job of plan(names)) {
     const { geos, center } = grow(job, L.specs);
@@ -314,7 +328,7 @@ const unpack = (p) => {
  * per frame, where workers or OffscreenCanvas are missing or fail to start.
  */
 export async function createTreeGenAssetsAsync(o = {}, onProgress = () => {}) {
-  const names = o.names || Object.keys(TREEGEN_SPECIES);
+  const names = o.names || defaultNames();
   const L = makeLibrary(o, names);
   const jobs = plan(names);
   const total = jobs.length;

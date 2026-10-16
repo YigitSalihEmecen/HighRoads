@@ -339,14 +339,20 @@ export const TREES = {
 };
 
 /**
- * The understorey — see `src/env/bushes.js`.
- * Small, numerous, placed on the woodland EDGE rather than inside or outside it.
+ * The understorey: TreeGen bushes (`tree_gen/src/bush.js`), grown and drawn
+ * with the canopy (`env/treegen.js`, `forest.js`), so only with the TreeGen
+ * generator. Small, numerous, placed on the woodland EDGE rather than inside
+ * or outside it.
  */
 export const BUSHES = {
   enabled: true,
 
-  variants: 3,
+  variants: 2,
   picks: 2,
+
+  /** Generation caps per bush (the trees' are `TREES.treegen`). */
+  maxLeaves: 3000,
+  maxBranches: 1000,
 
   /** Camera distance over which a shrub shrinks away, metres. */
   fade: [70, 105],
@@ -612,68 +618,6 @@ export const SIGNS = {
   cantileverSpan: 10.5,
   /** Skip a gantry where the ground at a leg is this far below the road. */
   gantryDrop: 1.2,
-};
-
-/**
- * Procedural stone — see `env/rocks.js`. Chips on the shoulder-to-grass verge,
- * talus spilling from cuttings.
- */
-export const ROCKS = {
-  enabled: true,
-
-  /** Chunks either side of the car that carry stone. */
-  behind: 1,
-  ahead: 4,
-
-  /** Scatter attempts per chunk. Concentrated on the road-to-grass verge. */
-  samples: 4000,
-
-  /** How many of each class's variants any ONE chunk may use. */
-  variantsPerChunk: 2,
-
-  /** Where stone is allowed, in metres of lateral offset from the centreline. */
-  band: [9.8, 16.0],
-
-  /** Cut faces: where the terrain is steeper than this, stone is far more likely. */
-  screeSlope: 0.62,
-
-  /** Relative weight of each class on ordinary ground, and on a cut face. */
-  mix: { scree: 0.62, stone: 0.31, boulder: 0.07 },
-  screeMix: { scree: 0.86, stone: 0.13, boulder: 0.01 },
-
-  /**
-   * Stone hues, one drawn per instance. Stone does not take the ground's
-   * colour — rule 5 of `src/env/README.md`; the luminance is in the geometry.
-   */
-  palette: [
-    [0.55, 0.55, 0.55],  // medium granite grey
-    [0.62, 0.60, 0.58],  // light warm granite
-    [0.46, 0.46, 0.47],  // cool slate
-    [0.52, 0.47, 0.40],  // earthy warm stone
-    [0.43, 0.39, 0.34],  // dark earth stone
-    [0.64, 0.61, 0.55],  // sandy limestone
-    [0.35, 0.34, 0.33],  // charcoal basalt
-  ],
-  /** Per-instance brightness jitter around the palette entry. */
-  shade: [0.85, 1.15],
-
-  /** Size classes: detail = icosahedron subdivision; flatten = vertical squash. */
-  classes: {
-    scree: {
-      variants: 5, detail: 0, size: [0.10, 0.34],
-      flatten: [0.34, 0.66], facets: 4, roughness: 0.42,
-      // A 15 cm chip is three texels, so its shadow is noise.
-      shadow: false,
-    },
-    stone: {
-      variants: 5, detail: 1, size: [0.32, 0.95],
-      flatten: [0.40, 0.78], facets: 5, roughness: 0.34,
-    },
-    boulder: {
-      variants: 4, detail: 1, size: [1.0, 2.6],
-      flatten: [0.55, 0.92], facets: 6, roughness: 0.30,
-    },
-  },
 };
 
 /**
@@ -1188,7 +1132,7 @@ export const WATER = {
  *
  *   HIGH    the current defaults — dense woods, long draw distance.
  *   MEDIUM  half the draw distance, and about half of everything in it.
- *   LOW     the FAR TIER ONLY — no near canopy, no grass, no shrubs, no stone.
+ *   LOW     the FAR TIER ONLY — no near canopy, no grass, no shrubs.
  */
 export const GRAPHICS_LEVELS = ['high', 'medium', 'low'];
 
@@ -1241,13 +1185,12 @@ function applyGraphics() {
       .map((L, i) => ({ ...L, from: [0, 150, 360][i] }));
     TREES.treegen.shadowLevels = 1;
 
-    // Grass, shrubs and stone scale down together.
+    // Grass and shrubs scale down together.
     GRASS.density = 1.3;
     GRASS.far.ahead = 2;
     GRASS.far.fadeOut = [150, 220];
     BUSHES.samples = 600;
     BUSHES.cap = 72;
-    ROCKS.samples = 2200;
     SIGNS.lod = 2;
     SIGNS.drawDistance = 400;
     GROUND.sward.size = 512;
@@ -1267,10 +1210,9 @@ function applyGraphics() {
     TILES.levels = 5;
     TILES.split = 1.3;
 
-    // No grass, no shrubs, no stone.
+    // No grass, no shrubs.
     GRASS.enabled = false;
     BUSHES.enabled = false;
-    ROCKS.enabled = false;
     SIGNS.lod = 2;
     SIGNS.drawDistance = 300;
     // The turf's look without its march.

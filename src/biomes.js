@@ -46,7 +46,6 @@ import { hashInt, mulberry32, smoothstep, clamp } from './util.js';
  *   bloom     flower colours
  *   tint      multiplier on the ground palette (r, g, b)
  *   lake      chance a lake cell here holds water
- *   rocks     multiplier on stone
  */
 export const BIOMES = {
   meadow: {
@@ -55,7 +54,7 @@ export const BIOMES = {
     shrubs: { bramble: 1.0, hazel: 0.6, rosebush: 0.8, boxwood: 0.4 },
     sward: [0.55, 0.15, 0.30], canopy: 0.32, lone: 0.55, under: 0.8, grass: 1.2, flowers: 0.22,
     bloom: [[0.95, 0.85, 0.30], [0.96, 0.96, 0.92], [0.80, 0.42, 0.78], [0.95, 0.45, 0.30]],
-    tint: [1.02, 1.04, 0.92], lake: 0.30, rocks: 0.6,
+    tint: [1.02, 1.04, 0.92], lake: 0.30,
   },
   broadleaf: {
     label: 'Broadleaf forest', T: 0.55, M: 0.68,
@@ -63,7 +62,7 @@ export const BIOMES = {
     shrubs: { hazel: 1.0, bramble: 0.8, fern: 1.0, boxwood: 0.3 },
     sward: [0.60, 0.15, 0.25], canopy: 1.25, lone: 0.05, under: 1.0, grass: 0.9, flowers: 0.04,
     bloom: [[0.96, 0.96, 0.92], [0.70, 0.62, 0.92]],
-    tint: [0.92, 1.0, 0.90], lake: 0.25, rocks: 0.7,
+    tint: [0.92, 1.0, 0.90], lake: 0.25,
   },
   autumn: {
     label: 'Autumn woodland', T: 0.45, M: 0.55,
@@ -71,7 +70,7 @@ export const BIOMES = {
     shrubs: { bramble: 0.8, hazel: 0.8, fern: 0.7, heather: 0.3 },
     sward: [0.60, 0.25, 0.15], canopy: 1.0, lone: 0.12, under: 0.9, grass: 0.95, flowers: 0.03,
     bloom: [[0.95, 0.80, 0.30]],
-    tint: [1.10, 1.00, 0.82], lake: 0.25, rocks: 0.8,
+    tint: [1.10, 1.00, 0.82], lake: 0.25,
   },
   boreal: {
     label: 'Boreal forest', T: 0.25, M: 0.62,
@@ -79,7 +78,7 @@ export const BIOMES = {
     shrubs: { juniper: 1.0, fern: 0.8, heather: 0.6, bramble: 0.2 },
     sward: [0.55, 0.30, 0.15], canopy: 1.3, lone: 0.04, under: 0.8, grass: 0.75, flowers: 0.02,
     bloom: [[0.96, 0.96, 0.92]],
-    tint: [0.86, 0.96, 0.92], lake: 0.45, rocks: 1.1,
+    tint: [0.86, 0.96, 0.92], lake: 0.45,
   },
   birchwood: {
     label: 'Birch wood', T: 0.38, M: 0.50,
@@ -87,7 +86,7 @@ export const BIOMES = {
     shrubs: { fern: 1.0, bramble: 0.5, juniper: 0.3, heather: 0.4 },
     sward: [0.60, 0.25, 0.15], canopy: 0.95, lone: 0.15, under: 0.9, grass: 1.05, flowers: 0.06,
     bloom: [[0.96, 0.96, 0.92], [0.98, 0.86, 0.30]],
-    tint: [0.98, 1.04, 0.90], lake: 0.35, rocks: 0.8,
+    tint: [0.98, 1.04, 0.90], lake: 0.35,
   },
   savanna: {
     label: 'Dry savanna', T: 0.86, M: 0.18,
@@ -95,7 +94,7 @@ export const BIOMES = {
     shrubs: { gorse: 1.0, juniper: 0.5, lavender: 0.3, boxwood: 0.2 },
     sward: [0.30, 0.66, 0.04], canopy: 0.30, lone: 0.92, under: 0.6, grass: 0.85, flowers: 0.03,
     bloom: [[0.95, 0.80, 0.30]],
-    tint: [1.22, 1.04, 0.70], lake: 0.06, rocks: 1.2,
+    tint: [1.22, 1.04, 0.70], lake: 0.06,
   },
   mediterranean: {
     label: 'Mediterranean scrub', T: 0.78, M: 0.34,
@@ -103,7 +102,7 @@ export const BIOMES = {
     shrubs: { lavender: 1.0, gorse: 0.6, boxwood: 0.7, juniper: 0.4 },
     sward: [0.45, 0.45, 0.10], canopy: 0.45, lone: 0.55, under: 1.1, grass: 0.8, flowers: 0.10,
     bloom: [[0.62, 0.48, 0.86], [0.95, 0.85, 0.30]],
-    tint: [1.12, 1.04, 0.80], lake: 0.10, rocks: 1.1,
+    tint: [1.12, 1.04, 0.80], lake: 0.10,
   },
   alpine: {
     label: 'Alpine', T: 0.08, M: 0.45,
@@ -113,7 +112,7 @@ export const BIOMES = {
     shrubs: { heather: 1.0, juniper: 0.9 },
     sward: [0.60, 0.20, 0.20], canopy: 0.35, lone: 0.45, under: 0.8, grass: 0.6, flowers: 0.06,
     bloom: [[0.62, 0.48, 0.86], [0.96, 0.96, 0.92]],
-    tint: [0.92, 0.94, 0.94], lake: 0.40, rocks: 1.8,
+    tint: [0.92, 0.94, 0.94], lake: 0.40,
   },
   wetland: {
     label: 'Wetland', T: 0.52, M: 0.82,
@@ -121,7 +120,7 @@ export const BIOMES = {
     shrubs: { reeds: 1.0, fern: 0.6, bramble: 0.4, hazel: 0.3 },
     sward: [0.45, 0.50, 0.05], canopy: 0.70, lone: 0.40, under: 1.2, grass: 1.3, flowers: 0.08,
     bloom: [[0.98, 0.86, 0.30], [0.96, 0.96, 0.92]],
-    tint: [0.88, 1.06, 0.92], lake: 0.85, rocks: 0.4,
+    tint: [0.88, 1.06, 0.92], lake: 0.85,
   },
   blossom: {
     label: 'Blossom grove', T: 0.62, M: 0.60,
@@ -129,7 +128,7 @@ export const BIOMES = {
     shrubs: { rosebush: 1.0, boxwood: 0.6, hazel: 0.3 },
     sward: [0.55, 0.10, 0.35], canopy: 0.70, lone: 0.30, under: 0.9, grass: 1.15, flowers: 0.30,
     bloom: [[0.98, 0.72, 0.82], [0.96, 0.96, 0.92], [0.95, 0.85, 0.30]],
-    tint: [1.0, 1.05, 0.95], lake: 0.30, rocks: 0.5,
+    tint: [1.0, 1.05, 0.95], lake: 0.30,
     // A rare biome: it only wins a cell when the cell's own roll lands it.
     rare: 0.10,
   },

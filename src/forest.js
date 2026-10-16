@@ -12,7 +12,8 @@
  * species in view, not the chunks loaded.
  *
  * Two fades shrink a tree about its base instead of popping it, as the legacy
- * shader did: `TREES.farFade` at the end of the draw distance, and
+ * shader did: `TREES.farFade` at the end of the draw distance (a variant's own
+ * `fade` instead where it has one: the shrubs), and
  * `TREES.loneFadeIn` for trees placed with no near mesh (the dense far
  * stands), which only exist beyond it.
  *
@@ -197,11 +198,12 @@ export class Forest {
         total++;
         const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
         const d = Math.hypot(px - cx, py - cy, pz - cz) + jit[i];
-        let f = 1 - smooth(far0, far1, d);
+        const kind = this.kinds[kinds[i]];
+        const fade = kind.variant.fade;
+        let f = 1 - (fade ? smooth(fade[0], fade[1], d) : smooth(far0, far1, d));
         if (lone[i]) f *= smooth(lone0, lone1, d);
         if (f <= 0.01) continue;
 
-        const kind = this.kinds[kinds[i]];
         const size = h[i] * kind.size;
         // Sphere around the crown: centre half way up, radius covering the
         // wider of height and crown, plus the sway.

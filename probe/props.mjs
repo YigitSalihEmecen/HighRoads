@@ -1,6 +1,7 @@
 /**
- * props.mjs — measures the LEGACY canopy (env/legacy/trees.js) and the
- * understorey. The TreeGen canopy has its own probe: forest.mjs.
+ * props.mjs — measures the LEGACY canopy (env/legacy/trees.js). The TreeGen
+ * canopy and the shrubs (TreeGen bushes, so never in legacy) have their own
+ * probe: forest.mjs.
  *
  * Reports triangle cost, float, ground contact and canopy gaps, and checks
  * the in-view total against the budget.
@@ -8,11 +9,11 @@
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import { WORLD, CHUNK, TREES, BUSHES } from '../src/config.js';
+import { WORLD, CHUNK, TREES } from '../src/config.js';
 import { createTerrain } from '../src/noise.js';
 import { RoadPath } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
-import { TREE_FORMS, SHRUBS } from '../src/foliage.js';
+import { TREE_FORMS } from '../src/foliage.js';
 
 TREES.generator = 'legacy';
 const seed = process.argv[2] || WORLD.seed;
@@ -29,7 +30,7 @@ const check = (label, pass, detail = '') => {
   console.log(`  [${pass ? ' ok ' : 'FAIL'}] ${label.padEnd(34)} ${detail}`);
 };
 
-console.log(`\nseed "${seed}" — canopy and understorey\n`);
+console.log(`\nseed "${seed}" — legacy canopy\n`);
 
 // ---- the library ------------------------------------------------------------
 
@@ -52,21 +53,12 @@ for (const name of species) {
   console.log(`  ${name.padEnd(14)} ${counts.join(' / ').padEnd(22)} ` +
     `${cheap.map((v) => tri(v.geometry)).join(' / ')}`);
 }
-const shrubs = [...chunks.bushes.library.keys()];
-console.log('\n  shrub          tris/variant');
-for (const name of shrubs) {
-  console.log(`  ${name.padEnd(14)} ${chunks.bushes.library.get(name).map((v) => tri(v.geometry)).join(' / ')}`);
-}
 console.log('');
 
 check('every species has variants',
   species.length === Object.keys(TREE_FORMS).length &&
   species.every((n) => chunks.trees.library.get(n).length === TREES.variants),
   `${species.length} species x ${TREES.variants}`);
-check('every shrub has variants',
-  shrubs.length === Object.keys(SHRUBS).length &&
-  shrubs.every((n) => chunks.bushes.library.get(n).length === BUSHES.variants),
-  `${shrubs.length} shrubs x ${BUSHES.variants}`);
 // A face wound the wrong way is not drawn (`side: FrontSide`), and a tree with
 // all its faces wrong looks like one with transparent parts in it — `tube` and
 // `tier` were both inside out and nothing else caught it. Signed volume: an
@@ -159,16 +151,6 @@ for (const name of species) {
     }
   }
 }
-for (const name of shrubs) {
-  for (const proto of chunks.bushes.library.get(name)) {
-    const r = solidity(proto.geometry);
-    if (r.v < worstVol) { worstVol = r.v; worstVolName = name; }
-    flippedTotal += r.flipped;
-    const h = seeThrough(proto.geometry);
-    if (h) console.log(`         ${name}: ${h} open rims`);
-    holesTotal += h;
-  }
-}
 check('every proto is wound outward', worstVol > 0,
   `thinnest ${worstVolName} encloses ${worstVol.toFixed(4)}`);
 check('baked normals agree with the winding', flippedTotal === 0,
@@ -196,10 +178,6 @@ for (const n of species) {
 }
 check('the two tiers are the same tree', worstLod < 0.18,
   `worst crown radius mismatch ${(worstLod * 100).toFixed(0)}%`);
-// 95, not 40: a shrub is a rounded dome now, not four alpha cards, and the main
-// lump has to be `detail: 1` or it reads as granite — see `env/bushes.js`.
-check('shrubs are cheap', chunks.bushes.trianglesPerBush <= 145,
-  `mean ${chunks.bushes.trianglesPerBush.toFixed(0)} tris/bush`);
 
 // ---- determinism ------------------------------------------------------------
 
@@ -223,8 +201,8 @@ const ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
 
 const m = new THREE.Matrix4(), pos = new THREE.Vector3();
 const q = new THREE.Quaternion(), sc = new THREE.Vector3();
-let nearN = 0, farN = 0, bushN = 0, batches = 0, missed = 0;
-let nearTris = 0, farTris = 0, bushTris = 0;
+let nearN = 0, farN = 0, batches = 0, missed = 0;
+let nearTris = 0, farTris = 0;
 let closest = Infinity;
 const floats = [];
 const perChunk = [];
@@ -263,7 +241,7 @@ for (let i = 2; i < 20; i++) {
   const s0 = i * CHUNK.length, s1 = s0 + CHUNK.length;
   const chunk = chunks.chunks.get(i);
   const origin = chunk.origin;
-  // Chunk-lifetime tier (far trees and shrubs). Timed on its own — the
+  // Chunk-lifetime tier (far trees). Timed on its own — the
   // verification below rays every instance and costs far more than the scatter.
   // The sheet is built over several frames in the game (chunks._stepSheets);
   // finish it here so the timing is the scatter alone.
@@ -273,10 +251,8 @@ for (let i = 2; i < 20; i++) {
   scatterMs += performance.now() - t0;
   for (const mesh of objs) {
     batches++;
-    const t = tri(mesh.geometry) * mesh.count;
-    if (mesh.material === chunks.trees.farMaterial) {
-      farN += mesh.count; farTris += t;
-    } else { bushN += mesh.count; bushTris += t; }
+    farN += mesh.count;
+    farTris += tri(mesh.geometry) * mesh.count;
     measure(mesh, origin, s0, s1);
   }
   // Car-relative tier: the grown canopy, whose recipe `_buildProps` cached.
@@ -311,12 +287,12 @@ const fmean = floats.reduce((a, b) => a + b, 0) / (floats.length || 1);
 console.log('');
 check('trees placed', nearN > 0,
   `${nearN} near (${Math.min(...perChunk)}..${Math.max(...perChunk)} per chunk), ` +
-  `${farN} far, ${bushN} shrubs`);
+  `${farN} far`);
 check('per-chunk cap held', Math.max(...perChunk) <= TREES.nearCap,
   `max ${Math.max(...perChunk)} of ${TREES.nearCap}`);
-check('draw batches per chunk', batches / 18 <= TREES.picks * 2 + BUSHES.picks,
-  `${(batches / 18).toFixed(1)} of ${TREES.picks * 2 + BUSHES.picks}`);
-console.log(`         of which ${(TREES.picks + BUSHES.picks)} live with the chunk ` +
+check('draw batches per chunk', batches / 18 <= TREES.picks * 2,
+  `${(batches / 18).toFixed(1)} of ${TREES.picks * 2}`);
+console.log(`         of which ${TREES.picks} live with the chunk ` +
   `and ${TREES.picks} come and go with the car`);
 check('scatter cost', ms < 25, `${ms.toFixed(1)} ms per chunk`);
 check('nothing on the carriageway', closest >= CHUNK.plantClear - 0.5,
@@ -331,19 +307,18 @@ check('the scatter is not uniform', sd / Math.max(1, mean) > 0.25,
   `spread ${(sd / Math.max(1, mean) * 100).toFixed(0)}% of mean ${mean.toFixed(0)}`);
 
 // Two windows, because there are two lifetimes: the grown canopy lives across
-// `TREES.behind+ahead+1` chunks; far trees and shrubs across the chunk window.
+// `TREES.behind+ahead+1` chunks; far trees across the chunk window.
 const chunkWin = CHUNK.behind + CHUNK.ahead + 1;
 const canopyWin = TREES.behind + TREES.ahead + 1;
 // Both windows shrank with the fog wall, so the in-view tri count came down;
 // 500,000 is what the real number lands inside.
 const inView = Math.round(nearTris * canopyWin / 18) +
-  Math.round((farTris + bushTris) * chunkWin / 18);
+  Math.round(farTris * chunkWin / 18);
 console.log(`\n  per chunk: ${Math.round(nearTris / 18).toLocaleString()} near · ` +
-  `${Math.round(farTris / 18).toLocaleString()} far · ` +
-  `${Math.round(bushTris / 18).toLocaleString()} shrub`);
+  `${Math.round(farTris / 18).toLocaleString()} far`);
 console.log(`  alive at once: ${Math.round(nearTris * canopyWin / 18).toLocaleString()} near ` +
-  `(${canopyWin} chunks) + ${Math.round((farTris + bushTris) * chunkWin / 18).toLocaleString()} ` +
-  `far and shrub (${chunkWin} chunks)`);
+  `(${canopyWin} chunks) + ${Math.round(farTris * chunkWin / 18).toLocaleString()} ` +
+  `far (${chunkWin} chunks)`);
 // What a far tree costs AVERAGED OVER THE ONES ACTUALLY PLACED, which is the
 // figure the budget is built from — see the library check above.
 check('far tier inside its budget', farTris / Math.max(1, farN) <= 90,

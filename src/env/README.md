@@ -47,11 +47,8 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
    in its header, so the budget is visible where the decision is made.
 5. **Luminance in the texture, hue on the instance — for things that GROW.**
    Ground cover takes its colour from the terrain vertex it stands on, so it can
-   never disagree with the ground. Two documented exceptions:
-   * `rocks.js` takes its hue from `ROCKS.palette`. Stone does not
-     photosynthesise, and sampling the verge gave every chip on the shoulder the
-     grass's green, which reads as algae.
-   * `trees.js` and `bushes.js` bake the hue into the geometry, one palette per
+   never disagree with the ground. One documented exception:
+   * `legacy/trees.js` and the TreeGen canopy and shrubs bake the hue into the geometry, one palette per
      variant, and take a near-1.0 *modulation* per instance instead. A per-face
      coloured solid has its colour in the mesh; blending it halfway toward the
      ground desaturated every palette to the same olive.
@@ -63,11 +60,9 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 | `textures.js` | shared procedural canvas helpers — value noise, fBm, mottle | — |
 | `lowpoly.js` | faceted-solid primitives: warped lumps, tapering tubes, conifer skirts | — |
 | `grass.js` | crossed-card grass tufts, in a near and a far tier | 4 |
-| `treegen.js` | the canopy, grown by TreeGen (`tree_gen/` submodule): four levels per tree, drawn by `../forest.js` | ~56k / ~18k / ~5k / 6 |
+| `treegen.js` | the canopy and the shrubs, grown by TreeGen (`tree_gen/` submodule; shrubs are `tree_gen/src/bush.js` clumps): four levels each, drawn by `../forest.js` | trees ~56k / ~6k / ~1.3k / 6, shrubs ~10k up close |
 | `treegen.worker.js` | TreeGen's meshing and card painting on worker threads | — |
 | `legacy/trees.js` | the LEGACY faceted low-poly trees (`?trees=legacy`), near and far tiers from one builder | 150–376 / **66–270** |
-| `bushes.js` | four shrub forms, clusters of faceted lumps | 112–183 |
-| `rocks.js` | convex boulders, slabs and scree, three size classes | 44–120 |
 | `signs.js` | road signs and gantries, built by Roadsign-gen (`roadsign_gen/` submodule), merged to 2–4 draws each | ~600 mean |
 | `road.js` | the carriageway in road space: resurfaced sections, wheel paths, patches, cracks, and a grown asphalt heightfield ray-marched (POM) | — |
 | `ground.js` | the terrain's detail texture and material patch, and the SWARD: a grown turf heightfield ray-marched (POM) near the car | — |
@@ -75,10 +70,10 @@ a world: `probe/grass.mjs` exercises the whole scatter with no canvas and no GL.
 ## The canopy
 
 **The canopy is TreeGen's now** — see `AGENT_CONTEXT.md` §4.11b. What follows
-describes the legacy trees (`legacy/trees.js`), which the shrubs still share
-a material and a look with.
+describes the legacy trees (`legacy/trees.js`). The shrubs are TreeGen bushes
+now and only exist with the TreeGen canopy.
 
-`legacy/trees.js` and `bushes.js` are **faceted solids** — the low-poly look in
+`legacy/trees.js` builds **faceted solids** — the low-poly look in
 `style_examples/`. A tree is a tapering faceted stem carrying either a cluster
 of warped lumps or a stack of jagged conical skirts, flat-shaded, per-face
 coloured, with no texture, no UVs and no alpha test anywhere in it.

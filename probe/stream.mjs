@@ -59,7 +59,7 @@ const over = (ms) => tot.filter(x => x > ms).length;
 console.log(`\nseed "${seed}", ${secs} s at ${speed} m/s (${(speed * 3.6).toFixed(0)} km/h), ${frames.length} frames`);
 console.log(`  streaming per frame  p50 ${q(0.5)}  p95 ${q(0.95)}  p99 ${q(0.99)}  max ${tot[tot.length - 1].toFixed(1)} ms`);
 console.log(`  frames over  4 ms: ${over(4)}   8 ms: ${over(8)}   16 ms: ${over(16)}   33 ms: ${over(33)}`);
-const stages = ['.tiles', '.chunkBuild', '..route', '..road', '..roadCollider', '.sheets', '.props', '.canopy', '.grass', '.rocks'];
+const stages = ['.tiles', '.chunkBuild', '..route', '..road', '..roadCollider', '.sheets', '.props', '.canopy', '.grass'];
 const sum = Object.fromEntries(stages.map(k => [k, 0]));
 for (const f of frames) for (const k of stages) sum[k] += f[k] || 0;
 console.log('  total ms by stage: ' + stages.map(k => `${k.replace(/^\.+/, '')} ${sum[k].toFixed(0)}`).join(', '));

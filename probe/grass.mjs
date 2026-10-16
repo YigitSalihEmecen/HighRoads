@@ -36,7 +36,7 @@ chunks.preload(CHUNK.length * 2);
 for (let i = 0; i < 3000; i++) {
   chunks.update(CHUNK.length * 2);
   if (i > 40 && !chunks.pending.length && !chunks.sheetQueue.length && !chunks.propQueue.length
-      && !chunks.propJob && !chunks.rockQueue.length && chunks.grassTiers.every((t) => !t.queue.length && !t.job)) break;
+      && !chunks.propJob && chunks.grassTiers.every((t) => !t.queue.length && !t.job)) break;
 }
 
 const times = [];

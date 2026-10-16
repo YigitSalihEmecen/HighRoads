@@ -1,7 +1,7 @@
 /**
  * env/treegen.worker.js — TreeGen's geometry, off the main thread.
  *
- * Generates one tree, meshes every level (tree_gen/src/lod.js:buildLods) and
+ * Generates one tree or bush (tree_gen/src/bush.js), meshes every level (tree_gen/src/lod.js:buildLods) and
  * paints its card atlases on an OffscreenCanvas, then hands the buffers and
  * bitmaps back as transferables. Materials and the billboard bake need the
  * page's renderer and stay on the main thread (env/treegen.js).
@@ -44,17 +44,17 @@ function pack(g, transfer) {
 
 self.onmessage = async ({ data }) => {
   if (data.type === 'init') {
-    const [tree, lod] = await Promise.all([
-      import(await load(data.base + 'tree.js', data.bare)),
+    const [bush, lod] = await Promise.all([
+      import(await load(data.base + 'bush.js', data.bare)),
       import(await load(data.base + 'lod.js', data.bare)),
     ]);
-    api = { tree, lod };
+    api = { bush, lod };
     self.postMessage({ type: 'ready' });
     return;
   }
   const { id, params, specs, detail, leaves, growth } = data;
   try {
-    const tree = api.tree.generateTree(api.tree.mergeParams(params));
+    const tree = api.bush.generateBush(params);
     const geos = api.lod.buildLods(tree, specs, { detail, leaves, growth });
     const transfer = new Set();
     const levels = [];

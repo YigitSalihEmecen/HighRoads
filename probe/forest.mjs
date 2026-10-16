@@ -2,7 +2,7 @@
  * forest.mjs — measures the TreeGen canopy (env/treegen.js + forest.js).
  *
  * The library: triangles per level per species, and that the generator is
- * deterministic. The scatter: trees placed, nothing on the carriageway, float
+ * deterministic, and the shrubs (TreeGen bushes) in it. The scatter: trees placed, nothing on the carriageway, float
  * off the real collider, and that it is still LUMPY. The forest: what one
  * frame at the start of the road draws at each level of detail, its triangle
  * total, and what the per-frame LOD pass costs on the CPU.
@@ -12,7 +12,8 @@
 globalThis.document = { createElement: () => ({ style: {}, getContext: () => null }) };
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import { WORLD, CHUNK, TREES, CAMERA } from '../src/config.js';
+import { WORLD, CHUNK, TREES, BUSHES, CAMERA } from '../src/config.js';
+import { SHRUBS } from '../src/foliage.js';
 import { createTerrain } from '../src/noise.js';
 import { RoadPath } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
@@ -51,7 +52,15 @@ check('every level cheaper than the last', mesh.every((i, k) => k === 0 ||
 trees.trianglesPerLevel.map((t) => Math.round(t)).join(' > '));
 check('nearest level inside its budget', trees.trianglesPerLevel[0] <= 60000,
   `${Math.round(trees.trianglesPerLevel[0]).toLocaleString()} tris/tree, budget 60,000`);
-check('library build time', buildS < 12, `${buildS.toFixed(1)} s headless (the boot adds the bakes)`);
+const shrubs = Object.keys(SHRUBS).filter((n) => trees.library.has(n));
+const shrubL0 = shrubs.flatMap((n) => trees.library.get(n).map((v) => v.levels[0].tris));
+const shrubMean = shrubL0.reduce((s, t) => s + t, 0) / Math.max(1, shrubL0.length);
+check('every shrub is a TreeGen bush', shrubs.length === Object.keys(SHRUBS).length &&
+  shrubs.every((n) => trees.library.get(n).length === BUSHES.variants && trees.library.get(n)[0].fade),
+`${shrubs.length} shrubs x ${BUSHES.variants}`);
+check('shrubs are cheap', shrubMean <= 12000, `${Math.round(shrubMean).toLocaleString()} tris/shrub up close`);
+// 12 s of canopy and ~1.5 s of shrubs; the boot spreads both over workers.
+check('library build time', buildS < 14, `${buildS.toFixed(1)} s headless (the boot adds the bakes)`);
 
 const again = createTreeGenAssets({ names: ['oak'] });
 const a = trees.library.get('oak')[1].levels[0].parts[0].geometry.attributes.position.array;
@@ -77,7 +86,7 @@ const toRoad = (x, z, s0, s1) => {
   return best;
 };
 
-let scatterMs = 0, placed = 0, lone = 0, closest = Infinity, missed = 0;
+let scatterMs = 0, placed = 0, lone = 0, bushes = 0, closest = Infinity, missed = 0;
 const floats = [], perChunk = [];
 for (let i = 2; i < 20; i++) {
   const s0 = i * CHUNK.length, s1 = s0 + CHUNK.length;
@@ -93,8 +102,10 @@ for (let i = 2; i < 20; i++) {
     const x = rec.pos[k * 3], y = rec.pos[k * 3 + 1], z = rec.pos[k * 3 + 2];
     const d = toRoad(x, z, s0, s1);
     closest = Math.min(closest, d);
+    const shrub = !!chunks.forest.kinds[rec.kind[k]].variant.fade;
+    if (shrub) bushes++;
     // Past the near band it is the distant woodland, which has no cap.
-    if (d < 170) near++;
+    else if (d < 170) near++;
     ray.origin = { x, y: y + 60, z };
     const hit = world.castRay(ray, 200, true);
     if (!hit) { missed++; continue; }
@@ -108,7 +119,7 @@ floats.sort((p, q) => p - q);
 const p99 = floats.length ? floats[Math.floor(floats.length * 0.99)] : 0;
 
 console.log('');
-check('trees placed', placed > 0, `${placed} (${lone} far-only), near per chunk ${Math.min(...perChunk)}..${Math.max(...perChunk)}`);
+check('trees placed', placed > 0, `${placed - bushes} (${lone} far-only), ${bushes} shrubs, near per chunk ${Math.min(...perChunk)}..${Math.max(...perChunk)}`);
 check('per-chunk cap held', Math.max(...perChunk) <= TREES.nearCap, `max ${Math.max(...perChunk)} of ${TREES.nearCap}`);
 check('scatter cost', scatterMs / 18 < 25, `${(scatterMs / 18).toFixed(1)} ms per chunk`);
 check('nothing on the carriageway', closest >= CHUNK.plantClear - 0.5,
