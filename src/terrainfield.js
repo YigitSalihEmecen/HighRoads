@@ -422,16 +422,22 @@ export class Lakes {
   at(x, z) {
     if (!WATER.enabled) return null;
     const ci0 = Math.floor(x / WATER.cell), cj0 = Math.floor(z / WATER.cell);
-    for (let ci = ci0 - 1; ci <= ci0 + 1; ci++) {
-      for (let cj = cj0 - 1; cj <= cj0 + 1; cj++) {
-        const lake = this.lakeIn(ci, cj);
-        if (!lake) continue;
-        const dx = x - lake.cx, dz = z - lake.cz;
-        const d2 = dx * dx + dz * dz;
-        if (d2 > (lake.r * 1.45 + WATER.beach) ** 2) continue;
-        if (!this._settle(lake)) continue;
-        return lake;
+    // Samples arrive in rows: the 3 × 3 neighbourhood is nearly always the last one.
+    if (ci0 !== this._ci || cj0 !== this._cj) {
+      this._ci = ci0; this._cj = cj0;
+      this._near = [];
+      for (let ci = ci0 - 1; ci <= ci0 + 1; ci++) {
+        for (let cj = cj0 - 1; cj <= cj0 + 1; cj++) {
+          const lake = this.lakeIn(ci, cj);
+          if (lake) this._near.push(lake);
+        }
       }
+    }
+    for (const lake of this._near) {
+      const dx = x - lake.cx, dz = z - lake.cz;
+      if (dx * dx + dz * dz > (lake.r * 1.45 + WATER.beach) ** 2) continue;
+      if (!this._settle(lake)) continue;
+      return lake;
     }
     return null;
   }
