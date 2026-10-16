@@ -370,15 +370,15 @@ export const GRASS = {
   enabled: true,
 
   /** Tufts per square metre at the verge, before rejections. An ask, not a count. */
-  density: 3.6,
+  density: 3.0,
   /** Lateral band: from the paved edge out to here, metres. */
-  halfExtent: 62,
+  halfExtent: 46,
   /** Full density out to here, then tapering to nothing at `halfExtent`. */
-  denseTo: 34,
+  denseTo: 26,
 
   /** Camera distance over which a tuft shrinks away, metres. */
-  fadeStart: 140,
-  fadeEnd: 240,
+  fadeStart: 75,
+  fadeEnd: 125,
 
   /** How much larger a tuft grows at the edge of the band than at the verge. */
   farScale: 1.0,
@@ -389,7 +389,7 @@ export const GRASS = {
   buildPerFrame: 1,
 
   /** Tuft height, metres. */
-  height: [0.55, 1.25],
+  height: [0.22, 0.5],
   /** Width as a fraction of height. A square-ish card overlaps into a field. */
   widthRatio: 0.95,
 
@@ -403,7 +403,7 @@ export const GRASS = {
 
   /** Blades drawn into one card, and the card texture's size in pixels. */
   bladesPerCard: 7,
-  textureSize: 256,
+  textureSize: 128,
 
   /** The THIRD tier: the woodland floor. Near-field only. */
   wood: {
@@ -411,11 +411,11 @@ export const GRASS = {
     behind: 1,
     ahead: 1,
     /** Lateral band, metres. Trees start at `CHUNK.plantClear`; this follows. */
-    halfExtent: 120,
+    halfExtent: 90,
     /** Tufts per square metre asked, before `floor` scales it down. */
-    density: 1.35,
+    density: 1.1,
     /** Height range, metres. */
-    height: [1.1, 2.4],
+    height: [0.44, 0.96],
     /** Nearly square, so neighbours overlap into a surface. */
     widthRatio: 0.82,
     /** Still brighter than the ground it stands on. */
@@ -423,7 +423,7 @@ export const GRASS = {
     /** As many blades as the roadside card. */
     bladesPerCard: 7,
     /** Shrinks out here. */
-    fadeOut: [78, 118],
+    fadeOut: [50, 80],
     maxSlope: 1.2,
   },
 
@@ -431,18 +431,18 @@ export const GRASS = {
   far: {
     enabled: true,
     behind: 1,
-    ahead: 6,
+    ahead: 3,
     /** Lateral band, metres. Past this the terrain's detail texture takes over. */
-    halfExtent: 185,
+    halfExtent: 140,
     /** Card size: 1.0x so distant grass blades match foreground ones. */
     widthScale: 1.0,
     heightScale: 1.0,
     /** Density, as a fraction of what would preserve ground cover at that scale. */
     coverage: 0.05,
     /** Grows in over this camera-distance window, behind the near tier's fade. */
-    fadeIn: [110, 200],
+    fadeIn: [60, 115],
     /** And shrinks out again here — the grass's own far edge, up against the fog. */
-    fadeOut: [420, 630],
+    fadeOut: [190, 280],
     /** Steepest ground it will stand on, looser than the near tier. */
     maxSlope: 2.2,
   },
@@ -1117,9 +1117,9 @@ function applyGraphics() {
     TREES.treegen.shadowLevels = 1;
 
     // Grass, shrubs and stone scale down together.
-    GRASS.density = 2.3;
-    GRASS.far.ahead = 4;
-    GRASS.far.fadeOut = [300, 460];
+    GRASS.density = 2.0;
+    GRASS.far.ahead = 2;
+    GRASS.far.fadeOut = [150, 220];
     BUSHES.samples = 600;
     BUSHES.cap = 72;
     ROCKS.samples = 2200;

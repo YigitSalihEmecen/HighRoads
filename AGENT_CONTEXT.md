@@ -771,13 +771,16 @@ terrain. A tier is a plain **descriptor** in `ChunkManager.grassTiers` — one
 | | roadside | woodland floor | far |
 |---|---|---|---|
 | gate | `field.ground` | **`field.floor`** | `field.ground` |
-| chunks | ±1 | ±1 | −1/+6 |
-| band | 62 m | 120 m | 185 m |
-| height | 0.55–1.25 m | **1.1–2.4 m** | ×1 |
+| chunks | ±1 | ±1 | −1/+3 |
+| band | 46 m | 90 m | 140 m |
+| height | 0.22–0.5 m | **0.44–0.96 m** | ×1 |
 | card | 7 blades, short | 7 blades, long + wide | same as roadside |
 | lift | 1.20–1.55 | 1.02–1.28 | 1.20–1.55 |
-| fade | out 62→95 | out 78→118 | in 55→110, out 420→630 |
-| placed | ~19,700/chunk | ~3,300/chunk | ~3,100/chunk |
+| fade | out 75→125 | out 50→80 | in 60→115, out 190→280 |
+| placed | ~13,700/chunk | — | ~1,900/chunk |
+
+Atlas is 128 px a sheet (64 px a kind). Sized against the car: the old
+0.55–1.25 m tufts buried it to the windows.
 
 **The tiers cross-fade by SCALE, not opacity** — the material is an alpha-test
 cutout, so a tuft shrinks about its own base and sinks into the ground.

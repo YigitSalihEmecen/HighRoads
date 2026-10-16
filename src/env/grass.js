@@ -171,7 +171,9 @@ function tuftGeometry() {
 
 /** One tier's material; the fade window is a uniform, so both tiers link one program. */
 function grassMaterial(map, fadeOut, fadeIn) {
-  const material = new THREE.MeshStandardMaterial({
+  // Lambert: at roughness 0.95 the PBR specular was invisible and cost a
+  // GGX evaluation on every blade fragment.
+  const material = new THREE.MeshLambertMaterial({
     map,
     vertexColors: true,
     // Cutout, not blend: transparent instancing cannot be depth-sorted; alphaToCoverage softens the edge.
@@ -180,8 +182,6 @@ function grassMaterial(map, fadeOut, fadeIn) {
     alphaToCoverage: true,
     // Double-sided: a card is one-sided geometry standing in for a solid clump.
     side: THREE.DoubleSide,
-    roughness: 0.95,
-    metalness: 0.0,
   });
 
   const uniforms = {
