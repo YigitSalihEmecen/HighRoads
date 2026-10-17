@@ -40,15 +40,20 @@ const t0 = performance.now();
 const ground = createGroundAssets({ anisotropy: renderer.capabilities.getMaxAnisotropy() });
 const buildMs = performance.now() - t0;
 const geo = new THREE.PlaneGeometry(400, 400, 200, 200).rotateX(-Math.PI / 2);
-const pos = geo.attributes.position, col = new Float32Array(pos.count * 3);
+const pos = geo.attributes.position, col = new Float32Array(pos.count * 3), rd = new Float32Array(pos.count);
 const a = new THREE.Color(TERRAIN_COLORS.grassLow), b = new THREE.Color(TERRAIN_COLORS.grassDry);
 for (let i = 0; i < pos.count; i++) {
   const x = pos.getX(i), z = pos.getZ(i);
   pos.setY(i, Math.sin(x * 0.05) * 1.2 + Math.cos(z * 0.04) * 1.5);
   const c = a.clone().lerp(b, x > 60 ? 1 : 0);
+  // A road along x = -20: the verge runs beside it (worldtiles.js gives the real distance).
+  rd[i] = Math.abs(x + 20);
+  const v = 1 - Math.min(1, Math.max(0, (rd[i] - GROUND.verge.band[0]) / (GROUND.verge.band[1] - GROUND.verge.band[0])));
+  c.lerp(new THREE.Color(TERRAIN_COLORS.dirt), v * v * (3 - 2 * v) * 0.9);
   col.set([c.r, c.g, c.b], i * 3);
 }
 geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+geo.setAttribute('roadDist', new THREE.BufferAttribute(rd, 1));
 geo.computeVertexNormals();
 scene.add(new THREE.Mesh(geo, ground.material));
 

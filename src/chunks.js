@@ -1066,7 +1066,7 @@ export class ChunkManager {
       out.lerp(this._sand, smoothstep(0.86, 1.0, u) * (1 - smoothstep(1.08, 1.32, u)) * 0.85);
     }
 
-    out.lerp(this._dirt, (1 - smoothstep(EDGE - 0.4, EDGE + 4.5, av)) * 0.9);
+    out.lerp(this._dirt, (1 - smoothstep(GROUND.verge.band[0], GROUND.verge.band[1], av)) * 0.9);
 
     return 0.92 + fine * 0.16;
   }

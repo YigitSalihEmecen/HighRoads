@@ -571,6 +571,29 @@ export const GROUND = {
     /** Dry blades and bare soil, as a multiplier on the ground colour. */
     dry: [1.08, 0.92, 0.6],
   },
+
+  /**
+   * The VERGE: packed dirt and gravel between the shoulder and the grass, a
+   * generated heightfield marched with the sward (same `fade` and `steps`).
+   * Soil and stone are separate heights, so stones sink into the dirt with
+   * distance from the asphalt instead of being faded out.
+   */
+  verge: {
+    enabled: true,
+    size: 1024,
+    tile: 2.0,
+    /** Relief depth, metres: a height of 1 is a cobble standing this proud. */
+    depth: 0.045,
+    /** Per square metre of tile: gravel, and the odd cobble. */
+    gravel: 2600,
+    cobbles: 12,
+    /** Metres from the centre line: gravel starts, and has gone to grass by the end. */
+    band: [ROAD.halfWidth + ROAD.shoulder - 0.4, ROAD.halfWidth + ROAD.shoulder + 4.5],
+    /** How far the band's edge wanders, metres. */
+    jitter: 2.0,
+    /** Stone, light and warm (sRGB). */
+    stone: [0xc4bfb5, 0xa8957a],
+  },
 };
 
 /**
@@ -1248,6 +1271,7 @@ function applyGraphics() {
     ROAD_SURFACE.pom.steps = [2, 6];
     GROUND.sward.fade = [6, 24];
     GROUND.sward.shadow = 0;
+    GROUND.verge.size = 512;
   } else if (level === 'low') {
     // The shortest draw distance, and a fog that ends it invisibly.
     CHUNK.ahead = 3;
@@ -1271,6 +1295,8 @@ function applyGraphics() {
     // The turf's look without its march.
     GROUND.sward.size = 512;
     GROUND.sward.depth = 0;
+    GROUND.verge.size = 512;
+    GROUND.verge.depth = 0;
     ATMOSPHERE.fxaa = false;
     ROAD_SURFACE.textureSize = 512;
     ROAD_SURFACE.pom.depth = 0;

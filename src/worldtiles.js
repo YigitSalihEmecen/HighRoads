@@ -231,6 +231,9 @@ export class WorldTiles {
     const pos = new Float32Array(vCount * 3);
     const nor = new Float32Array(vCount * 3);
     const col = new Float32Array(vCount * 3);
+    // Road distance for the verge shader, capped: an Infinity interpolates to NaN.
+    const rd = new Float32Array(vCount);
+    for (let k = 0; k < V * V; k++) rd[k] = Math.min(D[k], 1e4);
     const c = this._color;
     for (let vj = 0; vj < V; vj++) {
       for (let vi = 0; vi < V; vi++) {
@@ -258,6 +261,7 @@ export class WorldTiles {
       const src = border[b] * 3, dst = (V * V + b) * 3;
       pos[dst] = pos[src]; pos[dst + 1] = pos[src + 1] - drop; pos[dst + 2] = pos[src + 2];
       nor[dst] = nor[src]; nor[dst + 1] = nor[src + 1]; nor[dst + 2] = nor[src + 2];
+      rd[V * V + b] = rd[border[b]];
       col[dst] = col[src] * 0.8; col[dst + 1] = col[src + 1] * 0.8; col[dst + 2] = col[src + 2] * 0.8;
     }
 
@@ -298,6 +302,7 @@ export class WorldTiles {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('roadDist', new THREE.BufferAttribute(rd, 1));
     geo.setIndex(new THREE.BufferAttribute(both, 1));
     geo.computeBoundingSphere();
 
