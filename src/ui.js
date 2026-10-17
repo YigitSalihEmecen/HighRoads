@@ -17,6 +17,7 @@ import {
 import { generateBuild, mutateBuild, finishBuild, newSeed } from './models.js';
 import { PRESETS } from '../car_gen/src/index.js';
 import { SKY_PRESETS } from './sky.js';
+import { PREMADE } from './premade.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => {
@@ -867,6 +868,29 @@ class GarageUI {
     page.append(save);
     this.savedEl = el('div', 'saved-grid');
     page.append(this.savedEl);
+    page.append(el('div', 'g-h', '<h3>Premade</h3><small>Cars that ship with the game</small>'));
+    const premade = el('div', 'saved-grid');
+    for (const b of PREMADE) premade.append(this._savedRow(b));
+    page.append(premade);
+  }
+
+  _savedRow(b, onDelete) {
+    const row = el('div', 'saved', `<i style="background:${b.color}"></i><b>${b.name}</b><small>${b.seed} · ${b.engine === 'stock' ? 'stock engine' : b.engine}</small>`);
+    const act = el('div', 's-act');
+    const load = el('button', 'btn sm', 'Load');
+    load.type = 'button';
+    load.addEventListener('click', () => this.apply(finishBuild(clone(b)), { materialise: true }));
+    act.append(load);
+    if (onDelete) {
+      const del = el('button', 'icon-btn', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>');
+      del.type = 'button';
+      del.setAttribute('aria-label', 'Delete ' + b.name);
+      del.style.width = del.style.height = '36px';
+      del.addEventListener('click', onDelete);
+      act.append(del);
+    }
+    row.append(act);
+    return row;
   }
 
   save() {
@@ -886,19 +910,7 @@ class GarageUI {
       return;
     }
     for (const b of list) {
-      const row = el('div', 'saved', `<i style="background:${b.color}"></i><b>${b.name}</b><small>${b.seed} · ${b.engine === 'stock' ? 'stock engine' : b.engine}</small>`);
-      const act = el('div', 's-act');
-      const load = el('button', 'btn sm', 'Load');
-      load.type = 'button';
-      load.addEventListener('click', () => this.apply(finishBuild(clone(b)), { materialise: true }));
-      const del = el('button', 'icon-btn', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>');
-      del.type = 'button';
-      del.setAttribute('aria-label', 'Delete ' + b.name);
-      del.style.width = del.style.height = '36px';
-      del.addEventListener('click', () => { storeSaved(loadSaved().filter((x) => x.seed !== b.seed)); this._renderSaved(); });
-      act.append(load, del);
-      row.append(act);
-      this.savedEl.append(row);
+      this.savedEl.append(this._savedRow(b, () => { storeSaved(loadSaved().filter((x) => x.seed !== b.seed)); this._renderSaved(); }));
     }
   }
 
