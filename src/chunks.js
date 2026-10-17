@@ -69,11 +69,10 @@ function roadSeam(c) {
 
 function buildLateralOffsets() {
   // Every entry derived and strictly increasing: a literal would break the
-  // sort the binary search below assumes.
-  const half = [
-    0, ROAD.laneWidth * 0.5, ROAD.laneWidth, ROAD.laneWidth * 1.5,
-    ROAD.halfWidth, ROAD.halfWidth + 0.9, EDGE, EDGE + 1.4, EDGE + 2.8,
-  ];
+  // sort the binary search below assumes. Lane centres and joints, then the edge.
+  const half = [];
+  for (let k = 0; k * ROAD.laneWidth * 0.5 < ROAD.halfWidth - 1e-6; k++) half.push(k * ROAD.laneWidth * 0.5);
+  half.push(ROAD.halfWidth, ROAD.halfWidth + 0.9, EDGE, EDGE + 1.4, EDGE + 2.8);
   let v = half[half.length - 1];
 
   // Drivable band: uniform, and no coarser than the longitudinal rows.
@@ -105,23 +104,34 @@ function buildRoadColumns() {
   const lane = ROAD.laneWidth;
   const w = ROAD.lineWidth;
   const gap = ROAD.centreGap;
+  const ins = ROAD.edgeInset;
 
   // Duplicated v positions give each painted stripe a hard edge; without the
   // duplicate, vertex colours smear the line across the whole lane.
   const cols = [];
   const push = (v, kind) => cols.push({ v, kind });
+  const dividers = [];
+  for (let l = 1; l < ROAD.lanesPerSide; l++) dividers.push(l * lane);
 
   // Skirt: the edge again, dropped, so the ribbon never shows a gap against
-  // the terrain beside it from any angle.
-  cols.push({ v: -hw, kind: ASPHALT, drop: 0.45 });
-  push(-hw, PAINT);                       // left edge line
-  push(-hw + w, PAINT);
-  push(-hw + w, ASPHALT);
+  // the terrain beside it from any angle. Its top is its OWN column, asphalt
+  // and darker: sharing the paint's column painted the whole face as a lit
+  // white curb, and sharing the top's vertex averaged a vertical normal into
+  // the outer strip — the edge read as blocky, patched-together tiles.
+  cols.push({ v: -hw, kind: ASPHALT, drop: 0.45, tone: 0.7 });
+  cols.push({ v: -hw, kind: ASPHALT, tone: 0.7 });
+  push(-hw, ASPHALT);
+  push(-hw + ins, ASPHALT);               // left edge line, inset
+  push(-hw + ins, PAINT);
+  push(-hw + ins + w, PAINT);
+  push(-hw + ins + w, ASPHALT);
 
-  push(-lane - w * 0.5, ASPHALT);         // outer lane divider, dashed
-  push(-lane - w * 0.5, CENTER);
-  push(-lane + w * 0.5, CENTER);
-  push(-lane + w * 0.5, ASPHALT);
+  for (const d of [...dividers].reverse()) {   // lane dividers, dashed
+    push(-d - w * 0.5, ASPHALT);
+    push(-d - w * 0.5, CENTER);
+    push(-d + w * 0.5, CENTER);
+    push(-d + w * 0.5, ASPHALT);
+  }
 
   push(-gap - w, ASPHALT);                // solid double line down the middle
   push(-gap - w, PAINT);
@@ -132,22 +142,28 @@ function buildRoadColumns() {
   push(gap + w, PAINT);
   push(gap + w, ASPHALT);
 
-  push(lane - w * 0.5, ASPHALT);          // near-side lane divider, dashed
-  push(lane - w * 0.5, CENTER);
-  push(lane + w * 0.5, CENTER);
-  push(lane + w * 0.5, ASPHALT);
+  for (const d of dividers) {
+    push(d - w * 0.5, ASPHALT);
+    push(d - w * 0.5, CENTER);
+    push(d + w * 0.5, CENTER);
+    push(d + w * 0.5, ASPHALT);
+  }
 
-  push(hw - w, ASPHALT);                  // right edge line
-  push(hw - w, PAINT);
-  push(hw, PAINT);
-  cols.push({ v: hw, kind: ASPHALT, drop: 0.45 });
+  push(hw - ins - w, ASPHALT);            // right edge line, inset
+  push(hw - ins - w, PAINT);
+  push(hw - ins, PAINT);
+  push(hw - ins, ASPHALT);
+  push(hw, ASPHALT);
+  cols.push({ v: hw, kind: ASPHALT, tone: 0.7 });
+  cols.push({ v: hw, kind: ASPHALT, drop: 0.45, tone: 0.7 });
 
   // Wear across each lane, as geometry columns so the vertex colour carries
   // it: the two wheel paths polished a little lighter, and a dark oil strip
-  // down the middle where engines drip. Lane centres are at ±lane/2 and
-  // ±lane·1.5; none of these offsets lands on a painted line.
+  // down the middle where engines drip. Lane centres are at ±lane·(l + ½);
+  // none of these offsets lands on a painted line.
   const tones = [];
-  for (const c of [lane * 0.5, lane * 1.5]) {
+  for (let l = 0; l < ROAD.lanesPerSide; l++) {
+    const c = lane * (l + 0.5);
     for (const sgn of [-1, 1]) {
       tones.push({ v: sgn * c, tone: 0.80 });            // oil strip
       tones.push({ v: sgn * c - 0.42, tone: 0.97 });
@@ -157,7 +173,7 @@ function buildRoadColumns() {
     }
   }
   for (const t of tones) {
-    if (Math.abs(t.v) > hw - w - 0.05) continue;
+    if (Math.abs(t.v) > hw - ins - w - 0.05) continue;
     let i = 0;
     while (i < cols.length && cols[i].v <= t.v) i++;
     // Never split a painted stripe: only insert between asphalt columns.
