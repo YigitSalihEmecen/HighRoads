@@ -812,15 +812,21 @@ terrain. A tier is a plain **descriptor** in `ChunkManager.grassTiers` — one
 | gate | `field.ground` | **`field.floor`** | `field.ground` |
 | chunks | ±1 | ±1 | −1/+3 |
 | band | 46 m | 90 m | 140 m |
-| height | 0.22–0.5 m | **0.44–0.96 m** | ×1 |
+| height | 0.44–1.0 m | **0.88–1.9 m** | ×1 |
 | card | 7 blades, short | 7 blades, long + wide | same as roadside |
 | lift | 1.20–1.55 | 1.02–1.28 | 1.20–1.55 |
 | fade | out 75→125 | out 50→80 | in 60→115, out 190→280 |
-| density | 1.9 (was 3.0 before the sward) | 0.75 | from roadside |
-| placed | ~8,700/chunk | — | ~1,900/chunk |
+| density | 0.55 (1.9 at half the size) | 0.22 | from roadside |
+| placed | ~2,300/chunk (was ~8,700) | — | — |
 
-Atlas is 128 px a sheet (64 px a kind). Sized against the car: the old
-0.55–1.25 m tufts buried it to the windows.
+Atlas is 256 px a sheet (128 px a kind). **Tufts are twice the size they
+were and ~3.5× fewer**: each covers four times the ground, so the field reads
+as full with a quarter of the instances, the same fragments, and a quarter of
+the scatter. The atlas paints 1.7× the blades at 0.55× the width, so a
+blade keeps its real width on the bigger card. Grass starts mid-verge (the
+gravel carries none), thins over bare ground (`sheet.bare`), and the far tier
+does not receive the shadow map (it lies past the 78 m box; the canopy map
+shades it). 37 → 55 fps at 2268×1417 with the rest of that pass.
 
 **The tiers cross-fade by SCALE, not opacity** — the material is an alpha-test
 cutout, so a tuft shrinks about its own base and sinks into the ground.
@@ -958,6 +964,30 @@ the detail map's alpha degraded the RGB through premultiplied mips), and a
 gradient, `GROUND.bump`) — relief without tangents. `road.js` adds patch
 repairs in G and tar snakes (sealed cracks, darker and glossy) in B.
 
+**The palette reads the LANDFORM** (`chunks.js:_groundColor`):
+topographic position (`_tpi`: height minus the mean 120 m around, on a cached
+64 m lattice of `base(…, 3)`; quartiles ±3.5 m, 5/95 % ±15 m) dries and pales
+crests and greens hollows; aspect (`SUNWARD`, fixed to the default sun so a
+sky change never repaints hills) yellows sun-facing slopes and cools the
+others; noise patches lay bracken, heather, fresh sward and rush. BARE ground
+is not colour: `_groundColor` writes `bare` = (rock, soil) weights, the tiles
+carry them as an attribute, and the shader draws rock and bald soil with
+edges broken by the far tile's creases — plus rock strata and bedding joints
+on steep faces and erosion rills (the detail map's streak channel laid
+downhill along the world normal). Slope thresholds were set against the
+measured distribution: half the land is flatter than ny 0.99, a tenth steeper
+than 0.88. A flat grey patch with no relief read as a puddle, so crest
+outcrops need the crest to fall away.
+
+**Canopy shadow map** (`forest.js:shadeCanopy`, `TREES.canopyShadow`): past
+the 78 m shadow box no tree had a shadow. Each tree is splatted as a soft
+ellipse projected along the sun into a 1024² map over 1800 m around the
+camera (MAX blending, straight to clip space, double-sided: the quad's winding
+follows the sun's side and was being culled), re-rendered when the camera
+moves 48 m, chunks change, or the sun moves. Terrain and grass take their
+direct light by it (`CANOPY_GLSL`) from 55–80 m out; on Low it is every tree
+shadow there is.
+
 ### 4.14 Stone — removed
 
 The verge rocks (`env/rocks.js`, `ROCKS`, `_buildRocks`/`_updateRocks`) were
@@ -1009,6 +1039,10 @@ clear ~6 m) and `overheadScale` grows and spreads the faces.
 
 No colliders, like the trees. Medium/low graphics: `lod` 2 (384 px faces),
 shorter `drawDistance`.
+
+Sign density was halved (15.7 → 8.2 per km on highroads-01): chevrons need
+a sharper bend (1/280) and stand 45 m apart; a chunk's feature sign rolls at
+0.45. `probe/signs.mjs` wants 5–40 per km.
 
 ### 4.14c Settlements (`city_gen/`, `towns.js`, `env/towns.worker.js`)
 
