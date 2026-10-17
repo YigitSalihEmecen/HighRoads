@@ -95,7 +95,8 @@ const FINISH = {
 
       float d = distance(vUv, vec2(0.5));
       c.rgb *= mix(1.0 - uAmount, 1.0, smoothstep(0.80, 0.30, d));
-      gl_FragColor = c;
+      // Opaque: a coverage cutout leaves alpha under 1, and the page would show through.
+      gl_FragColor = vec4(c.rgb, 1.0);
   `,
 };
 
@@ -202,15 +203,25 @@ export async function createScene(container) {
   let vignette = null;
   let bloomPass = null;
   try {
-    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }] =
+    const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }, { ShaderPass }, { FXAAShader }] =
       await Promise.all([
         import('three/addons/postprocessing/EffectComposer.js'),
         import('three/addons/postprocessing/RenderPass.js'),
         import('three/addons/postprocessing/UnrealBloomPass.js'),
         import('three/addons/postprocessing/OutputPass.js'),
+        import('three/addons/postprocessing/ShaderPass.js'),
+        import('three/addons/shaders/FXAAShader.js'),
       ]);
 
-    composer = new EffectComposer(renderer);
+    // MSAA on the scene target, where it is affordable: without samples
+    // alpha-to-coverage (grass, tree cards) is a hard cutout. Measured on an
+    // M-series Mac through ANGLE/Metal at 2268x1417 it cost ~15 ms a frame at
+    // 2x or 4x, so the levels use FXAA (`ATMOSPHERE.fxaa`) instead — SMAA's
+    // three full-screen passes measured ~4.5 ms there, FXAA's one far less.
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(size.x, size.y, {
+      type: THREE.HalfFloatType, samples: ATMOSPHERE.msaa,
+    }));
     renderPass = new RenderPass(scene, camera);
     composer.addPass(renderPass);
     // Medium and Low have none (bloomStrength 0): ~0.8 ms of a 6 ms frame
@@ -236,6 +247,13 @@ export async function createScene(container) {
     vignette.uniforms.uInner.value = ATMOSPHERE.speedBlurInner;
     composer.addPass(vignette);
     if (ATMOSPHERE.speedBlur > 0) speedBlur = vignette;
+    // After tone mapping: FXAA finds edges by luma in display space.
+    if (ATMOSPHERE.fxaa) {
+      const fxaa = new ShaderPass(FXAAShader);
+      // The composer sizes passes in device pixels; FXAA wants one texel.
+      fxaa.setSize = (w, h) => fxaa.uniforms.resolution.value.set(1 / w, 1 / h);
+      composer.addPass(fxaa);
+    }
     composer.setSize(window.innerWidth, window.innerHeight);
   } catch (err) {
     console.warn('[highroads] post-processing unavailable, rendering direct.', err);

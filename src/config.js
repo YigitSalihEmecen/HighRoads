@@ -1042,6 +1042,10 @@ export const ATMOSPHERE = {
    */
   maxPixelRatio: 1.5,
   minPixelRatio: 1,
+  /** MSAA samples on the scene target; also what alpha-to-coverage cutouts need to soften. */
+  msaa: 0,
+  /** FXAA after tone mapping: edges, cutouts and thin far geometry. */
+  fxaa: true,
 
   /** Post-processing. Bloom is now a hint of glow, not a glare. */
   bloomStrength: 0.10,
@@ -1267,6 +1271,7 @@ function applyGraphics() {
     // The turf's look without its march.
     GROUND.sward.size = 512;
     GROUND.sward.depth = 0;
+    ATMOSPHERE.fxaa = false;
     ROAD_SURFACE.textureSize = 512;
     ROAD_SURFACE.pom.depth = 0;
 
