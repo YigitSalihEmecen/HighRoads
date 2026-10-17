@@ -146,7 +146,9 @@ console.log(`  [${ok(stalledFrames / movingSamples < 0.02)}] share of car-frames
 console.log(`  [${ok(overlapEvents === 0)}] overlapping cars                ${overlapEvents} (worst ${worstOverlap.toFixed(2)} m)`);
 console.log(`  [${ok(laneErrWorst < 0.35)}] worst settled lane error          ${laneErrWorst.toFixed(3)} m`);
 console.log(`  [${ok(Math.min(...counts) >= Math.floor(TRAFFIC.count * (1 - TRAFFIC.wave)) - 2)}] population range                  ${Math.min(...counts)}..${Math.max(...counts)} (target ${TRAFFIC.count} ±${Math.round(TRAFFIC.wave * 100)}%)`);
-console.log(`  [${ok(changes > 0 && unsignalled <= changes * 0.25)}] lane changes, unsignalled         ${changes}, ${unsignalled} (evasive swerves only)`);
+// One lane each way (Settings › Terrain): nobody has a lane to change into.
+const laneOk = ROAD.lanesPerSide > 1 ? changes > 0 && unsignalled <= changes * 0.25 : changes === 0;
+console.log(`  [${ok(laneOk)}] lane changes, unsignalled         ${changes}, ${unsignalled} (evasive swerves only)`);
 console.log(`  [${ok(fleet.busy.size === traffic.cars.length)}] fleet bookkeeping                 ${fleet.busy.size} out, ${traffic.cars.length} on road`);
 console.log(`  [${ok(passes > 0)}] near misses detected              ${passes} (${oncomingPasses} oncoming), closest ${closest === Infinity ? 'n/a' : closest.toFixed(2) + ' m'}`);
 if (impulses.length) {

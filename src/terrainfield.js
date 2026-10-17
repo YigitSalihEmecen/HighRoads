@@ -42,7 +42,7 @@
  */
 
 import * as THREE from 'three';
-import { ROAD, CHUNK, WATER } from './config.js';
+import { ROAD, CHUNK, WATER, TERRAIN } from './config.js';
 import { clamp, smoothstep, smin, smax, hashInt, mulberry32 } from './util.js';
 
 const EDGE = ROAD.halfWidth + ROAD.shoulder;
@@ -369,7 +369,7 @@ export class Lakes {
       const rng = mulberry32(hashInt(ci * 92821 + cj * 68917 + this.seed));
       const cx = (ci + 0.2 + 0.6 * rng()) * WATER.cell;
       const cz = (cj + 0.2 + 0.6 * rng()) * WATER.cell;
-      const chance = this.biomeChance ? this.biomeChance(cx, cz) : WATER.chance;
+      const chance = (this.biomeChance ? this.biomeChance(cx, cz) : WATER.chance) * TERRAIN.lakes;
       const roll = rng();
       const r = WATER.radius[0] + (WATER.radius[1] - WATER.radius[0]) * rng() * rng();
       const harm = [rng() * 0.22, rng() * 6.28, rng() * 0.14, rng() * 6.28, rng() * 0.08, rng() * 6.28];

@@ -119,7 +119,7 @@ ws.addEventListener('message', (e) => {
 });
 await send('Emulation.setDeviceMetricsOverride',
   { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
-await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}${sky ? '&sky=' + sky : ''}` });
+await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}${sky ? '&sky=' + sky : ''}${process.env.QUERY ? '&' + process.env.QUERY : ''}` });
 
 console.log(`\nseed "${seed}" — rendering through SwiftShader\n`);
 let booted = false;
@@ -177,6 +177,8 @@ for (const [name, a, b] of views) {
   await shot(name);
 }
 if (process.env.EVAL) console.log('  eval: ' + await js(process.env.EVAL));
+// EVAL_SHOT=name: a screenshot of what EVAL left on screen (a menu, say).
+if (process.env.EVAL_SHOT) { await sleep(800); await shot(process.env.EVAL_SHOT); }
 if (consoleErrors.length) {
   console.log('\n  page errors:');
   for (const e of [...new Set(consoleErrors)].slice(0, 5)) console.log('   ' + String(e).split('\n')[0]);

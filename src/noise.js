@@ -6,6 +6,7 @@
  */
 
 import { alea, clamp, lerp, smoothstep } from './util.js';
+import { TERRAIN } from './config.js';
 
 /* ------------------------------------------------------- gradient noise -- */
 
@@ -179,7 +180,8 @@ export function createTerrain(seed) {
     for (let i = 0; i < CENTRES.length; i++) {
       const dx = u - CENTRES[i][1];
       const dy = v - CENTRES[i][2];
-      const w = Math.exp(-(dx * dx + dy * dy) / SIGMA2);
+      // The terrain menu's landscape mix weights each archetype (0 removes it).
+      const w = Math.exp(-(dx * dx + dy * dy) / SIGMA2) * TERRAIN.mix[CENTRES[i][0]];
       W[CENTRES[i][0]] = w;
       total += w;
     }
@@ -301,7 +303,7 @@ export function createTerrain(seed) {
       (w.mountain > E ? w.mountain * mountainH(wx, wy) : 0) +
       (w.canyon > E ? w.canyon * canyonH(wx, wy) : 0) +
       (w.plateau > E ? w.plateau * plateauH(wx, wy) : 0)
-    ) + continent(x, z);
+    ) * TERRAIN.relief + continent(x, z);
     lodOct = 99;
     return h;
   }

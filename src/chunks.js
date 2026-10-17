@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS } from './config.js';
+import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS, TERRAIN } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -1078,9 +1078,9 @@ export class ChunkManager {
 
     // Sun-bleached patches, weighted to higher, flatter, sunnier, exposed ground.
     const dry = clamp((fine - 0.42) * 2.1, 0, 1) * lerp(0.35, 1, smoothstep(0.45, 0.9, ny))
-      * lerp(0.5, 1, alt) + clamp(sunward * 1.4, 0, 0.45) + ridge * 0.3 - hollow * 0.4;
+      * lerp(0.5, 1, alt) + clamp(sunward * 1.4, 0, 0.45) + ridge * 0.3 - hollow * 0.4 + TERRAIN.dryness * 0.5;
     out.lerp(this._grassDry, clamp(dry, 0, 1) * 0.62);
-    out.lerp(this._lush, hollow * 0.55);
+    out.lerp(this._lush, clamp(hollow * 0.55 + Math.max(0, -TERRAIN.dryness) * 0.35, 0, 1));
     out.lerp(this._shade, clamp(-sunward * 1.6, 0, 0.5));
 
     // Plant communities, in patches tens of metres across with soft edges:
@@ -1134,8 +1134,8 @@ export class ChunkManager {
       // patch with no relief reads as a puddle, not a tor.
       rock = Math.max(rock, ridge * smoothstep(0.66, 0.78, m2) * smoothstep(0.995, 0.95, ny) * 0.85, smoothstep(260, 460, rel) * 0.7);
       const soil = clamp(smoothstep(0.975, 0.88, ny) * smoothstep(0.3, 0.6, m3) + ridge * 0.45 * smoothstep(0.45, 0.7, fine), 0, 1);
-      bare.rock = rock * keep;
-      bare.soil = soil * (1 - rock) * keep;
+      bare.rock = clamp(rock * TERRAIN.rock, 0, 1) * keep;
+      bare.soil = clamp(soil * TERRAIN.soil, 0, 1) * (1 - bare.rock) * keep;
     }
 
     return 0.92 + fine * 0.16;

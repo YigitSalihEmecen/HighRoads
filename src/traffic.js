@@ -30,10 +30,13 @@ const KEYS = ['FL', 'FR', 'BL', 'BR'];
 
 const smoother = (t) => t * t * t * (t * (t * 6 - 15) + 10);
 
-/** Lane centres, inner first. Sign gives direction of travel. Lane 1 is the cruising lane. */
+/**
+ * Lane centres, inner first. Sign gives direction of travel. Lane 1 is the
+ * cruising lane; a two-lane road has lane 0 alone, and no one changes lanes.
+ */
 function laneOffsets() {
   const half = ROAD.laneWidth * 0.5;
-  return [half, half + ROAD.laneWidth];
+  return ROAD.lanesPerSide > 1 ? [half, half + ROAD.laneWidth] : [half];
 }
 
 /** Indicator lamps: one geometry, two shared materials swapped per blink. */
@@ -462,7 +465,7 @@ export class Traffic {
   }
 
   _beginChange(car, lane, { signal = TRAFFIC.signalTime, duration = TRAFFIC.laneChangeTime } = {}) {
-    if (lane === car.lane || car.pendingLane >= 0 || car.laneT < 1) return false;
+    if (lane >= this.lanes.length || lane === car.lane || car.pendingLane >= 0 || car.laneT < 1) return false;
     car.pendingLane = lane;
     car.signal = Math.sign(this.lanes[lane] - this.lanes[car.lane]);
     car.signalT = signal;
@@ -473,6 +476,7 @@ export class Traffic {
 
   /** Overtake when the passing lane pays; otherwise keep right. */
   _considerLanes(car) {
+    if (this.lanes.length < 2) return;
     const other = 1 - car.lane;
     const here = this._leader(car, car.v);
     const there = this._leader(car, car.dir * this.lanes[other]);
@@ -499,7 +503,7 @@ export class Traffic {
     if (car.dir > 0 && d < 0 && -d < TRAFFIC.noticeRange && P.flashing && inMyLane) {
       // Flashed from behind: let them by.
       car.yielding = 2;
-      if (car.lane === 0 && this._laneSafe(car, 1)) this._beginChange(car, 1, { signal: 0.5 });
+      if (car.lane === 0 && this.lanes.length > 1 && this._laneSafe(car, 1)) this._beginChange(car, 1, { signal: 0.5 });
     } else {
       car.yielding = Math.max(0, car.yielding - dt);
     }
@@ -512,6 +516,7 @@ export class Traffic {
         if (car.flashT <= 0) car.flashT = 1.4;
         // Swerve away from the player if the other lane is the clearer one.
         const other = 1 - car.lane;
+        if (other >= this.lanes.length) return;
         const away = Math.abs(P.v - car.dir * this.lanes[other]) > Math.abs(P.v - car.v);
         if (away && car.laneT >= 1 && car.pendingLane < 0 && this._leader(car, car.dir * this.lanes[other]).gap > 8) {
           this._beginChange(car, other, { signal: 0, duration: 1.6 });
@@ -584,7 +589,7 @@ export class Traffic {
       if (s < 40) continue;
 
       // Most traffic cruises in the outer lane.
-      const lane = this.rng() < 0.7 ? 1 : 0;
+      const lane = this.lanes.length > 1 && this.rng() < 0.7 ? 1 : 0;
       const clash = this.cars.some(
         (c) => c.dir === dir && c.lane === lane && Math.abs(c.s - s) < 45
       );

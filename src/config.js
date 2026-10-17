@@ -25,7 +25,7 @@ export const ROAD = {
 
   /** Lane width, metres — sized off the 3.28 m Military Vehicle. */
   laneWidth: 3.7,
-  /** Lanes each way, and the half-width they make. */
+  /** Lanes each way, and the half-width they make (`TERRAIN.lanes` sets both). */
   lanesPerSide: 2,
   halfWidth: 7.4,
   /** Painted line width, and the gap between the two centre lines. */
@@ -1361,5 +1361,137 @@ try {
   if (new URLSearchParams(location.search).get('towns') === '0') TOWNS.enabled = false;
 } catch (err) { /* no location (Node) */ }
 
+/* ================================================================ terrain == */
+
+/**
+ * THE TERRAIN MENU (Settings › Terrain, settings.js): every knob of the world
+ * a player may want to turn, in one place. Saved to localStorage and applied
+ * below, after the graphics level and before anything is built — so a change
+ * rebuilds the world (a reload), like the level. `TERRAIN_SPEC` is the menu:
+ * the sheet is built from it, so a knob added there appears in it.
+ */
+export const TERRAIN = {
+  /** Lanes each way: 2 (the dual carriageway) or 1 (a two-lane country road). */
+  lanes: 2,
+  /** Height of the landforms, × the generator's. */
+  relief: 1,
+  /** How often each landscape wins, × (0 removes it). */
+  mix: { plains: 1, hills: 1, valley: 1, mountain: 1, canyon: 1, plateau: 1 },
+  /** Woodland cover, ×; and how tightly it keeps to stands, 0 (scattered) .. 1 (only woods). */
+  forest: 1,
+  clumping: 0.85,
+  /** Ground cover density, ×. */
+  grass: 1,
+  /** Bare rock and bald soil, ×. */
+  rock: 1,
+  soil: 1,
+  /** −1 lush .. +1 parched. */
+  dryness: 0,
+  /** Lake chance, ×. */
+  lakes: 1,
+  /** Cities on the horizon, and sign density, ×. */
+  cities: true,
+  signs: 1,
+};
+
+/** The menu, in order: `options` is a segmented switch, `toggle` an on/off, otherwise a slider. */
+export const TERRAIN_SPEC = [
+  { group: 'Road' },
+  { key: 'lanes', label: 'Lanes', options: [[2, 'Four'], [1, 'Two']], hint: 'four lanes, or a two-lane country road' },
+  { key: 'signs', label: 'Signs', min: 0, max: 2, hint: 'how many roadside signs' },
+  { group: 'Landscape' },
+  { key: 'relief', label: 'Relief', min: 0.4, max: 1.8, hint: 'height of the hills and mountains' },
+  { key: 'mix.plains', label: 'Plains', min: 0, max: 3, hint: 'how often the land lies flat' },
+  { key: 'mix.hills', label: 'Hills', min: 0, max: 3, hint: 'rolling hill country' },
+  { key: 'mix.valley', label: 'Valleys', min: 0, max: 3, hint: 'connected V-shaped valleys' },
+  { key: 'mix.mountain', label: 'Mountains', min: 0, max: 3, hint: 'ridges a kilometre high' },
+  { key: 'mix.canyon', label: 'Canyons', min: 0, max: 3, hint: 'tablelands cut by gorges' },
+  { key: 'mix.plateau', label: 'Plateaus', min: 0, max: 3, hint: 'terraced escarpments' },
+  { key: 'lakes', label: 'Lakes', min: 0, max: 3, hint: 'how often a lake fills a hollow' },
+  { group: 'Ground' },
+  { key: 'forest', label: 'Forest', min: 0, max: 2, hint: 'how much land the woods cover' },
+  { key: 'clumping', label: 'Clumping', min: 0, max: 1, hint: '0 trees scattered everywhere, 1 only in woods' },
+  { key: 'grass', label: 'Grass', min: 0, max: 2, hint: 'ground cover density (0 none)' },
+  { key: 'rock', label: 'Rock', min: 0, max: 2, hint: 'bare rock on steep faces and crests' },
+  { key: 'soil', label: 'Bare soil', min: 0, max: 2, hint: 'bald, eroded ground on slopes' },
+  { key: 'dryness', label: 'Dryness', min: -1, max: 1, hint: 'lush green to parched straw' },
+  { key: 'cities', label: 'Cities', toggle: true, hint: 'cities on the horizon' },
+];
+
+const TERRAIN_KEY = 'highroads.terrain';
+const TERRAIN_DEFAULTS = JSON.parse(JSON.stringify(TERRAIN));
+const pathGet = (o, k) => k.split('.').reduce((a, p) => (a == null ? a : a[p]), o);
+const pathSet = (o, k, v) => {
+  const ps = k.split('.');
+  const last = ps.pop();
+  ps.reduce((a, p) => a[p], o)[last] = v;
+};
+
+/** A knob's saved value if it is a valid one for it, else undefined. */
+function terrainValue(spec, v) {
+  if (spec.toggle) return typeof v === 'boolean' ? v : undefined;
+  if (spec.options) return spec.options.some(([o]) => o === v) ? v : undefined;
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(spec.max, Math.max(spec.min, v)) : undefined;
+}
+
+/** The knob values in force this load, `{ key: value }` (dotted keys). */
+export function terrainSettings() {
+  const out = {};
+  for (const sp of TERRAIN_SPEC) if (sp.key) out[sp.key] = pathGet(TERRAIN, sp.key);
+  return out;
+}
+
+export const terrainDefault = (key) => pathGet(TERRAIN_DEFAULTS, key);
+
+/** Saves `{ key: value }`; the next load builds the world from it. Null resets. */
+export function saveTerrain(values) {
+  try {
+    if (values) localStorage.setItem(TERRAIN_KEY, JSON.stringify(values));
+    else localStorage.removeItem(TERRAIN_KEY);
+  } catch (err) { /* private window, Node */ }
+}
+
+function applyTerrain() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(TERRAIN_KEY) || 'null'); } catch (err) { /* Node, bad JSON */ }
+  // `?terrain={"lanes":1}` overrides the saved knobs for one load: a world's
+  // settings shared as a link, like its seed (and the probes' A/B).
+  try {
+    const q = JSON.parse(new URLSearchParams(location.search).get('terrain') || 'null');
+    if (q && typeof q === 'object') saved = { ...saved, ...q };
+  } catch (err) { /* no location (Node), bad JSON */ }
+  if (saved && typeof saved === 'object') {
+    for (const sp of TERRAIN_SPEC) {
+      if (!sp.key) continue;
+      const v = terrainValue(sp, saved[sp.key]);
+      if (v !== undefined) pathSet(TERRAIN, sp.key, v);
+    }
+  }
+
+  // The road's width, and everything sized off it.
+  ROAD.lanesPerSide = TERRAIN.lanes;
+  ROAD.halfWidth = ROAD.laneWidth * TERRAIN.lanes;
+  const edge = ROAD.halfWidth + ROAD.shoulder;
+  GROUND.verge.band = [edge - 0.4, edge + 4.5];
+  SIGNS.gantryLeg = ROAD.halfWidth + 3.8;
+  SIGNS.gantryShift = ROAD.halfWidth / 2;
+  SIGNS.cantileverSpan = ROAD.halfWidth + 3.1;
+  // Gantries belong to a dual carriageway; a country road carries fewer cars.
+  if (TERRAIN.lanes < 2) {
+    SIGNS.mix.portal = 0;
+    SIGNS.mix.cantilever = 0;
+    TRAFFIC.count = Math.round(TRAFFIC.count * 0.7);
+  }
+
+  if (TERRAIN.signs <= 0) SIGNS.enabled = false;
+  SIGNS.featureChance = Math.min(1, SIGNS.featureChance * TERRAIN.signs);
+  SIGNS.chevronStep /= Math.max(0.35, TERRAIN.signs);
+  if (TERRAIN.grass <= 0) GRASS.enabled = false;
+  GRASS.density *= TERRAIN.grass;
+  GRASS.wood.density *= TERRAIN.grass;
+  TOWNS.cities = TOWNS.cities && TERRAIN.cities;
+}
+
+applyTerrain();
 // Cities are all there is of the towns now: none, nothing to plan.
 if (!TOWNS.cities) TOWNS.enabled = false;

@@ -3,12 +3,16 @@
  *
  * One sheet, opened from the title, the garage and the pause menu. Each
  * `_page` is a tab: graphics, driving (gearbox, camera, tilt) and audio (the
- * engine simulator's buses and tone, wind).
+ * engine simulator's buses and tone, wind), terrain (the world's shape, its
+ * road and what grows on it — applied by rebuilding the world).
  */
 
 import { TiltSteering } from './input.js';
 import { CAM_MODES } from './camera.js';
-import { GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel, TREES, setTreeGenerator } from './config.js';
+import {
+  GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel, TREES, setTreeGenerator,
+  TERRAIN_SPEC, terrainSettings, terrainDefault, saveTerrain,
+} from './config.js';
 import { SKY_PRESETS } from './sky.js';
 
 /**
@@ -183,6 +187,8 @@ export class Settings {
       this.refresh();
     });
 
+    this._terrainPage();
+
     this._page('Driving');
     this._sub('Car');
     this.autoBtn = this._button('Gearbox: auto', () => {
@@ -231,6 +237,92 @@ export class Settings {
     this._host = this.body;
 
     this.refresh();
+  }
+
+  /**
+   * Terrain: one control per `config.js:TERRAIN_SPEC` knob. They edit a
+   * pending copy; Apply saves it and rebuilds the world (a reload, like the
+   * graphics level), since every knob shapes what is generated.
+   */
+  _terrainPage() {
+    this._page('Terrain');
+    const live = terrainSettings();
+    const want = { ...live };
+    const apply = document.createElement('button');
+    const dirty = () => {
+      const changed = Object.keys(want).some((k) => want[k] !== live[k]);
+      apply.classList.toggle('on', changed);
+      apply.textContent = changed ? 'Apply — rebuilds the world' : 'Apply';
+    };
+    for (const sp of TERRAIN_SPEC) {
+      if (sp.group) { this._sub(sp.group); continue; }
+      if (sp.options) {
+        this._segment(sp.label, sp.hint, sp.options, want[sp.key], (v) => { want[sp.key] = v; dirty(); });
+      } else if (sp.toggle) {
+        const b = this._button('', () => { want[sp.key] = !want[sp.key]; show(); dirty(); });
+        b.title = sp.hint;
+        const show = () => {
+          b.textContent = `${sp.label}: ${want[sp.key] ? 'on' : 'off'}`;
+          b.classList.toggle('on', !want[sp.key]);
+        };
+        show();
+      } else {
+        const row = this._slider(sp.label, sp.hint, sp.min, sp.max, want[sp.key], (v) => {
+          // Snap to the default near it, so a knob can be put back exactly.
+          const d = terrainDefault(sp.key);
+          want[sp.key] = Math.abs(v - d) < (sp.max - sp.min) * 0.015 ? d : v;
+          dirty();
+        });
+        row.input.addEventListener('change', () => { row.input.value = String(want[sp.key]); row.show(want[sp.key]); });
+      }
+    }
+    this._sub('Rebuild');
+    apply.className = 'set-btn';
+    apply.type = 'button';
+    apply.addEventListener('click', () => {
+      if (!apply.classList.contains('on')) return;
+      saveTerrain(want);
+      location.reload();
+    });
+    this._host.appendChild(apply);
+    this._button('Reset terrain to defaults', () => { saveTerrain(null); location.reload(); });
+    dirty();
+  }
+
+  /** A labelled segmented switch (the graphics one's look); `onPick` gets the option's value. */
+  _segment(label, hint, options, value, onPick) {
+    const row = document.createElement('div');
+    row.className = 'set-row';
+    row.title = hint || '';
+    const name = document.createElement('span');
+    name.className = 'set-name';
+    name.textContent = label;
+    const seg = document.createElement('div');
+    seg.className = 'seg-control';
+    seg.setAttribute('role', 'group');
+    seg.setAttribute('aria-label', label);
+    seg.style.setProperty('--n', options.length);
+    seg.style.gridColumn = '2 / 4';
+    const fill = document.createElement('span');
+    fill.className = 'seg-fill';
+    fill.setAttribute('aria-hidden', 'true');
+    seg.appendChild(fill);
+    const btns = options.map(([v, text], i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg-btn';
+      b.textContent = text;
+      b.addEventListener('click', () => { pick(i); onPick(v); b.blur(); });
+      seg.appendChild(b);
+      return b;
+    });
+    const pick = (i) => {
+      seg.style.setProperty('--a', i);
+      btns.forEach((b, j) => b.setAttribute('aria-pressed', String(i === j)));
+    };
+    pick(Math.max(0, options.findIndex(([v]) => v === value)));
+    row.append(name, seg);
+    this._host.appendChild(row);
   }
 
   /**
