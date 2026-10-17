@@ -20,7 +20,7 @@ its soundtrack. Everything streams in chunks, forever, from a typed seed.
 
 **Nothing visible is an asset** except the car models. Terrain, road, foliage,
 grass, stone, textures, smoke and wind are generated at boot in `src/env/`; the
-trees by the `tree_gen` submodule (§4.11b).
+trees by the `tree_gen` submodule (§4.11b), the settlements by `city_gen` (§4.14c).
 
 No build step. ES modules + import map, served statically.
 
@@ -35,6 +35,7 @@ probe/          headless measurement (§10)
 car_gen/        car generator SUBMODULE (YigitSalihEmecen/Car-gen) — every car is generated; DO NOT EDIT here
 tree_gen/       tree generator SUBMODULE (YigitSalihEmecen/Tree-Gen) — every tree is grown; change it in its own repo, then bump
 roadsign_gen/   road-sign generator SUBMODULE (YigitSalihEmecen/Roadsign-gen) — TypeScript; we import its built lib/roadsign.js (§4.14b)
+city_gen/       building/block/city generator SUBMODULE (YigitSalihEmecen/City-Gen) — TypeScript; we import its built lib/citygen.js (§4.14c)
 style_examples/ reference art the low-poly foliage was built against
 engine_sim/     vendored sibling — DO NOT EDIT
 ```
@@ -43,6 +44,7 @@ engine_sim/     vendored sibling — DO NOT EDIT
 |---|---|
 | `chunks.js` | terrain/road mesh, colliders, streaming, **every scatter** |
 | `forest.js` | the TreeGen canopy's draw: per-tree level of detail + culling over world-wide instanced meshes (§4.11b) |
+| `towns.js` | settlements: plans hamlets, villages and far cities along the road, levels their ground (a term in the field), builds them through a worker (§4.14c) |
 | `config.js` | all tunables, **23 blocks** + the graphics levels |
 | `vehicle.js` | raycast vehicle: suspension, tyres, aero, stability |
 | `main.js` | boot (with progress), `Game`, build → vehicle lifecycle, fixed-step loop, studio branch, recovery |
@@ -79,6 +81,7 @@ road, the sheet and the streaming window.
 | `ground.js` | terrain detail texture + material patch | — |
 | `road.js` | the road in road space: sections, wheel paths, patches, cracks, POM asphalt | — |
 | `water.js` | lake surfaces: polar mesh + water shader (§4.21) | — |
+| `towns.worker.js` | City-gen building a settlement's levels of detail off the main thread, packed buffers back (§4.14c) | village ~80–140k / 10–16k, city ~85–105k |
 
 ### `engine_sim/` is a submodule — bump the pointer, never edit inside it
 
@@ -973,6 +976,67 @@ clear ~6 m) and `overheadScale` grows and spreads the faces.
 No colliders, like the trees. Medium/low graphics: `lod` 2 (384 px faces),
 shorter `drawDistance`.
 
+### 4.14c Settlements (`city_gen/`, `towns.js`, `env/towns.worker.js`)
+
+City-gen is TypeScript + Vite with its own web app; its engine (`src/engine/`)
+uses neither three nor the DOM, and the submodule ships **`lib/citygen.js`**,
+that engine bundled to one plain ES module with no imports at all. Change it in
+its own repo, `npm run build:lib` (also run by `npm run build`), commit the
+bundle, bump the pointer. Because it imports nothing it loads straight into a
+module worker, no loader needed (contrast `treegen.worker.js`).
+
+**The plan** is a pure function of the seed and the road. The road is cut into
+`TOWNS.slot` (1.5 km) slots, slot 0 left alone for the title screen; each rolls
+from `TOWNS.mix`:
+
+| kind | what | where |
+|---|---|---|
+| hamlet | 4–8 houses on one side | a stretch no sharper than `maxCurv` whose land stands within `maxRelief` of the road |
+| village | both sides — the road is the high street — terraces in the middle, detached houses at the ends, maybe a second row behind a lane, a church, street lamps | as a hamlet; the second side may stand off by `1.6 × maxRelief` (the road usually runs along a hillside), then one row deep |
+| city | a whole `layoutCity` + blocks, detail 0, squared to the road | `cityDist` off the road, no road within `cityBlend + 50` m of any of a 5 × 5 grid over it, land varying < `cityRelief`, no lake |
+
+A roll that finds no room in six (four, for a city) attempts is nothing. With
+`highroads-01`: ~3 settlements / 10 km, a city every ~20 km, about half of
+the villages straddling the road. Lots face the road (`generateLot`'s front is
+local +z), are spaced along it by the bend's `1 + v·κ` so terraces do not
+overlap on the inside, and are refused if a corner is nearer another road or
+in a lake. Styles follow the biome: mediterranean where it is warm, tudor where
+it is cold, suburban/victorian/haussmann elsewhere; an attached style comes as
+a terrace of 1–4 with open ends (`corner`), so a lone one has windows all round.
+
+**The ground.** A settlement is a TERM in `TerrainField.sample`, applied to the
+natural surface right after the lake carve: beside a village it pulls the
+ground to 0.25 m under the road's own height (nearest point of a polyline of
+the centreline, so it follows the grade), out to the last row + `flat`,
+blending back over `blend`; under a city to one level (`CITY_SINK` under its
+asphalt — 5 cm z-fights 700 m away). The road's cut/fill still runs after it.
+Each lot reads its four corners from the levelled field: it stands at the
+highest, on a stone footing down to the lowest (`drop`), so a residual grade
+never shows daylight. `clear()` is the same geometry, sharper; `vegetation()`
+multiplies every density by `1 − clear` (`setEcology`'s third argument), so
+no tree, shrub or tuft grows in a settlement.
+
+**Order.** `towns.update` runs in `chunks.update` right after the tiles (which
+`field.sync()`): it plans every slot the generated road covers (~2.4 km ahead,
+so before the tiles there are built), re-checks cities against road generated
+since (`onGrow` boxes; a city the road now comes near is dropped), then builds
+within `buildRadius` of the focus and frees past `keep`. Registering or dropping
+a settlement calls `onChange` → `tiles._invalidate` + the scatter height cache.
+
+**The draw.** Two shared materials (vertex colour + City-gen's per-vertex warm
+emission, × `uNight` from the sky preset via `setNight`); two meshes per level.
+A village is a `THREE.LOD`: `TOWNS.detail[0]` (City-gen 1) near, `[1]` (0)
+past `lodDistance`. Near meshes cast shadows; cities do not. No colliders,
+like the trees. Low graphics: no cities, LOD at 220 m.
+
+**Measured** (M4, Metal, `GPU=1 QUERY=towns=0|1 probe/perf.mjs`, 25 s through
+a two-sided village with a city nearby): 60 fps either way, +190k triangles
+mean, +2 draw calls, `.towns` ≤ 0.6 ms. Planning ~2–5 ms once per settlement;
+building is on the worker (50–170 ms in Node).
+
+`?towns=0` drops settlements for one load. `probe/towns.mjs` checks the plan
+(§10); `vista.mjs` with `GPU=1 VIEWS='[…]' EVAL='…'` is how they were looked at.
+
 ### 4.15 Tyre effects (`fx.js`)
 
 Both driven by ONE quantity, `wheel.slipAmount` — the same number the skid audio
@@ -1237,7 +1301,7 @@ density, which is a look decision, not a free one.
 ## 5. The config contract
 
 `config.js` exports **23** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `TREES`,
-`BUSHES`, `GRASS`, `ROAD_SURFACE`, `GROUND`, `SIGNS`, `ROCKS`, `WIND`, `FX`, `VEHICLE`,
+`BUSHES`, `GRASS`, `ROAD_SURFACE`, `GROUND`, `SIGNS`, `TOWNS`, `WIND`, `FX`, `VEHICLE`,
 `TRAFFIC`, `CAMERA`, `TITLE`, `ATMOSPHERE`, `SCORE`, `TERRAIN_COLORS`, `TILES`,
 `BIOME`, `WATER` — plus
 `GRAPHICS_LEVELS` and `graphicsLevel`/`setGraphicsLevel`.
@@ -1261,7 +1325,7 @@ const files=[...fs.readdirSync('src').map(f=>'src/'+f),
              ...fs.readdirSync('src/env').map(f=>'src/env/'+f)];
 for(const f of files){ if(!f.endsWith('.js'))continue;
   const t=fs.readFileSync(f,'utf8');
-  for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|TREES|BUSHES|GRASS|ROAD_SURFACE|GROUND|ROCKS|VEHICLE|TRAFFIC|CAMERA|TITLE|ATMOSPHERE|SCORE|TILES|WATER|BIOME|TERRAIN_COLORS|WIND|FX)\.(\w+)/g)){
+  for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|TREES|BUSHES|GRASS|ROAD_SURFACE|GROUND|SIGNS|TOWNS|VEHICLE|TRAFFIC|CAMERA|TITLE|ATMOSPHERE|SCORE|TILES|WATER|BIOME|TERRAIN_COLORS|WIND|FX)\.(\w+)/g)){
     if(blocks[m[1]]&&!blocks[m[1]].has(m[2])){console.log('MISSING '+m[0]+' in '+f);bad++;}}}
 console.log(bad?bad+' missing':'config audit clean');"
 ```
@@ -1630,6 +1694,11 @@ moving — at one frame per second through SwiftShader it is a still image.
     chords sit metres off the world-space tiles. `chunks._groundY(x, z, G)`
     reads `field.height` on a cached G-metre world lattice (2 m = the finest
     tile spacing). Bug #88.
+46. **Anything that changes the field must say so.** Settlements are a term in
+    `TerrainField.sample`; registering or dropping one calls `onChange`, which
+    invalidates the tiles and the scatter height cache over its box. A new term
+    that skips this leaves tiles built against the old ground — a village on a
+    hillside it does not stand on — and nothing errors. (§4.14c)
 43. **`tiles.surfaceAt` reads the FINEST built tile**, not what is drawn. A
     coarse tile still on screen while its children build is invisible to it.
     Probe coverage with it; probe the picture with `render.mjs`.
@@ -1658,6 +1727,7 @@ npm run probe
 | `traffic.mjs` | spawn distance, stalls, overlaps, lane error, population, Δv |
 | `score.mjs` | the near-miss mechanic, without physics |
 | `props.mjs` | LEGACY canopy and understorey: per-species counts both tiers, determinism, **whether the far tier is the same tree**, caps, batches, cost, clearance, float, and that the scatter is LUMPY |
+| `towns.mjs` | settlements over 45 km (`KM=`): per 10 km by kind, villages the road passes through, lots off every carriageway, each lot's floor and footing against the ground, levelled ground, cities clear of all road, nothing growing on a lot, determinism, City-gen's triangles and build time; `LIST=1` prints each one's station |
 | `signs.mjs` | road-sign placement against a stub library: per km by role, nothing on the shoulder, foot level with the road, chevrons on the outside of bends, facing, determinism; `LIST=1` prints each chunk's. `signs.html` is the library's contact sheet (`&cam=x,y,z,tx,ty,tz`) |
 | `forest.mjs` | the TreeGen canopy: triangles per level, determinism, scatter caps/clearance/float/lumpiness, the forest's per-frame LOD pass (§4.11b). `forest.html` is its contact sheet (`?level=N`, `?species=oak`) |
 | `handling.mjs` | steering by speed, slide recovery, drift, rollover safety |
@@ -1668,9 +1738,9 @@ npm run probe
 | `canopy.mjs` | **what the canopy looks like** — contact sheet, both tiers at true size. Needs Chrome |
 | `uishot.mjs` | **what the interface looks like**, 17 viewports + overflow report. Needs Chrome |
 | `render.mjs` | **what the GAME looks like**, through SwiftShader. Needs Chrome. `SKY=night`, `CAM=chase`, `TAG=prefix-`, `EVAL='js'` |
-| `vista.mjs` | aerial views of the world: `[seed] [s] [sky]`. Needs Chrome |
+| `vista.mjs` | aerial views of the world: `[seed] [s] [sky]`; `GPU=1`, `VIEWS='[["name",[along,side,up],[along,side,up]],…]'`, `EVAL='js'`. Needs Chrome |
 | `sheet.mjs` | screenshots a `probe/*.html` contact sheet (`signs`, `ground`, `road`) and prints its `window.SHEET`; `GPU=1` for Metal — SwiftShader cannot judge shader looks or costs. `render.mjs` takes `GPU=1` too |
-| `perf.mjs` | **where a frame goes** (`?perf` profiler), draw calls, triangles; `INSPECT=` for GPU attribution (§4.25). Needs Chrome |
+| `perf.mjs` | **where a frame goes** (`?perf` profiler), draw calls, triangles; `INSPECT=` for GPU attribution (§4.25); `GPU=1` for Metal, `QUERY='towns=0'` for an A/B. Needs Chrome |
 | `stream.mjs` | the streaming hitch profile at a set speed, no renderer (§4.25) |
 
 The Chrome scripts are not in `npm run probe` (`CHROME=/path/to/chromium`; as root they pass `--no-sandbox`). `render.mjs` takes
