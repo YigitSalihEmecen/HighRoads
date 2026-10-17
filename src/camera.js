@@ -1,13 +1,13 @@
 /**
- * camera.js — chase camera with critically damped tracking.
+ * camera.js — chase camera on critically damped springs.
  *
- * The camera tracks a flattened copy of the car heading. Body roll and
- * suspension pitch do not move the view.
+ * The rig's yaw, pitch, pivot height and distance each ride a spring; the
+ * pivot's X/Z is locked to the car. Body roll and suspension do not move the view.
  */
 
 import * as THREE from 'three';
 import { ATMOSPHERE, CAMERA, TITLE } from './config.js';
-import { clamp, damp, dampTrack, smoothstep } from './util.js';
+import { clamp, damp, dampTrack, smoothstep, spring } from './util.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -48,6 +48,16 @@ export class ChaseCamera {
 
     this._fwd = new THREE.Vector3();
     this._up = new THREE.Vector3();
+    this._pivot = new THREE.Vector3();
+    /** Chase-rig spring states; seeded from the car whenever `_rigSeeded` is cleared. */
+    this._rigSeeded = false;
+    this._yawGoal = 0;
+    this._yaw = { x: 0, v: 0 };
+    this._pitch = { x: 0, v: 0 };
+    this._pivotY = { x: 0, v: 0 };
+    this._dist = { x: 0, v: 0 };
+    this._climb = 0;
+    this._roll = 0;
     this._desired = new THREE.Vector3();
     this._target = new THREE.Vector3();
     // dampTrack needs both ends of the goal's travel; else the settled lag varies with frame rate.
@@ -70,6 +80,7 @@ export class ChaseCamera {
   setTitle(on) {
     if (this.title === on) return;
     this.title = on;
+    this._rigSeeded = false;
     if (on) {
       this.initialised = false;
       this._introT = 1;
@@ -115,9 +126,10 @@ export class ChaseCamera {
     return CAM_MODES[this.mode];
   }
 
-  /** A teleport reads as goal travel to dampTrack and earns a huge lead — cut, and reseed goals next frame. */
+  /** A teleport would read as travel to the springs and swing the rig — cut, and reseed next frame. */
   snap() {
     this.initialised = false;
+    this._rigSeeded = false;
   }
 
   update(dt, vehicle) {
@@ -140,36 +152,66 @@ export class ChaseCamera {
     const hScale = clamp(sizeT, 1, CAMERA.heightScaleMax);
     const dScale = clamp(sizeT, 1, CAMERA.distScaleMax);
 
-    // Flattened heading: keeps the horizon level under body roll.
-    this._fwd.copy(vehicle.renderFwd);
-    this._fwd.y *= 0.35;
-    this._fwd.normalize();
+    const fwd = vehicle.renderFwd;
+    const vel = vehicle.linvel;
 
     // Reversing shouldn't spin the camera around; hold the last forward heading.
-    if (vehicle.forwardSpeed > -1.0) {
-      this.heading.lerp(this._fwd, 1 - Math.exp(-6 * dt)).normalize();
+    if (vehicle.forwardSpeed > -1.0 || !this._rigSeeded) {
+      const fl = Math.hypot(fwd.x, fwd.z) || 1;
+      let hx = fwd.x / fl;
+      let hz = fwd.z / fl;
+      // Lean toward the direction of travel: a slide rotates the body, not the shot.
+      const vh = Math.hypot(vel.x, vel.z);
+      const w = vh > 1e-3 && vel.x * hx + vel.z * hz > 0 ? CAMERA.travelAlign * smoothstep(3, 15, vh) : 0;
+      if (w > 0) {
+        hx += (vel.x / vh - hx) * w;
+        hz += (vel.z / vh - hz) * w;
+      }
+      this._yawGoal = Math.atan2(hx, hz);
     }
+    const pitchGoal = Math.asin(clamp(fwd.y, -1, 1)) * CAMERA.pitchFollow;
 
     const speedTarget = smoothstep(0, CAMERA.speedRef, Math.abs(vehicle.forwardSpeed));
     this.speedT = damp(this.speedT, speedTarget, CAMERA.speedLag, dt);
     const speedT = this.speedT;
+    const distGoal = cfg.dist * dScale + speedT * CAMERA.distGain * zoom
+      + Math.abs(vehicle.forwardSpeed) * CAMERA.pullTime;
+
+    if (!this._rigSeeded) {
+      this._rigSeeded = true;
+      this._yaw.x = this._yawGoal; this._yaw.v = 0;
+      this._pitch.x = pitchGoal; this._pitch.v = 0;
+      this._pivotY.x = vehicle.renderPos.y; this._pivotY.v = vel.y;
+      this._dist.x = distGoal; this._dist.v = 0;
+      this._climb = vel.y;
+      this._roll = 0;
+    }
+
+    // Springs on the rig's angles and pivot height, not on world position:
+    // speed adds no lag, while steering, slides and bumps are eased out.
+    const yawNow = this._yaw.x;
+    const yaw = spring(this._yaw, yawNow + Math.atan2(Math.sin(this._yawGoal - yawNow), Math.cos(this._yawGoal - yawNow)),
+      0, CAMERA.yawRate, dt);
+    const pitch = spring(this._pitch, pitchGoal, 0, CAMERA.pitchRate, dt);
+    this._climb = damp(this._climb, vel.y, CAMERA.climbRate, dt);
+    const pivotY = spring(this._pivotY, vehicle.renderPos.y, this._climb, CAMERA.heightRate, dt);
+    const dist = spring(this._dist, distGoal, 0, CAMERA.distRate, dt);
+
+    const cp = Math.cos(pitch);
+    this.heading.set(Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp);
+    this._pivot.set(vehicle.renderPos.x, pivotY, vehicle.renderPos.z);
 
     this._desired
-      .copy(vehicle.renderPos)
-      .addScaledVector(this.heading, -(cfg.dist * dScale + speedT * CAMERA.distGain * zoom))
+      .copy(this._pivot)
+      .addScaledVector(this.heading, -dist)
       .addScaledVector(WORLD_UP, cfg.height * hScale + speedT * CAMERA.heightGain * zoom);
 
     this._target
-      .copy(vehicle.renderPos)
+      .copy(this._pivot)
       .addScaledVector(this.heading, cfg.ahead + speedT * 4)
       .addScaledVector(WORLD_UP, CAMERA.aimHeight * hScale);
 
-    if (!this.initialised) {
-      this.position.copy(this._desired);
-      this.lookAt.copy(this._target);
-      this._seedGoals();
-      this.initialised = true;
-    } else if (this._introT < 1) {
+    if (this.initialised && this._introT < 1) {
       // Double smoothstep: a single Hermite jerks at both ends of a move this long.
       this._introT = Math.min(1, this._introT + dt / this._introDur);
       const e = smoothstep(0, 1, this._introT);
@@ -177,21 +219,18 @@ export class ChaseCamera {
       this.position.lerpVectors(this._introPos, this._desired, k);
       this.lookAt.lerpVectors(this._introLook, this._target, k);
     } else {
-      const k = CAMERA.posDamp * (1 + speedT * 0.5);
-      // Y is stiffer than X/Z, so it gets its own call rather than sharing one.
-      this.position.x = dampTrack(this.position.x, this._prevDesired.x, this._desired.x, k, dt);
-      this.position.y = dampTrack(this.position.y, this._prevDesired.y, this._desired.y, k * 1.4, dt);
-      this.position.z = dampTrack(this.position.z, this._prevDesired.z, this._desired.z, k, dt);
-
-      this._track(this.lookAt, this._prevTarget, this._target, CAMERA.aimDamp, dt);
+      this.position.copy(this._desired);
+      this.lookAt.copy(this._target);
     }
-    this._seedGoals();
+    this.initialised = true;
 
     this.camera.position.copy(this.position);
     this.camera.up.copy(WORLD_UP);
     this.camera.lookAt(this.lookAt);
 
-    this.camera.rotateZ(clamp(vehicle.slip * Math.sign(vehicle.wheels[2].slipLat) * 0.05, -0.06, 0.06));
+    const rollGoal = clamp(vehicle.slip * Math.sign(vehicle.wheels[2].slipLat) * CAMERA.slipRoll, -0.06, 0.06);
+    this._roll = damp(this._roll, rollGoal, CAMERA.rollRate, dt);
+    this.camera.rotateZ(this._roll);
 
     this._applyFov(dt, speedT, vehicle, zoom);
   }

@@ -34,6 +34,21 @@ export function dampTrack(current, goalPrev, goal, rate, dt) {
   return goal - lag + (current - goalPrev + lag) * e;
 }
 
+// Critically damped spring toward a goal moving at `goalVel`, integrated
+// exactly over the frame, so frame-rate independent. Second order: the
+// follower's velocity is continuous, so it never starts or stops on a frame.
+// Steady-state lag behind a ramp is 2·(rate − goalVel)/omega. Mutates s = {x, v}.
+export function spring(s, goal, goalVel, omega, dt) {
+  if (!(dt > 0)) return s.x;
+  const e = Math.exp(-omega * dt);
+  const err = s.x - goal + goalVel * dt;
+  const rel = s.v - goalVel;
+  const c = rel + omega * err;
+  s.x = goal + (err + c * dt) * e;
+  s.v = goalVel + (rel - omega * c * dt) * e;
+  return s.x;
+}
+
 export function moveTowards(current, target, maxDelta) {
   const d = target - current;
   if (Math.abs(d) <= maxDelta) return target;

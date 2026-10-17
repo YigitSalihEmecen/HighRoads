@@ -994,9 +994,26 @@ export const CAMERA = {
   bodyRef: 1.45,
   heightScaleMax: 1.75,
   distScaleMax: 1.35,
-  /** Positional and rotational smoothing rates (higher = stiffer). */
-  posDamp: 9.5,
-  aimDamp: 12.0,
+  /**
+   * Natural frequencies of the rig's critically damped springs, rad/s
+   * (higher = stiffer). `yaw`/`pitch` swing the rig round the car; `height`
+   * filters suspension and bumps out of the pivot; `dist` eases the pull-back.
+   */
+  yawRate: 4.0,
+  pitchRate: 3.0,
+  heightRate: 4.5,
+  distRate: 2.5,
+  /** The climb rate fed forward to the height spring is smoothed at this rate: hills track, bumps don't. */
+  climbRate: 1.5,
+  /** 0..1 — how much the rig follows the direction of travel rather than the nose, so a slide doesn't swing it. */
+  travelAlign: 0.6,
+  /** Share of the car's pitch the rig follows on grades. */
+  pitchFollow: 0.35,
+  /** The rig trails by speed × this, seconds: the pull-back at speed. */
+  pullTime: 0.075,
+  /** Camera roll per unit of slide, radians, and how fast it eases in. */
+  slipRoll: 0.05,
+  rollRate: 3.0,
   /** How the rig opens out with speed — pull-back complete at `speedRef`. */
   speedRef: 68,
   speedLag: 0.5,

@@ -1312,6 +1312,13 @@ preferred the previous camera, so `camera.js`, the speed blur and the
 `CAMERA` block are back to what they were before it; `speedlines.js` is gone.
 Do not reintroduce those without asking.
 
+The chase rig now runs on critically damped springs (`util.spring`, exact
+per frame): yaw (blended toward the direction of travel by `travelAlign`, so
+a slide doesn't swing the shot), pitch, pivot height (fed a smoothed climb
+rate, so hills track and bumps don't) and distance (`pullTime` × speed is the
+pull-back). The pivot's X/Z is locked to the car — no world-space position
+lag. Slip roll is eased, no longer per-frame. Tuning: `CAMERA.*Rate`.
+
 ### 4.24 Engine live inputs from the world (`powertrain.setSurroundings`)
 
 engine_sim exposes normalised live inputs (`strain`, `aggression`,
