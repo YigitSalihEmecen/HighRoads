@@ -794,6 +794,11 @@ Traps:
   at any distance.
 - TreeGen trees are 100× the legacy triangles at the nearest level. Level 0
   is kept to 60 m: ~10-20 trees in view.
+- **Far crowns went see-through.** Plain mips average leaf with gap, so card
+  and billboard alpha sank under the cutoff with distance. `windify` scales a
+  cutout's alpha by `1 + mip × TREES.treegen.alphaMipScale` (1.5; 0.25–0.6
+  made no visible difference) and turns on alpha-to-coverage. Fuller crowns
+  shade more leaf pixels: ~2 ms at 2268×1417 on an M-series Mac.
 
 ### 4.12 Ground cover — THREE TIERS (`env/grass.js` + `chunks.js`)
 
@@ -878,6 +883,25 @@ triplanar rock detail. The sward made it obvious.
 The sward let the grass thin: `GRASS.density` 3.0 → 1.9, the wood tier 1.1 →
 0.75 (grass measured ~1.5 ms GPU a frame at 2268×1417). Medium: march 4–12
 layers, no self-shadow, 512². Low: the turf's look, no march.
+
+**Hex tiling** (Mikkelsen 2022): the far and near detail tiles, the macro
+map, and the sward and verge COLOUR past the march are each laid three times,
+turned and shifted at random per vertex of a triangle grid and blended, so a
+field shows no repeat. Inside the march the plain tile is used (a march cannot
+cross copies), crossfaded over `sward.fade`. Normals past the march take the
+heaviest copy only. The detail map's anisotropy is capped at 8: three 16×
+fetches per pixel were most of the cost. Ground sheet, 2268×1417: 6.3 → 8.4 ms.
+
+**The verge** (`GROUND.verge`, `vergeMaps`): the dirt belt beside the road is a
+generated heightfield of packed soil, gravel and cobbles, marched together with
+the sward (`fr_hAt` blends the two heights by the verge's share). Tiles carry
+`roadDist` (the field's road distance, capped at 1e4 m: an Infinity
+interpolates to NaN). Soil and stone are SEPARATE heights, a stone stored as
+its prominence over the soil, so across `band` the stones sink into the dirt
+rather than fading. Prominence, not height, because its mips still average to
+"how much stone stands out" and the gravel thins with distance. Any mesh on the
+terrain material without `roadDist` reads 0 and turns all verge.
+`probe/ground.html` lays a fake road along x = −20.
 
 **`road.js`** draws the carriageway in **ROAD space**: the ribbon carries
 `roadUV` (across, along mod 7680 m — a multiple of the chunk and of every
@@ -1139,6 +1163,12 @@ uses, rather than a different-looking one.
 
 `graphicsLevel()` wraps `localStorage` in try/catch, not a `typeof` guard: Node
 exposes a global that **throws** unless the process was started with a store.
+
+**Anti-aliasing.** FXAA after the OutputPass (`ATMOSPHERE.fxaa`; off on
+Low). MSAA on the composer target is wired (`ATMOSPHERE.msaa`) but OFF: on an
+M-series Mac through ANGLE/Metal at 2268×1417 it cost ~15 ms a frame at 2× and
+at 4× alike. SMAA measured ~4.5 ms. The FINISH pass writes alpha 1, because a
+coverage cutout leaves alpha under 1 and the page would show through.
 
 ### 4.19 The stylesheet — one scale, no width breakpoints
 
