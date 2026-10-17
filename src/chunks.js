@@ -35,6 +35,8 @@ function dashOn(s, half) {
 }
 
 const EDGE = ROAD.halfWidth + ROAD.shoulder;
+/** The sun's side, flat (the default sun's azimuth): the slopes that dry out. Fixed, so a sky change never repaints the hills. */
+const SUNWARD = [-0.432, -0.902];
 
 /**
  * The road's along-coordinate is handed to the shader modulo this, so it
@@ -271,6 +273,13 @@ export class ChunkManager {
     this._peak = new THREE.Color(TERRAIN_COLORS.peak);
     this._dirt = new THREE.Color(TERRAIN_COLORS.dirt);
     this._snow = new THREE.Color(TERRAIN_COLORS.snow);
+    this._lush = new THREE.Color(TERRAIN_COLORS.lush);
+    this._shade = new THREE.Color(TERRAIN_COLORS.shade);
+    this._bracken = new THREE.Color(TERRAIN_COLORS.bracken);
+    this._heather = new THREE.Color(TERRAIN_COLORS.heather);
+    this._fresh = new THREE.Color(TERRAIN_COLORS.fresh);
+    this._rush = new THREE.Color(TERRAIN_COLORS.rush);
+    this._tpiCache = new Map();
 
     this._buildSharedAssets();
 
@@ -284,7 +293,7 @@ export class ChunkManager {
     this.field.onGrow.push(() => { if (this._gyCache) this._gyCache.clear(); });
     this.tiles = new WorldTiles({
       scene, field: this.field, material: this.matTerrain, world, RAPIER,
-      color: (x, z, y, ny, d, out) => this._groundColor(x, z, y, ny, d, out),
+      color: (x, z, y, ny, d, out, nx, nz, bare) => this._groundColor(x, z, y, ny, d, out, nx, nz, bare),
     });
     /** Where the tiles are centred. main.js points this at the car; null = the road at carS. */
     this.focus = null;
@@ -934,6 +943,9 @@ export class ChunkManager {
     const vertCount = rows * nv;
     const positions = new Float32Array(vertCount * 3);
     const colors = new Float32Array(vertCount * 3);
+    // How bare each vertex is (rock or soil): the grass keeps off it.
+    const bare = new Float32Array(vertCount);
+    const ext = { rock: 0, soil: 0 };
     const p = new THREE.Vector3();
     const frame = makeFrame();
     const rightFlat = new THREE.Vector3();
@@ -968,12 +980,15 @@ export class ChunkManager {
         const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
         const nl = Math.hypot(nx, ny, nz) || 1;
         const wx = positions[k * 3] + origin.x, wz = positions[k * 3 + 2] + origin.z;
+        // The grid's normal may point down (winding): flip it up for the aspect.
+        const up = ny < 0 ? -1 : 1;
         const jit = this._groundColor(wx, wz, positions[k * 3 + 1] + origin.y,
-          Math.abs(ny / nl), Math.abs(this.lateral[i]), c);
+          Math.abs(ny / nl), Math.abs(this.lateral[i]), c, up * nx / nl, up * nz / nl, ext);
         colors[k * 3] = c.r * jit; colors[k * 3 + 1] = c.g * jit; colors[k * 3 + 2] = c.b * jit;
+        bare[k] = Math.max(ext.rock, ext.soil);
       }
     }
-    return { positions, colors };
+    return { positions, colors, bare };
   }
 
   /** The region a chunk's sheet samples in (its road ± the scatter extent). */
@@ -1022,7 +1037,7 @@ export class ChunkManager {
    *
    * @returns {number} the value jitter applied, so callers can reuse it
    */
-  _groundColor(x, z, y, ny, av, out) {
+  _groundColor(x, z, y, ny, av, out, nx = 0, nz = 0, bare = null) {
     // Two mottles, ~70 m and ~350 m, put patches inside regions rather than a
     // single graded wash.
     const fine = this.terrain.nC(x * 0.014, z * 0.014) * 0.5 + 0.5;
@@ -1036,19 +1051,41 @@ export class ChunkManager {
     out.copy(this._grassDeep).lerp(this._grassLow, smoothstep(0.28, 0.62, broad + alt * 0.25));
     out.lerp(this._grassHigh, clamp(alt * 0.9 + (fine - 0.5) * 0.4, 0, 1));
 
-    // Sun-bleached patches, weighted to higher, flatter ground.
+    // Where the ground sits in its landscape (topographic position): a crest
+    // is exposed, thin-soiled and dry; a hollow gathers water and soil.
+    const tpi = this._tpi(x, z);
+    // Quartiles are ±3.5 m, the 5th/95th percentiles ±15 m (seed highroads-01).
+    const ridge = smoothstep(2, 12, tpi), hollow = smoothstep(-2, -12, tpi);
+    // Aspect: a face turned to the sun dries out, one turned away stays cool.
+    // sin(slope) × cos(angle to the sun), so flat ground is neither.
+    const sunward = nx * SUNWARD[0] + nz * SUNWARD[1];
+
+    // Sun-bleached patches, weighted to higher, flatter, sunnier, exposed ground.
     const dry = clamp((fine - 0.42) * 2.1, 0, 1) * lerp(0.35, 1, smoothstep(0.45, 0.9, ny))
-      * lerp(0.5, 1, alt);
-    out.lerp(this._grassDry, dry * 0.62);
+      * lerp(0.5, 1, alt) + clamp(sunward * 1.4, 0, 0.45) + ridge * 0.3 - hollow * 0.4;
+    out.lerp(this._grassDry, clamp(dry, 0, 1) * 0.62);
+    out.lerp(this._lush, hollow * 0.55);
+    out.lerp(this._shade, clamp(-sunward * 1.6, 0, 0.5));
+
+    // Plant communities, in patches tens of metres across with soft edges:
+    // bracken on slopes, heather on high crests, fresh sward on the flat,
+    // rush in the wet hollows.
+    const m1 = this.terrain.mask(x, z, 0.012, 311, -97);
+    const m2 = this.terrain.mask(x, z, 0.009, -523, 410);
+    const m3 = this.terrain.mask(x, z, 0.016, 77, 1203);
+    out.lerp(this._bracken, smoothstep(0.6, 0.68, m1) * lerp(0.35, 0.85, smoothstep(0.98, 0.82, ny)) * (1 - hollow));
+    out.lerp(this._heather, smoothstep(0.6, 0.68, m2) * clamp(ridge * 0.8 + alt * 0.6, 0, 0.8));
+    out.lerp(this._fresh, smoothstep(0.6, 0.68, m3) * (1 - ridge) * 0.55);
+    out.lerp(this._rush, hollow * smoothstep(0.45, 0.6, m1) * 0.6);
 
     // Scrub where grass cannot hold: moderately steep, or high.
-    const steep = smoothstep(0.92, 0.68, ny);
+    const steep = smoothstep(0.96, 0.8, ny);
     out.lerp(this._scrub, Math.max(steep * 0.55, smoothstep(150, 330, rel) * 0.45));
 
-    out.lerp(this._rock, smoothstep(0.86, 0.55, ny));
     // Peak and snow only where the ground is flat enough to hold them.
     out.lerp(this._peak, smoothstep(300, 520, rel) * 0.8);
-    out.lerp(this._snow, smoothstep(430, 640, rel) * smoothstep(0.52, 0.86, ny));
+    const snow = smoothstep(430, 640, rel) * smoothstep(0.52, 0.86, ny);
+    out.lerp(this._snow, snow);
 
     // The biome's own cast: straw in savanna, cold blue-green in the boreal
     // forest. Blended across a border like everything else biome-driven.
@@ -1066,9 +1103,53 @@ export class ChunkManager {
       out.lerp(this._sand, smoothstep(0.86, 1.0, u) * (1 - smoothstep(1.08, 1.32, u)) * 0.85);
     }
 
-    out.lerp(this._dirt, (1 - smoothstep(GROUND.verge.band[0], GROUND.verge.band[1], av)) * 0.9);
+    const V = GROUND.verge.band;
+    out.lerp(this._dirt, (1 - smoothstep(V[0], V[1], av)) * 0.9);
+
+    // BARE ground, which the terrain shader draws (env/ground.js) with crisp,
+    // broken edges rather than this colour's smooth wash: rock on steep faces,
+    // on high ground and in outcrops along crests; bald, eroded soil on
+    // steepish slopes and exposed crests. None on the verge or a beach.
+    if (bare) {
+      const keep = smoothstep(V[1], V[1] + 3, av) * (u < 1.5 ? smoothstep(1.1, 1.4, u) : 1) * (1 - snow * 0.7);
+      // Half the land is flatter than ny 0.99, a tenth steeper than 0.88.
+      let rock = smoothstep(0.87, 0.7, ny + (fine - 0.5) * 0.1);
+      // Crest outcrops only where the crest falls away: on a flat top a grey
+      // patch with no relief reads as a puddle, not a tor.
+      rock = Math.max(rock, ridge * smoothstep(0.66, 0.78, m2) * smoothstep(0.995, 0.95, ny) * 0.85, smoothstep(260, 460, rel) * 0.7);
+      const soil = clamp(smoothstep(0.975, 0.88, ny) * smoothstep(0.3, 0.6, m3) + ridge * 0.45 * smoothstep(0.45, 0.7, fine), 0, 1);
+      bare.rock = rock * keep;
+      bare.soil = soil * (1 - rock) * keep;
+    }
 
     return 0.92 + fine * 0.16;
+  }
+
+  /**
+   * Topographic position, metres: how far a point stands above (+, a crest)
+   * or below (−, a hollow) the mean of the natural ground 120 m around it.
+   * Bilinear over a 64 m lattice cached for the session — it is smooth at that
+   * scale, and five terrain samples a vertex would double a tile's build.
+   */
+  _tpi(x, z) {
+    const C = 64;
+    const fx = x / C, fz = z / C, i = Math.floor(fx), j = Math.floor(fz), tx = fx - i, tz = fz - j;
+    const a = this._tpiAt(i, j), b = this._tpiAt(i + 1, j);
+    const c = this._tpiAt(i, j + 1), d = this._tpiAt(i + 1, j + 1);
+    return lerp(lerp(a, b, tx), lerp(c, d, tx), tz);
+  }
+
+  _tpiAt(i, j) {
+    const key = (i + 0x100000) * 0x200000 + (j + 0x100000);
+    let v = this._tpiCache.get(key);
+    if (v === undefined) {
+      const t = this.terrain, x = i * 64, z = j * 64, R = 120;
+      v = t.base(x, z, 3) - 0.25 * (t.base(x + R, z, 3) + t.base(x - R, z, 3) + t.base(x, z + R, 3) + t.base(x, z - R, 3));
+      // ponytail: whole-cache clear at 200k entries (~40 km of road); an LRU if a long run ever stutters on it.
+      if (this._tpiCache.size > 200000) this._tpiCache.clear();
+      this._tpiCache.set(key, v);
+    }
+    return v;
   }
 
   /**
@@ -1894,7 +1975,7 @@ export class ChunkManager {
     const chunk = this.chunks.get(index);
     if (!this.grass || !tier || !chunk || !chunk.sheet) return null;
 
-    const { positions, colors } = chunk.sheet;
+    const { positions, colors, bare: bareV } = chunk.sheet;
     const lat = this.lateral;
     const nv = lat.length;
     const nu = CHUNK.segmentsU;
@@ -1985,7 +2066,7 @@ export class ChunkManager {
         const cover = coverAt(j, a, mid, width, (lat[i] + lat[i + 1]) * 0.5);
         if (cover <= 0.02) { bare++; continue; }
 
-        const w = (rowLen * usable * thin(mid) * cover) / (bz * bz);
+        const w = (rowLen * usable * thin(mid) * cover * (1 - (bareV ? bareV[a] : 0))) / (bz * bz);
         if (w <= 0) continue;
 
         total += w;

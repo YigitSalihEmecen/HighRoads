@@ -233,6 +233,9 @@ export class WorldTiles {
     const col = new Float32Array(vCount * 3);
     // Road distance for the verge shader, capped: an Infinity interpolates to NaN.
     const rd = new Float32Array(vCount);
+    // Bare rock and soil weights (chunks.js:_groundColor) for the terrain shader.
+    const br = new Float32Array(vCount * 2);
+    const ext = this._bare || (this._bare = { rock: 0, soil: 0 });
     for (let k = 0; k < V * V; k++) rd[k] = Math.min(D[k], 1e4);
     const c = this._color;
     for (let vj = 0; vj < V; vj++) {
@@ -245,8 +248,10 @@ export class WorldTiles {
         const k = (vj * V + vi) * 3;
         pos[k] = vi * step; pos[k + 1] = y; pos[k + 2] = vj * step;
         nor[k] = -dx * inv; nor[k + 1] = inv; nor[k + 2] = -dz * inv;
-        const jit = this.colorFn(x0 + vi * step, z0 + vj * step, y, inv, D[vj * V + vi], c);
+        const jit = this.colorFn(x0 + vi * step, z0 + vj * step, y, inv, D[vj * V + vi], c, -dx * inv, -dz * inv, ext);
         col[k] = c.r * jit; col[k + 1] = c.g * jit; col[k + 2] = c.b * jit;
+        const kb = (vj * V + vi) * 2;
+        br[kb] = ext.rock; br[kb + 1] = ext.soil;
       }
     }
     // Skirts: copy each border vertex, dropped by a depth that grows with the
@@ -262,6 +267,7 @@ export class WorldTiles {
       pos[dst] = pos[src]; pos[dst + 1] = pos[src + 1] - drop; pos[dst + 2] = pos[src + 2];
       nor[dst] = nor[src]; nor[dst + 1] = nor[src + 1]; nor[dst + 2] = nor[src + 2];
       rd[V * V + b] = rd[border[b]];
+      br[(V * V + b) * 2] = br[border[b] * 2]; br[(V * V + b) * 2 + 1] = br[border[b] * 2 + 1];
       col[dst] = col[src] * 0.8; col[dst + 1] = col[src + 1] * 0.8; col[dst + 2] = col[src + 2] * 0.8;
     }
 
@@ -303,6 +309,7 @@ export class WorldTiles {
     geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     geo.setAttribute('roadDist', new THREE.BufferAttribute(rd, 1));
+    geo.setAttribute('bare', new THREE.BufferAttribute(br, 2));
     geo.setIndex(new THREE.BufferAttribute(both, 1));
     geo.computeBoundingSphere();
 

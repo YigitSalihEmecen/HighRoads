@@ -1131,6 +1131,16 @@ export const TERRAIN_COLORS = {
   scrub: 0x6e7350,
   rock: 0x8f867b,
   dirt: 0x9d8e75,
+  /** Hollows (water and soil gather), and slopes turned from the sun. */
+  lush: 0x4e7a3c,
+  shade: 0x5b7c5b,
+  /** Plant communities, in patches: bracken, heather, fresh sward, rush. */
+  bracken: 0x8f8149,
+  heather: 0x7b6a5d,
+  fresh: 0x9caf5c,
+  rush: 0x58643f,
+  /** Bare ground the terrain shader draws: eroded soil (rock is `rock`). */
+  soil: 0x8a7457,
   peak: 0xa9a29a,
   snow: 0xe8ebee,
   /** Lake beach and lake bed. */

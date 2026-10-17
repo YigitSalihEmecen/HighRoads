@@ -8,7 +8,7 @@
  */
 
 import * as THREE from 'three';
-import { GROUND } from '../config.js';
+import { GROUND, TERRAIN_COLORS } from '../config.js';
 import { makeCanvas, paint, tileFbm, tileRidged, tileNoise, rng } from './textures.js';
 
 /**
@@ -396,6 +396,8 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
     /** band start, band end, edge wander (m), tile (m) */
     uVerge: { value: new THREE.Vector4(V.band[0], V.band[1], V.jitter, V.tile) },
     uVergeDepth: { value: V.depth },
+    uRockCol: { value: new THREE.Color(TERRAIN_COLORS.rock) },
+    uSoilCol: { value: new THREE.Color(TERRAIN_COLORS.soil) },
     uStoneA: { value: new THREE.Color(V.stone[0]) },
     uStoneB: { value: new THREE.Color(V.stone[1]) },
   };
@@ -413,6 +415,8 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           #include <common>
           varying vec3 fr_wpos;
           varying vec3 fr_wnorm;
+          attribute vec2 bare;
+          varying vec2 fr_bare;
           #ifdef FR_VERGE
           attribute float roadDist;
           varying float fr_rd;
@@ -422,6 +426,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           #include <project_vertex>
           fr_wpos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
           fr_wnorm = mat3( modelMatrix ) * objectNormal;
+          fr_bare = bare;
           #ifdef FR_VERGE
           fr_rd = roadDist;
           #endif
@@ -432,6 +437,9 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           #include <common>
           varying vec3 fr_wpos;
           varying vec3 fr_wnorm;
+          varying vec2 fr_bare;
+          uniform vec3 uRockCol;
+          uniform vec3 uSoilCol;
           uniform sampler2D uSward;
           uniform sampler2D uSwardN;
           uniform sampler2D uSwardH;
@@ -562,8 +570,44 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             vec2 fr_uvB = fr_wpos.xz / uTile.y;
             vec3 fr_b = fr_hexTex( uDetail, fr_hex( fr_uvB ), fr_uvB, fr_gx / uTile.y, fr_gy / uTile.y ).rgb;
 
-            float fr_sward = fr_flat;
-            float fr_rock  = 1.0 - fr_flat;
+            // BARE GROUND. The vertex weights (chunks.js:_groundColor) say how
+            // likely rock or bald soil is; the far tile's creases and blotches
+            // decide WHERE, so an outcrop has a crisp, broken edge instead of
+            // a 2 m colour ramp.
+            float fr_rk = smoothstep( 0.5, 0.62, fr_bare.x + ( fr_b.g - 0.75 ) * 0.5 );
+            float fr_sl = smoothstep( 0.42, 0.58, fr_bare.y + ( fr_b.b - 0.76 ) * 0.8 ) * ( 1.0 - fr_rk );
+            // Erosion rills: bald streaks running straight down a steep face.
+            // The world normal's flat part points downhill; the detail map's
+            // streak channel is laid along it, ten times longer than wide.
+            float fr_fall = 1.0 - smoothstep( 0.72, 0.94, abs( fr_n.y ) );
+            if ( fr_fall > 0.01 ) {
+              vec2 fr_dn = normalize( fr_n.xz + vec2( 1e-5, 0.0 ) );
+              vec2 fr_q = vec2( dot( fr_wpos.xz, vec2( -fr_dn.y, fr_dn.x ) ) / 7.0, dot( fr_wpos.xz, fr_dn ) / 70.0 );
+              float fr_rill = texture2D( uDetail, fr_q ).r;
+              fr_sl = max( fr_sl, smoothstep( 0.66, 0.84, fr_rill ) * fr_fall * ( 1.0 - fr_rk ) * 0.85 );
+            }
+            {
+              // Rock: its own grey, lit by the creases, banded in strata on a
+              // steep face (a layer every few metres, a darker bedding joint
+              // every seven or so), which is what reads as rock from afar.
+              float fr_cliff = 1.0 - fr_flat;
+              // Crevices dark, faces pale, and a dark rim where the turf meets
+              // it (soil and lichen in the joint): without them an outcrop
+              // read as grey paint.
+              vec3 fr_rc = uRockCol * ( 0.5 + 0.85 * fr_b.g );
+              fr_rc *= 1.0 - 0.35 * fr_rk * ( 1.0 - fr_rk ) * 4.0;
+              // Lichen and moss on rock that lies flat enough to hold them.
+              fr_rc = mix( fr_rc, diffuseColor.rgb * 0.75, 0.3 * fr_flat );
+              fr_rc *= 1.0 + 0.12 * sin( fr_wpos.y * 1.3 + fr_b.r * 5.0 ) * fr_cliff;
+              fr_rc *= 1.0 - 0.3 * smoothstep( 0.9, 0.985, abs( sin( fr_wpos.y * 0.45 + fr_b.b * 3.0 ) ) ) * fr_cliff;
+              // Soil keeps a little of the ground's own cast (red in savanna).
+              vec3 fr_sc = mix( uSoilCol, diffuseColor.rgb, 0.25 ) * ( 0.85 + 0.3 * fr_b.b );
+              diffuseColor.rgb = mix( diffuseColor.rgb, fr_sc, fr_sl );
+              diffuseColor.rgb = mix( diffuseColor.rgb, fr_rc, fr_rk );
+            }
+
+            float fr_rock  = max( 1.0 - fr_flat, fr_rk );
+            float fr_sward = 1.0 - fr_rock;
 
             // The near tile and the triplanar rock only matter inside the
             // near-fade distance (and the rock only off the flat), so most of
@@ -574,7 +618,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             #ifdef FR_SWARD
             // Turf is green: the relief is the grass's, not the scree's or the snow's.
             float fr_green = smoothstep( 0.0, 0.035, vColor.g - max( vColor.r * 0.85, vColor.b ) );
-            fr_sw = fr_green * fr_flat * fr_nearW;
+            fr_sw = fr_green * fr_flat * fr_nearW * ( 1.0 - max( fr_rk, fr_sl ) );
             #ifdef FR_VERGE
             {
               // Across the verge: gravel at the shoulder, thinning as its
@@ -700,7 +744,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             }
             #endif
 
-            float fr_gravel = 0.30;
+            float fr_gravel = mix( 0.30, 0.85, fr_sl );
             float fr_dA = ( fr_a.r * fr_sward + fr_rockA * fr_rock ) * ( 1.0 - fr_gravel )
                         + fr_a.b * fr_gravel;
             float fr_dB = ( fr_b.r * fr_sward + fr_b.g * fr_rock ) * ( 1.0 - fr_gravel )
