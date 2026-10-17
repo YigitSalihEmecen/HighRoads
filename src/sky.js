@@ -267,7 +267,7 @@ export function applySky(gfx, name, extras = {}) {
   gfx.sun.intensity = P.lightIntensity;
   gfx.hemi.color.set(P.hemiSky);
   gfx.hemi.groundColor.set(P.hemiGround);
-  gfx.hemi.intensity = P.hemi;
+  gfx.hemi.intensity = P.hemi * ATMOSPHERE.hemiTrim;
   if (gfx.fill) {
     gfx.fill.intensity = P.fill;
     gfx.fill.position.copy(gfx.sunDir).multiplyScalar(-100).setY(60);
@@ -288,5 +288,6 @@ export function applySky(gfx, name, extras = {}) {
     });
   }
   gfx.skyName = name;
+  gfx.bakeEnv?.();
   return P;
 }

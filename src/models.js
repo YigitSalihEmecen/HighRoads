@@ -135,17 +135,20 @@ export function paintModel(model, build) {
 
 /**
  * The world is matte (terrain, rocks and trees sit at roughness ~0.9, no
- * metal), and a lacquered car in it reads as the only toy on the table. Every
- * car material loses its clearcoat and mirror shine.
+ * metal), and a mirror-lacquered car in it reads as the only toy on the table.
+ * Every car material is held to a satin range: enough to catch the baked sky.
  */
 function matte(model) {
   const seen = new Set();
   const dull = (m) => {
     if (seen.has(m)) return;
     seen.add(m);
-    if (m.isMeshPhysicalMaterial) m.clearcoat = 0;
+    if (m.isMeshPhysicalMaterial) {
+      m.clearcoat = Math.min(m.clearcoat, 0.45);
+      m.clearcoatRoughness = Math.max(m.clearcoatRoughness, 0.22);
+    }
     if (m.isMeshStandardMaterial) {
-      m.roughness = Math.max(m.roughness, 0.6);
+      m.roughness = Math.max(m.roughness, 0.4);
       m.metalness = Math.min(m.metalness, 0.4);
     }
   };
@@ -164,9 +167,10 @@ function matte(model) {
 function finish(model, P) {
   const paint = model.materials?.paint;
   if (!paint) return;
-  paint.clearcoat = 0;
+  paint.clearcoat = 0.4 * (1 - P.rough);
+  paint.clearcoatRoughness = 0.22;
   paint.metalness = P.metal * 0.5;
-  paint.roughness = 0.6 + 0.4 * P.rough;
+  paint.roughness = 0.4 + 0.5 * P.rough;
 }
 
 /** The mesh `setTrimColor` re-materials (the cabin roof), found by trying it; null if none. */

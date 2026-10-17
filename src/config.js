@@ -1072,6 +1072,10 @@ export const ATMOSPHERE = {
   hemiGround: 0xa39c8c,
   /** Deliberately high: this is what lifts the shadows and kills the contrast. */
   hemiIntensity: 1.5,
+  /** Image-based light from the baked sky: reflections, and part of the ambient. 0 disables it. */
+  envIntensity: 0.45,
+  /** Share of the hemisphere fill kept now the baked sky carries the rest of the ambient. */
+  hemiTrim: 0.7,
 
   /** Sun well above the horizon — the single biggest lever on "sunset vibe". */
   sunDir: { x: -0.34, y: 0.62, z: -0.71 },
@@ -1092,8 +1096,8 @@ export const ATMOSPHERE = {
   fxaa: true,
 
   /** Post-processing. Bloom is now a hint of glow, not a glare. */
-  bloomStrength: 0.10,
-  bloomThreshold: 0.95,
+  bloomStrength: 0.14,
+  bloomThreshold: 0.9,
   vignette: 0.13,
   /**
    * Radial speed blur: smear at full speed as a fraction of distance from the
@@ -1296,6 +1300,8 @@ function applyGraphics() {
     ATMOSPHERE.fogDensity = 0.0024;
     ATMOSPHERE.maxPixelRatio = 1.25;
     ATMOSPHERE.bloomStrength = 0;
+    ATMOSPHERE.envIntensity = 0;
+    ATMOSPHERE.hemiTrim = 1;
     CAMERA.far = 1100;
     TILES.radius = 1050;    // fog 0.0024 is 99 % by ~900 m; was 1500, past the far plane
     TILES.levels = 5;
@@ -1339,6 +1345,8 @@ function applyGraphics() {
     ATMOSPHERE.maxPixelRatio = 1;
     ATMOSPHERE.minPixelRatio = 0.75;
     ATMOSPHERE.bloomStrength = 0;
+    ATMOSPHERE.envIntensity = 0;
+    ATMOSPHERE.hemiTrim = 1;
     CAMERA.far = 760;
     TILES.radius = 720;     // fog 0.0034 is 99 % by ~630 m; was 1000, past the far plane
     TILES.levels = 5;

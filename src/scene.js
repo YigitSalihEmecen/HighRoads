@@ -34,6 +34,24 @@ THREE.ShaderChunk.opaque_fragment = THREE.ShaderChunk.opaque_fragment.replace(
   'vec4( outgoingLight,', 'vec4( min( outgoingLight, vec3( 1024.0 ) ),');
 
 /**
+ * Height fog: haze pools below the camera and thins above it. Each vertex
+ * scales the fog density by its world height relative to the camera, so
+ * valleys fill and ridgetops clear without a per-material uniform. Clamped
+ * so a long drop never turns the fog into a wall.
+ */
+THREE.ShaderChunk.fog_pars_vertex = THREE.ShaderChunk.fog_pars_vertex.replace(
+  'varying float vFogDepth;', 'varying float vFogDepth;\n\tvarying float vFogMul;');
+THREE.ShaderChunk.fog_pars_fragment = THREE.ShaderChunk.fog_pars_fragment.replace(
+  'varying float vFogDepth;', 'varying float vFogDepth;\n\tvarying float vFogMul;');
+THREE.ShaderChunk.fog_vertex = THREE.ShaderChunk.fog_vertex.replace(
+  'vFogDepth = - mvPosition.z;',
+  `vFogDepth = - mvPosition.z;
+	vFogMul = clamp( exp( -0.004 * ( dot( viewMatrix[ 1 ].xyz, mvPosition.xyz ) ) ), 0.55, 1.6 );`);
+THREE.ShaderChunk.fog_fragment = THREE.ShaderChunk.fog_fragment.replace(
+  'fogDensity * fogDensity * vFogDepth * vFogDepth',
+  'fogDensity * fogDensity * vFogMul * vFogMul * vFogDepth * vFogDepth');
+
+/**
  * Radial blur, strength driven by road speed.
  *
  * Replaces depth-of-field, which focused at one distance and blurred the car
@@ -53,6 +71,8 @@ THREE.ShaderChunk.opaque_fragment = THREE.ShaderChunk.opaque_fragment.replace(
 const FINISH = {
   uniforms: {
     uStrength: { value: 0 },
+    uTime: { value: 0 },
+    uGrain: { value: 0.025 },
     uInner: { value: 0.16 },
     uAmount: { value: 0.16 },
     uWarm: { value: new THREE.Color(0xffd9ac) },
@@ -60,6 +80,8 @@ const FINISH = {
   },
   pars: /* glsl */ `
     uniform float uStrength;
+    uniform float uTime;
+    uniform float uGrain;
     uniform float uInner;
     uniform float uAmount;
     uniform vec3 uWarm;
@@ -68,6 +90,12 @@ const FINISH = {
   body: /* glsl */ `
       vec4 c = texture2D(tDiffuse, vUv);
       vec2 toCentre = vUv - vec2(0.5);
+      if (uStrength > 0.0005) {
+        // Lens fringing: red and blue split outward, only at speed.
+        vec2 split = toCentre * dot(toCentre, toCentre) * uStrength * 0.25;
+        c.r = texture2D(tDiffuse, vUv - split).r;
+        c.b = texture2D(tDiffuse, vUv + split).b;
+      }
       if (uStrength > 0.0005) {
         // Sharp core, then the smear grows quadratically toward the corners.
         float falloff = smoothstep(uInner, 0.72, length(toCentre));
@@ -93,12 +121,22 @@ const FINISH = {
       vec3 cc = clamp(c.rgb, 0.0, 1.0);
       c.rgb = mix(c.rgb, cc * cc * (3.0 - 2.0 * cc) + max(c.rgb - 1.0, 0.0), 0.22);
 
+      c.rgb = mix(vec3(dot(c.rgb, vec3(0.2126, 0.7152, 0.0722))), c.rgb, 1.08);
+
       float d = distance(vUv, vec2(0.5));
       c.rgb *= mix(1.0 - uAmount, 1.0, smoothstep(0.80, 0.30, d));
       // Opaque: a coverage cutout leaves alpha under 1, and the page would show through.
       gl_FragColor = vec4(c.rgb, 1.0);
   `,
 };
+
+FINISH.grain = /* glsl */ `
+				// Triangular-PDF noise in display space: breaks up banding in the sky and paint.
+				vec2 gp = gl_FragCoord.xy + fract(uTime) * 61.0;
+				float n = fract(sin(dot(gp, vec2(12.9898, 78.233))) * 43758.5453)
+				        + fract(sin(dot(gp, vec2(39.3468, 11.135))) * 24634.6345) - 1.0;
+				gl_FragColor.rgb += n * uGrain;
+`;
 
 /** OutputPass (tone mapping + sRGB) with the FINISH run on its input first. */
 function finishOutput(OutputPass) {
@@ -107,9 +145,12 @@ function finishOutput(OutputPass) {
   const src = pass.material.fragmentShader;
   const read = 'gl_FragColor = texture2D( tDiffuse, vUv );';
   if (!src.includes(read)) throw new Error('OutputShader changed: FINISH cannot be spliced in');
+  const encode = 'gl_FragColor = sRGBTransferOETF( gl_FragColor );';
+  if (!src.includes(encode)) throw new Error('OutputShader changed: grain cannot be spliced in');
   pass.material.fragmentShader = src
     .replace('varying vec2 vUv;', 'varying vec2 vUv;' + FINISH.pars)
-    .replace(read, FINISH.body);
+    .replace(read, FINISH.body)
+    .replace(encode, encode + FINISH.grain);
   return pass;
 }
 
@@ -196,6 +237,33 @@ export async function createScene(container) {
   sky.frustumCulled = false;
   scene.add(sky);
 
+  const envUniforms = { ...sky.material.uniforms, uGround: { value: new THREE.Color() } };
+  const envScene = new THREE.Scene().add(new THREE.Mesh(
+    new THREE.SphereGeometry(1, 32, 20),
+    new THREE.ShaderMaterial({
+      uniforms: envUniforms,
+      vertexShader: SKY_VERT,
+      fragmentShader: SKY_FRAG
+        .replace('uniform vec3 uTop;', 'uniform vec3 uGround;\n  uniform vec3 uTop;')
+        .replace('gl_FragColor = vec4(col, 1.0);',
+          'col = mix(uGround, col, smoothstep(-0.05, 0.03, h));\n    gl_FragColor = vec4(col, 1.0);'),
+      side: THREE.BackSide,
+      depthWrite: false,
+    })
+  ));
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  let envTarget = null;
+
+  /** Bakes the live sky into the scene's reflections and ambient; run on every sky change. */
+  function bakeEnv() {
+    if (!(ATMOSPHERE.envIntensity > 0)) return;
+    envUniforms.uGround.value.copy(hemi.groundColor).multiplyScalar(0.6);
+    envTarget?.dispose();
+    envTarget = pmrem.fromScene(envScene, 0, 0.1, 10);
+    scene.environment = envTarget.texture;
+    scene.environmentIntensity = ATMOSPHERE.envIntensity;
+  }
+
   // Optional: if the addon modules fail to load we fall back to a direct render.
   let composer = null;
   let renderPass = null;
@@ -274,6 +342,7 @@ export async function createScene(container) {
   function follow(target, dt = 0) {
     clock += dt;
     sky.material.uniforms.uTime.value = clock;
+    if (vignette) vignette.uniforms.uTime.value = clock;
     sky.position.copy(camera.position);
     sky.scale.setScalar(CAMERA.far * 0.9);
 
@@ -348,7 +417,7 @@ export async function createScene(container) {
 
   const gfx = {
     renderer, scene, camera, sun, hemi, fill, sky, sunDir, composer, follow, render, renderView, resize,
-    setSpeedBlur, grade: vignette, baseFogDensity: ATMOSPHERE.fogDensity, speedBlur, adapt,
+    setSpeedBlur, bakeEnv, grade: vignette, baseFogDensity: ATMOSPHERE.fogDensity, speedBlur, adapt,
     get pixelRatio() { return ratio; },
   };
   // The sky preset (sky.js): the URL's `?sky=`, else the saved choice, else day.
