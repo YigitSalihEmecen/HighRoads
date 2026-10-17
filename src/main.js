@@ -16,7 +16,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 
 import { WORLD, CHUNK, ROAD, VEHICLE, ATMOSPHERE, TRAFFIC, TREES, SIGNS } from './config.js';
 import { deriveSpec, buildCarParams } from './cars.js';
-import { buildModel, mergeParts, generateBuild, finishBuild, newSeed, Fleet, DETAIL } from './models.js';
+import { buildModel, mergeParts, finishBuild, Fleet, DETAIL } from './models.js';
 import { smoothstep, clamp } from './util.js';
 import { PERF } from './perf.js';
 import { applySky, saveSky, SKY_PRESETS, SKY_NAMES } from './sky.js';
@@ -40,6 +40,7 @@ import { Settings } from './settings.js';
 import { ScoreRun } from './score.js';
 import { GarageStudio } from './garage.js';
 import { UI, frame } from './ui.js';
+import { PREMADE } from './premade.js';
 
 /**
  * The two game modes. Traffic scores near misses and ends on a crash; Zen
@@ -77,8 +78,7 @@ function storedBuild() {
 }
 
 function firstBuild() {
-  const styles = ['coupe', 'sedan', 'hatch', 'muscle', 'supercar', 'rally'];
-  return generateBuild(newSeed(), styles[Math.floor(Math.random() * styles.length)]);
+  return finishBuild(structuredClone(PREMADE.find((b) => b.seed === 'NERFCU')));
 }
 
 export async function boot() {
