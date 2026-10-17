@@ -239,6 +239,9 @@ export class WorldTiles {
     for (let k = 0; k < V * V; k++) rd[k] = Math.min(D[k], 1e4);
     const c = this._color;
     for (let vj = 0; vj < V; vj++) {
+      // The palette reads the landform (a TPI lattice it fills as it goes):
+      // a far tile's first colouring was a 78 ms frame in one step.
+      if ((vj & 3) === 3) yield;
       for (let vi = 0; vi < V; vi++) {
         const g = (vj + 1) * G + (vi + 1);
         const y = H[g];
