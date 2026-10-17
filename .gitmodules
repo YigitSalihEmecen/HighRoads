@@ -25,3 +25,7 @@
 	path = roadsign_gen
 	url = https://github.com/YigitSalihEmecen/Roadsign-gen.git
 	branch = main
+[submodule "city_gen"]
+	path = city_gen
+	url = https://github.com/YigitSalihEmecen/City-Gen.git
+	branch = main
