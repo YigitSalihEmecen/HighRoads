@@ -131,7 +131,7 @@ const hex = (rgb) => `#${new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2],
  * the whole wood leans together) with sway rising as height² up the unit-tall
  * tree, plus a flutter on the leaves.
  */
-function windify(material, uniforms, leafy) {
+function windify(material, uniforms, leafy, bark = false) {
   // Cutouts (cards, billboards) soften their edge across the MSAA samples.
   const cutout = !!material.map && material.alphaTest > 0;
   if (cutout) material.alphaToCoverage = true;
@@ -143,6 +143,15 @@ function windify(material, uniforms, leafy) {
     // Coverage held up with distance (Castaño 2010; Golus 2017): each mip
     // averages leaf with gap, so alpha sinks under the cutoff and a far crown
     // turns into see-through specks. Scale it back up by the mip level.
+    // Bark has no vertex colours, so its vColor IS the instance tint: keep a
+    // little of it (ground cast, variety), not a gold wood's gold bark.
+    if (bark) {
+      shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', /* glsl */`
+        #ifdef USE_COLOR
+          diffuseColor.rgb *= mix( vec3( 1.0 ), vColor, 0.3 );
+        #endif
+      `);
+    }
     if (cutout) {
       shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>', /* glsl */`
         {
@@ -186,7 +195,7 @@ function windify(material, uniforms, leafy) {
         gl_Position = projectionMatrix * mvPosition;
       `);
   };
-  material.customProgramCacheKey = () => `highroads-treegen-${leafy ? 1 : 0}-${material.alphaTest > 0 ? 1 : 0}`;
+  material.customProgramCacheKey = () => `highroads-treegen-${leafy ? 1 : 0}-${material.alphaTest > 0 ? 1 : 0}-${bark ? 1 : 0}`;
 }
 
 /** Scale every part to unit height; returns the horizontal radius at that scale. */
@@ -265,7 +274,7 @@ function makeLibrary(o, names) {
     if (!barks.has(name)) {
       const bark = barkMaterial({ ...presetOf(name).palette.bark, ...defOf(name).bark },
         { size: G.barkSize, seed: 0x5eed + KEYS.indexOf(name) });
-      windify(bark, windOf(name), false);
+      windify(bark, windOf(name), false, true);
       barks.set(name, bark);
     }
     return barks.get(name);

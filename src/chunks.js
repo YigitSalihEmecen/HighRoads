@@ -1155,6 +1155,26 @@ export class ChunkManager {
     return lerp(lerp(a, b, tx), lerp(c, d, tx), tz);
   }
 
+  /**
+   * A tree's foliage tint, multiplied into its instance colour (the bark
+   * ignores most of it, env/treegen.js). A slow field drifts whole woods
+   * between yellow-green and blue-green; a coarse cell hash turns some
+   * broadleaf stands to gold or copper. Neighbours share both, so a stand
+   * reads as one wood, and the next wood over as another.
+   */
+  _treeTint(x, z, name, rng, out) {
+    const m = this.terrain.mask(x, z, 0.0045, 1931, -277);
+    const t = smoothstep(0.35, 0.65, m);
+    let r = lerp(1.08, 0.88, t), g = lerp(1.06, 0.98, t), b = lerp(0.8, 1.06, t);
+    const cell = hashInt(Math.floor(x / 90) * 73856093 ^ Math.floor(z / 90) * 19349663) / 4294967296;
+    if (FOLIAGE[name]?.guild !== 'conifer' && cell < TREES.autumnShare) {
+      const copper = cell < TREES.autumnShare * 0.4;
+      const k = 0.75 + rng() * 0.5;
+      r *= lerp(1, copper ? 1.36 : 1.3, k); g *= lerp(1, copper ? 0.84 : 1.0, k); b *= lerp(1, 0.58, k);
+    }
+    out.r *= r; out.g *= g; out.b *= b;
+  }
+
   _tpiAt(i, j) {
     const key = (i + 0x100000) * 0x200000 + (j + 0x100000);
     let v = this._tpiCache.get(key);
@@ -1533,7 +1553,7 @@ export class ChunkManager {
         const cx = p.x + origin.x, cz = p.z + origin.z;
         const crelief = p.y + origin.y - this.terrain.continent(cx, cz);
         vegetation(this.terrain, cx, cz, crelief, cslope, Math.abs(cv), field);
-        if (field.canopy < 0.22) continue;
+        if (field.canopy < lerp(0.16, 0.24, TERRAIN.clumping)) continue;
         const u = rng();
         // Drawn against the field AT THE SEED, not the chunk's picks, so the
         // copse's species is the one that belongs here.
@@ -1602,6 +1622,7 @@ export class ChunkManager {
         this._color.r = ((1 - k) + k * this._color.r * 2) * (1 + (rng() - 0.5) * vary);
         this._color.g = ((1 - k) + k * this._color.g * 2) * (1 + (rng() - 0.5) * vary);
         this._color.b = ((1 - k) + k * this._color.b * 2) * (1 + (rng() - 0.5) * vary * 1.6);
+        this._treeTint(wx, wz, name, rng, this._color);
 
         // Both tiers take the same matrix, so the cross-fade is one tree at one
         // size, drawn at two subdivisions.
@@ -1644,7 +1665,7 @@ export class ChunkManager {
         if (placed >= nearCap && far >= TREES.farCap) break;
 
         let s, v, home = null, edgeness = 0;
-        if (clusters.length && rng() < TREES.clusterShare) {
+        if (clusters.length && rng() < lerp(0.5, 0.97, TERRAIN.clumping)) {
           home = clusters[Math.floor(rng() * clusters.length)];
           // Two averaged uniforms: a flat disc would have a hard edge.
           s = home.s + (rng() + rng() - 1) * home.r;
@@ -1670,6 +1691,10 @@ export class ChunkManager {
         vegetation(this.terrain, wx, wz, relief, slope, av, field);
         // The stand mask gates canopy only; clearings keep their scrub and grass.
         if (rng() > field.canopy) continue;
+        // A tree outside any stand only inside real woodland: open ground
+        // dotted with strays read as a scatter, not a landscape of woods.
+        // (canopy: median 0.04, 75th percentile 0.11, 90th 0.31 — woods are the top fifth.)
+        if (!home && field.canopy < TERRAIN.clumping * 0.18) continue;
 
         // Weighted pick across every committed species that will grow here,
         // with the cluster's own species heavily favoured.
@@ -1771,7 +1796,9 @@ export class ChunkManager {
             this.terrain.height(wx, wz + 3, smp.d) - n0) / 3;
           const relief = wy - this.terrain.continent(wx, wz);
           vegetation(this.terrain, wx, wz, relief, slope, smp.d, field);
-          if (drng() > field.canopy * TREES.distantDensity) continue;
+          // Packed woods, empty fields: the stand field sharpened by `clumping`.
+          const keep = lerp(field.canopy * TREES.distantDensity, smoothstep(0.1, 0.32, field.canopy), TERRAIN.clumping);
+          if (drng() > keep) continue;
           let total = 0, pick = null;
           for (const name of kinds) {
             const w = suitability(FOLIAGE[name], field, relief, slope, 100) * FOLIAGE[name].weight;
@@ -1787,6 +1814,7 @@ export class ChunkManager {
           this._color.r = (1 - gk) + gk * this._color.r * 2;
           this._color.g = (1 - gk) + gk * this._color.g * 2;
           this._color.b = (1 - gk) + gk * this._color.b * 2;
+          this._treeTint(wx, wz, pick, drng, this._color);
           const wob = 0.88 + drng() * 0.24;
           this._setLocalMatrix(p, height * wob, height, height * wob, drng() * Math.PI * 2);
           if (this.forest) {

@@ -5,7 +5,7 @@
  * env/treegen.js (legacy: env/legacy/trees.js), shrubs included. Placement and streaming read this file.
  */
 
-import { CHUNK, TREES } from './config.js';
+import { CHUNK, TREES, TERRAIN } from './config.js';
 import { BIOMES } from './biomes.js';
 
 /**
@@ -603,8 +603,9 @@ export function vegetation(terrain, x, z, relief, slope, lateral, out = {}) {
   // biome scales it, and a `lone` biome (savanna, meadow) trades stands for a
   // thin even scatter of single trees — what open country actually looks like.
   const standed = stand * stand * TREES.standBias;
-  const scattered = 0.16 + 0.10 * stand;
-  let canopy = clamp01((standed * (1 - lone) + scattered * lone) * canMul * altitude * steep * dry);
+  // Thinned by `clumping`: open country keeps its odd tree, not a scatter.
+  const scattered = (0.16 + 0.10 * stand) * (1 - 0.75 * TERRAIN.clumping);
+  let canopy = clamp01((standed * (1 - lone) + scattered * lone) * canMul * TERRAIN.forest * altitude * steep * dry);
   canopy *= 1 - water;
   canopy *= 1 - 0.6 * shore * (1 - (out.biomeA === 'wetland' ? 1 : 0));
   // Nothing grows on the carriageway or shoulder; the fade prevents a tree

@@ -335,7 +335,9 @@ export const TREES = {
    * see `foliage.js:TREE_FORMS`.
    */
   groundTint: 0.16,
-  instanceVary: 0.14,
+  instanceVary: 0.2,
+  /** Share of broadleaf woods turned gold or copper (chunks.js:_treeTint). */
+  autumnShare: 0.14,
   /** Sharpens stand edges — density squared, then scaled by this. */
   standBias: 2.3,
 
