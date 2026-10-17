@@ -747,6 +747,16 @@ level 2 holds the widest band — hence the cheapest mesh. Medium and Low set
 their own `from` (`applyGraphics`). Measured headless at 1600×900: L0 out to
 90 m put ~40 trees at 56k each in view and halved the frame rate.
 
+**Woods, not a scatter** (`TERRAIN.clumping`, 0.85): a tree outside a stand
+is kept only inside real woodland (canopy > clumping × 0.18 — the field's
+median is 0.04, its 90th percentile 0.31), stand seeds need canopy 0.16–0.24,
+the distant band accepts by `smoothstep(0.1, 0.32, canopy)` rather than
+`canopy × 0.55`, and an open biome's lone scatter thins by 1 − 0.75 × clumping.
+**Tints** (`chunks.js:_treeTint`): a slow field drifts whole woods between
+yellow-green and blue-green, a 90 m cell hash turns `autumnShare` of broadleaf
+stands gold or copper; bark keeps 30 % of its instance tint (`windify`'s
+`bark`), or a gold wood had gold bark.
+
 Trees are drawn **×`TREES.treegen.scale` (1.6)** of the `foliage.js` heights,
 applied in the scatter before the crown-spacing test, so stands thin out
 rather than interpenetrate.
@@ -944,6 +954,14 @@ and `normalize` made NaN; lit and bloomed, the road's edges glowed. Every frame
 vector is built with `fr_unit` (a fallback for zero), the march is weighted by
 `W.y²`, and ground.js guards its planar frame the same way.
 
+**The edge line is inset** (`ROAD.edgeInset`, 0.25 m) with asphalt beyond,
+and the ribbon's SKIRT (the edge dropped 0.45 m) has its own top column,
+asphalt and darker. It used to share the edge line's column: the vertical face
+took the paint's colour and shaded as a lit white curb, and its shared vertex
+averaged a vertical normal into the outer strip — the edge read as blocky,
+patched-together tiles. `uPaint.x` in `road.js` is the line's outer edge, so
+the shader's paint layout (`fr_paintAt`) matches the columns.
+
 **A chunk's last row ends a dash.** 120 m is a whole number of dashes, so every
 chunk ends on a dash boundary that is not doubled; the row took the NEXT dash's
 state and the paint faded over the last 3 m of every chunk. Regular rows take
@@ -1044,7 +1062,29 @@ Sign density was halved (15.7 → 8.2 per km on highroads-01): chevrons need
 a sharper bend (1/280) and stand 45 m apart; a chunk's feature sign rolls at
 0.45. `probe/signs.mjs` wants 5–40 per km.
 
-### 4.14c Settlements (`city_gen/`, `towns.js`, `env/towns.worker.js`)
+### 4.14d Barriers (`env/barriers.js`, `chunks.js:_barrierJob`)
+
+Steel W-beam guardrail (the W profile swept post to post on steel posts, the
+rail's ends turned down into the ground) and a timber post-and-rail fence,
+generated per chunk into one merged geometry each, with a thin cuboid
+collider per span (the player's car stops against them). Placed where a real
+road has one: the outside of a bend sharper than `BARRIERS.curv`, and wherever
+the ground `probe` m past the edge lies `drop` below the road. Steel on a dual
+carriageway; on a two-lane road timber for `woodShare` of runs, steel where the
+fall passes `steelDrop`.
+
+**A run is a pure function of a station index** (`barrierRuns`): held `lead`
+past its hazards, gaps under `bridge` closed, runs under `minRun` dropped, its
+kind hashed from its FIRST station, which it walks back to find — so every
+chunk window agrees where a run starts and what it is made of, and a rail
+never stops dead at a chunk seam. Hazards are memoised per station (`_hazard`)
+because neighbouring chunks look at the same ones. Built in the scatter job
+(`_propsJob`), not the chunk build: its ~60 ground samples are 2–5 ms a chunk,
+which the build frame (road + collider) cannot spare. Sweep winding is
+flipped per side: DoubleSide flips the normal on a back face, and the beam
+was lit from behind on the left. `probe/barriers.mjs`.
+
+### 4.14c Cities (`city_gen/`, `towns.js`, `env/towns.worker.js`)
 
 City-gen is TypeScript + Vite with its own web app; its engine (`src/engine/`)
 uses neither three nor the DOM, and the submodule ships **`lib/citygen.js`**,
@@ -1053,57 +1093,38 @@ its own repo, `npm run build:lib` (also run by `npm run build`), commit the
 bundle, bump the pointer. Because it imports nothing it loads straight into a
 module worker, no loader needed (contrast `treegen.worker.js`).
 
+**Cities only.** Hamlets and villages along the road were REMOVED (their
+lots, church, lamps, roadside levelling and LOD went with them): nothing is
+built beside the road; cities stand out on the horizon.
+
 **The plan** is a pure function of the seed and the road. The road is cut into
-`TOWNS.slot` (1.5 km) slots, slot 0 left alone for the title screen; each rolls
-from `TOWNS.mix`:
+`TOWNS.slot` (1.5 km) slots, slot 0 left alone for the title screen; each is a
+city with `cityChance`: a whole `layoutCity` + blocks, detail 0, squared to the
+road, `cityDist` (850–1300 m; Medium 560–820, inside its fog) off it, no road
+within `cityBlend + 50` m of a 5 × 5 grid over it, land varying < `cityRelief`,
+no lake — and clear of every other city's levelling (two adjacent slots
+overlapped once cities moved out, and the later levelled the earlier's streets
+2.9 m off). A roll with no room in four attempts is nothing: ~0.9 cities /
+10 km on `highroads-01`.
 
-| kind | what | where |
-|---|---|---|
-| hamlet | 4–8 houses on one side | a stretch no sharper than `maxCurv` whose land stands within `maxRelief` of the road |
-| village | both sides — the road is the high street — terraces in the middle, detached houses at the ends, maybe a second row behind a lane, a church, street lamps | as a hamlet; the second side may stand off by `1.6 × maxRelief` (the road usually runs along a hillside), then one row deep |
-| city | a whole `layoutCity` + blocks, detail 0, squared to the road | `cityDist` off the road, no road within `cityBlend + 50` m of any of a 5 × 5 grid over it, land varying < `cityRelief`, no lake |
+**The ground.** A city is a TERM in `TerrainField.sample`, applied to the
+natural surface right after the lake carve: under it the ground goes to one
+level (`CITY_SINK` under its asphalt — 5 cm z-fights 700 m away), blending
+back over `cityBlend`. `clear()` is the same square, sharper; `vegetation()`
+multiplies every density by `1 − clear`, so nothing grows in a city.
 
-A roll that finds no room in six (four, for a city) attempts is nothing. With
-`highroads-01`: ~3 settlements / 10 km, a city every ~20 km, about half of
-the villages straddling the road. Lots face the road (`generateLot`'s front is
-local +z), are spaced along it by the bend's `1 + v·κ` so terraces do not
-overlap on the inside, and are refused if a corner is nearer another road or
-in a lake. Styles follow the biome: mediterranean where it is warm, tudor where
-it is cold, suburban/victorian/haussmann elsewhere; an attached style comes as
-a terrace of 1–4 with open ends (`corner`), so a lone one has windows all round.
-
-**The ground.** A settlement is a TERM in `TerrainField.sample`, applied to the
-natural surface right after the lake carve: beside a village it pulls the
-ground to 0.25 m under the road's own height (nearest point of a polyline of
-the centreline, so it follows the grade), out to the last row + `flat`,
-blending back over `blend`; under a city to one level (`CITY_SINK` under its
-asphalt — 5 cm z-fights 700 m away). The road's cut/fill still runs after it.
-Each lot reads its four corners from the levelled field: it stands at the
-highest, on a stone footing down to the lowest (`drop`), so a residual grade
-never shows daylight. `clear()` is the same geometry, sharper; `vegetation()`
-multiplies every density by `1 − clear` (`setEcology`'s third argument), so
-no tree, shrub or tuft grows in a settlement.
-
-**Order.** `towns.update` runs in `chunks.update` right after the tiles (which
-`field.sync()`): it plans every slot the generated road covers (~2.4 km ahead,
-so before the tiles there are built), re-checks cities against road generated
-since (`onGrow` boxes; a city the road now comes near is dropped), then builds
-within `buildRadius` of the focus and frees past `keep`. Registering or dropping
-a settlement calls `onChange` → `tiles._invalidate` + the scatter height cache.
+**Order.** `towns.update` runs in `chunks.update` right after the tiles: it
+plans every slot the generated road covers, re-checks cities against road
+generated since (`onGrow` boxes; a city the road now comes near is dropped),
+then builds within `buildRadius` of the focus and frees past `keep`.
+Registering or dropping one calls `onChange` → `tiles._invalidate`.
 
 **The draw.** Two shared materials (vertex colour + City-gen's per-vertex warm
-emission, × `uNight` from the sky preset via `setNight`); two meshes per level.
-A village is a `THREE.LOD`: `TOWNS.detail[0]` (City-gen 1) near, `[1]` (0)
-past `lodDistance`. Near meshes cast shadows; cities do not. No colliders,
-like the trees. Low graphics: no cities, LOD at 220 m.
+emission, × `uNight` via `setNight`); two meshes a city, no shadows, no
+colliders. Built on the worker (50–170 ms in Node, which has none —
+`probe/stream.mjs` switches towns off so that fallback is not counted).
 
-**Measured** (M4, Metal, `GPU=1 QUERY=towns=0|1 probe/perf.mjs`, 25 s through
-a two-sided village with a city nearby): 60 fps either way, +190k triangles
-mean, +2 draw calls, `.towns` ≤ 0.6 ms. Planning ~2–5 ms once per settlement;
-building is on the worker (50–170 ms in Node).
-
-`?towns=0` drops settlements for one load. `probe/towns.mjs` checks the plan
-(§10); `vista.mjs` with `GPU=1 VIEWS='[…]' EVAL='…'` is how they were looked at.
+`?towns=0` drops them for one load. `probe/towns.mjs` checks the plan (§10).
 
 ### 4.15 Tyre effects (`fx.js`)
 
@@ -1371,6 +1392,26 @@ the camera here, so the culling has nothing to remove); the next lever is
 density, which is a look decision, not a free one.
 
 ---
+
+### 4.26 The terrain menu (`config.js:TERRAIN`, Settings › Terrain)
+
+Every world knob a player may turn, in `TERRAIN` with its spec `TERRAIN_SPEC`
+(the settings tab is built from the spec). Saved to `highroads.terrain` and
+applied by `applyTerrain` after `applyGraphics`, before anything builds; Apply
+reloads, like the graphics level. `?terrain={"lanes":1}` overrides it for one
+load (a world's settings as a link; the probes' A/B — `vista.mjs QUERY=`).
+Under Node, `--localstorage-file=f.json` with the key set runs any probe
+against a saved setting.
+
+| knob | reaches |
+|---|---|
+| lanes 2/1 | `ROAD.lanesPerSide`/`halfWidth`, and everything derived — verge band, gantry spans (none on two lanes), road columns, `uPaint.y` (no dashed joint), traffic lanes (no lane changes), 0.7× traffic |
+| relief, mix.* | `noise.js:base` (landforms × relief) and `archetypes` (each weight × mix) |
+| forest, clumping | `foliage.js` canopy, the tree scatter (above) |
+| grass | `GRASS.density` and the wood tier's |
+| rock, soil, dryness | `_groundColor`'s bare weights and dry/lush |
+| lakes | the lake chance per cell |
+| cities, barriers, signs | `TOWNS.cities`, `BARRIERS.enabled`, sign feature chance and chevron step |
 
 ## 5. The config contract
 
