@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS, TERRAIN } from './config.js';
+import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS, TERRAIN, BARRIERS } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -17,6 +17,7 @@ import { makeFrame } from './path.js';
 import { createGrassAssets } from './env/grass.js';
 import { createGroundAssets } from './env/ground.js';
 import { createRoadAssets } from './env/road.js';
+import { createBarrierMaterials, BarrierMesher, barrierRuns } from './env/barriers.js';
 import { createTreeAssets } from './env/legacy/trees.js';
 import { createTreeGenAssets } from './env/treegen.js';
 import { Forest } from './forest.js';
@@ -245,6 +246,10 @@ export class ChunkManager {
     /** env/signs.js library, built by main.js; null = no signs (and in the probes). */
     this.signs = SIGNS.enabled ? signs : null;
     this._signFrame = makeFrame();
+    /** Guardrail and fence materials; the geometry is per chunk (`_buildBarriers`). */
+    this.barriers = BARRIERS.enabled ? createBarrierMaterials() : null;
+    /** Station -> hazard, per side: neighbouring chunks look at the same stations. */
+    this._hazard = [new Map(), new Map()];
     this._signForeign = [];
     this.anisotropy = anisotropy;
     this.world = world;
@@ -811,6 +816,96 @@ export class ChunkManager {
    * oncoming side's), and one feature roll, kept `spacing` from the rest.
    * Facing +1 = towards the player, -1 = towards oncoming traffic.
    */
+  /**
+   * Guardrail and fence for one chunk (env/barriers.js): on the outside of a
+   * bend sharper than `BARRIERS.curv`, and wherever the ground `probe` metres
+   * past the edge lies `drop` below the road. Steel on a dual carriageway; on
+   * a country road timber for `woodShare` of runs, steel where the fall is big.
+   */
+  _buildBarriers(s0, s1, origin, objects, colliders) {
+    const job = this._barrierJob(s0, s1, origin, objects, colliders);
+    while (!job.next().done);
+  }
+
+  /** `_buildBarriers` as a resumable job: run in the chunk's scatter, under its frame budget. */
+  *_barrierJob(s0, s1, origin, objects, colliders) {
+    const B = BARRIERS, step = B.step;
+    const f = this._signFrame, g = this._cA;
+    const right = this._rightFlat;
+    const k0 = Math.ceil(s0 / step), k1 = Math.ceil(s1 / step) - 1;
+    const woodShare = B.woodShare[Math.min(1, ROAD.lanesPerSide - 1)];
+    const v = ROAD.halfWidth + B.offset;
+    const mesher = new BarrierMesher();
+    const rng = mulberry32(hashInt(k0 * 0x45d9f3b + 0x1b873593));
+    for (const side of [-1, 1]) {
+      const memo = this._hazard[side > 0 ? 1 : 0];
+      const drop = (k) => {
+        this.path.frameAt(k * step, f);
+        return f.pos.y - this.groundAt(k * step, side * (ROAD.halfWidth + B.probe + B.offset), g).y;
+      };
+      const hazard = (k) => {
+        if (k < 0) return false;
+        let h = memo.get(k);
+        if (h === undefined) {
+          const fall = drop(k);
+          h = fall > B.drop || (Math.sign(f.curv) === side && Math.abs(f.curv) > B.curv);
+          if (memo.size > 50000) memo.clear();
+          memo.set(k, h);
+        }
+        return h;
+      };
+      for (const run of barrierRuns(k0, k1, hazard, B, side, woodShare)) {
+        yield;
+        // The chunk's posts, plus the next one to carry its last span to.
+        const a = Math.max(run.a, k0), b = Math.min(run.b, k1 + 1);
+        if (b <= a) continue;
+        let wood = run.wood;
+        if (wood) for (let k = a; k <= b; k++) if (drop(k) > B.steelDrop) { wood = false; break; }
+        const pts = [];
+        for (let k = a; k <= b; k++) {
+          const s = k * step;
+          this.path.frameAt(s, f);
+          right.crossVectors(f.tan, WORLD_UP).normalize();
+          const p = this.groundAt(s, side * v, g);
+          pts.push({
+            x: p.x - origin.x, y: p.y - origin.y, z: p.z - origin.z,
+            ox: right.x * side, oz: right.z * side,
+            post: k <= k1, rail: k < b && k <= k1,
+          });
+        }
+        if (wood) mesher.wood(pts, rng);
+        else mesher.steel(pts, rng, run.a >= k0, run.b <= k1);
+        if (!this.world || !B.colliders) continue;
+        // A thin box per span: the player's car stops against it.
+        for (let i = 0; i + 1 < pts.length; i++) {
+          if (!pts[i].rail) continue;
+          const p = pts[i], q = pts[i + 1];
+          const dx = q.x - p.x, dz = q.z - p.z, len = Math.hypot(dx, dz);
+          const th = Math.atan2(-dz, dx);
+          colliders.push(this.world.createCollider(
+            this.RAPIER.ColliderDesc.cuboid(len / 2, 0.45, 0.08)
+              .setTranslation(origin.x + (p.x + q.x) / 2, origin.y + (p.y + q.y) / 2 + 0.45, origin.z + (p.z + q.z) / 2)
+              .setRotation({ x: 0, y: Math.sin(th / 2), z: 0, w: Math.cos(th / 2) })
+              .setFriction(0.3)));
+        }
+      }
+    }
+    const geos = mesher.finish();
+    for (const [kind, geo] of Object.entries(geos)) {
+      if (!geo) continue;
+      const mesh = new THREE.Mesh(geo, this.barriers[kind]);
+      mesh.position.copy(origin);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.ownsGeometry = true;
+      mesh.userData.barrier = kind;
+      mesh.matrixAutoUpdate = false;
+      mesh.updateMatrix();
+      this.scene.add(mesh);
+      objects.push(mesh);
+    }
+  }
+
   _buildSigns(index, s0, s1, objects) {
     const S = SIGNS;
     const roles = this.signs.roles;
@@ -1411,13 +1506,17 @@ export class ChunkManager {
    * one frame was a 25-45 ms hitch. Returns the objects to add.
    */
   *_propsJob(index, s0, s1, origin) {
-    if (!this.trees) return [];
+    const out = [];
     const chunk = this.chunks.get(index);
-    if (!chunk || !chunk.sheet) return [];
+    if (!chunk || !chunk.sheet) return out;
+    // Barriers first, in this job rather than the chunk's build: a few ms of
+    // ground samples that the build frame, already holding the road and its
+    // collider, cannot spare (probe/stream.mjs).
+    if (this.barriers) yield* this._barrierJob(s0, s1, origin, out, chunk.extraColliders);
+    if (!this.trees) return out;
 
     // Seeded per chunk, so a reload comes back identical instead of reshuffling.
     const rng = mulberry32(hashInt(index) ^ 0x9e3779b9);
-    const out = [];
 
     const p = new THREE.Vector3();
     const field = this._field;

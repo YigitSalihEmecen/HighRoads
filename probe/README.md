@@ -29,6 +29,7 @@ npm run probe
 | `smooth.mjs` | **Does the car move smoothly on screen?** The car's position in *camera space*, frame to frame, under scripted frame-time jitter and hitches. The only probe that measures what the player sees rather than what the simulation does. |
 | `render.mjs` | **What the GAME looks like.** Boots the real thing through SwiftShader — a headless Chrome has no GPU but ANGLE has a software rasteriser — drives it, and screenshots the garage and the road. Not in `npm run probe`: needs a local Chrome and takes a minute. |
 | `route.mjs` | **Does the road go anywhere on purpose?** Classifies the corridor cross-section — shelf / cutting / embankment / level — and reports earthwork, curvature and the self-clearance invariant. |
+| `barriers.mjs` | Guardrail and fence: how much of each, nothing on the carriageway, and that a run is the same run from every chunk window (`barrierRuns` is pure in the station). Run it with `--localstorage-file` holding `{"lanes":1}` for the two-lane road. |
 | `grass.mjs` | Ground cover: how many tufts, what the scatter costs, whether the density matches the config, and that none of it is on the carriageway. |
 | `uishot.mjs` | **What the interface looks like.** Screenshots twelve real device viewports over CDP and reports any element overflowing its box. Not in `npm run probe` — it needs a local Chrome and writes images. `node probe/uishot.mjs`. |
 | `drive.mjs` | End to end: real car, real physics, real engine_sim, real traffic, for a given number of seconds. |

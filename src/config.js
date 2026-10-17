@@ -1207,6 +1207,34 @@ export const WATER = {
   foam: 0xe8f0ee,
 };
 
+/**
+ * Roadside barriers — see `env/barriers.js` (the models) and
+ * `chunks.js:_buildBarriers` (where they go). Where a real road has one: on
+ * the outside of a sharp bend, and where the ground beside the road falls
+ * well below it. Steel W-beam guardrail is the highway's; a timber post and
+ * rail fence the country road's. Distances in metres.
+ */
+export const BARRIERS = {
+  enabled: true,
+  /** Post spacing, and the face's offset outward from the asphalt's edge. */
+  step: 4,
+  offset: 1.2,
+  /** A bend sharper than this (1/m) gets one on its outside. */
+  curv: 1 / 260,
+  /** Ground this far below the road, `probe` out from the edge, gets one either way. */
+  drop: 2.2,
+  probe: 4,
+  /** A run is held this far past its hazard, gaps under `bridge` are closed, runs under `minRun` dropped. */
+  lead: 16,
+  bridge: 28,
+  minRun: 36,
+  /** Share of runs in timber, by lanes each way (1, 2); a drop past `steelDrop` is always steel. */
+  woodShare: [0.7, 0.12],
+  steelDrop: 5,
+  /** Solid: a car (the player's, a rigid body) stops against one. */
+  colliders: true,
+};
+
 /* =============================================================== graphics == */
 
 /**
@@ -1391,8 +1419,9 @@ export const TERRAIN = {
   dryness: 0,
   /** Lake chance, ×. */
   lakes: 1,
-  /** Cities on the horizon, and sign density, ×. */
+  /** Cities on the horizon; barriers on bends and drops; sign density, ×. */
   cities: true,
+  barriers: true,
   signs: 1,
 };
 
@@ -1400,6 +1429,7 @@ export const TERRAIN = {
 export const TERRAIN_SPEC = [
   { group: 'Road' },
   { key: 'lanes', label: 'Lanes', options: [[2, 'Four'], [1, 'Two']], hint: 'four lanes, or a two-lane country road' },
+  { key: 'barriers', label: 'Barriers', toggle: true, hint: 'steel guardrail and timber fence on bends and drops' },
   { key: 'signs', label: 'Signs', min: 0, max: 2, hint: 'how many roadside signs' },
   { group: 'Landscape' },
   { key: 'relief', label: 'Relief', min: 0.4, max: 1.8, hint: 'height of the hills and mountains' },
@@ -1492,6 +1522,7 @@ function applyTerrain() {
   GRASS.density *= TERRAIN.grass;
   GRASS.wood.density *= TERRAIN.grass;
   TOWNS.cities = TOWNS.cities && TERRAIN.cities;
+  BARRIERS.enabled = BARRIERS.enabled && TERRAIN.barriers;
 }
 
 applyTerrain();
