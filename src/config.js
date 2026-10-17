@@ -257,6 +257,16 @@ export const TREES = {
     alphaMipScale: 1.5,
   },
 
+  /**
+   * Shadows past the sun's shadow box (forest.js:shadeCanopy): each tree a
+   * soft ellipse in a top-down map, `size` px over `extent` metres around
+   * the camera, re-rendered when the camera moves `snap` metres. `crown`
+   * scales the crown radius, `density` how dark one crown is, `strength`
+   * how much direct light a full shadow takes; `fade` (m) is where it takes
+   * over from the real shadow map.
+   */
+  canopyShadow: { enabled: true, size: 1024, extent: 1800, snap: 48, crown: 0.85, density: 0.85, strength: 0.8, fade: [55, 80] },
+
   /** Geometries built per species at boot, and species drawn per chunk. */
   variants: 3,
   picks: 6,
@@ -1331,6 +1341,10 @@ function applyGraphics() {
     TREES.treegen.lods = TREES.treegen.lods.slice(2)
       .map((L, i) => ({ ...L, from: [0, 250][i] }));
     TREES.treegen.shadowLevels = 0;
+    // No tree casts a real shadow on Low: the canopy map is all of them, from the car out.
+    TREES.canopyShadow.size = 512;
+    TREES.canopyShadow.extent = 900;
+    TREES.canopyShadow.fade = [0, 1];
     TREES.treegen.impostorHeight = 128;
   }
   return level;

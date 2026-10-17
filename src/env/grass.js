@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { GRASS } from '../config.js';
 import { makeCanvas, rng } from './textures.js';
+import { canopyShadow, CANOPY_GLSL } from '../forest.js';
 
 /**
  * The ground-cover ATLAS: four tuft kinds in a 2 × 2 sheet, so one material,
@@ -198,7 +199,7 @@ function grassMaterial(map, fadeOut, fadeIn) {
   };
 
   material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms);
+    Object.assign(shader.uniforms, uniforms, canopyShadow);
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
@@ -207,6 +208,7 @@ function grassMaterial(map, fadeOut, fadeIn) {
         attribute vec3 aBloom;
         varying vec2 vAtlas;
         varying vec3 vBloom;
+        varying vec3 fr_wp;
         uniform float uTime;
         uniform vec2  uWind;
         uniform float uWindStrength;
@@ -256,6 +258,7 @@ function grassMaterial(map, fadeOut, fadeIn) {
         // Linear here would shear the whole card sideways off its own base.
         float fr_bend = uv.y * uv.y * fr_fade;
         fr_world.xz += fr_windAt( fr_inst ) * fr_bend;
+        fr_wp = fr_world.xyz;
         mvPosition = viewMatrix * fr_world;
         gl_Position = projectionMatrix * mvPosition;
       `);
@@ -268,7 +271,11 @@ function grassMaterial(map, fadeOut, fadeIn) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         varying vec2 vAtlas;
-        varying vec3 vBloom;`)
+        varying vec3 vBloom;
+        varying vec3 fr_wp;
+        ${CANOPY_GLSL.pars}`)
+      // A tuft in a far tree's shadow is in it too, not lit on dark ground.
+      .replace('#include <lights_fragment_end>', CANOPY_GLSL.apply('fr_wp'))
       .replace('#include <map_fragment>', /* glsl */`
         vec4 fr_t = texture2D( map, vAtlas );
         // Un-premultiply: the canvas stores transparent texels as black, so

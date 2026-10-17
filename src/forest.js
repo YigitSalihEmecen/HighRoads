@@ -24,6 +24,46 @@
 import * as THREE from 'three';
 import { ATMOSPHERE, TREES } from './config.js';
 
+/**
+ * The CANOPY SHADOW MAP: past the sun's 78 m shadow box no tree cast a shadow,
+ * and a far wood stood on the hills like cut-outs. Every tree is splatted as
+ * a soft ellipse — its crown projected along the sun — into a small top-down
+ * map around the camera, re-rendered only when the camera moves `snap`
+ * metres, the trees change, or the sun moves. The terrain and the grass
+ * darken their direct light by it (`CANOPY_GLSL`), one fetch a pixel, taking
+ * over from the real shadow map at `fade`.
+ */
+export const canopyShadow = {
+  uCanopy: { value: null },
+  /** x0, z0 of the map, 1 / its size, strength (0 until the first render). */
+  uCanopyRect: { value: new THREE.Vector4(0, 0, 0, 0) },
+  /** Camera distance over which it takes over from the real shadow map. */
+  uCanopyFade: { value: new THREE.Vector2(0, 1) },
+};
+
+export const CANOPY_GLSL = {
+  pars: /* glsl */`
+    uniform sampler2D uCanopy;
+    uniform vec4 uCanopyRect;
+    uniform vec2 uCanopyFade;
+    float fr_canopyAt( vec3 p ) {
+      vec2 u = ( p.xz - uCanopyRect.xy ) * uCanopyRect.z;
+      if ( uCanopyRect.w <= 0.0 || any( lessThan( u, vec2( 0.0 ) ) ) || any( greaterThan( u, vec2( 1.0 ) ) ) ) return 1.0;
+      return 1.0 - texture2D( uCanopy, u ).r * uCanopyRect.w
+        * smoothstep( uCanopyFade.x, uCanopyFade.y, distance( p.xz, cameraPosition.xz ) );
+    }
+  `,
+  /** After `lights_fragment_end`: the canopy takes the direct light, as a shadow does. */
+  apply: (pos) => /* glsl */`
+    #include <lights_fragment_end>
+    {
+      float fr_cs = fr_canopyAt( ${pos} );
+      reflectedLight.directDiffuse *= fr_cs;
+      reflectedLight.directSpecular *= fr_cs;
+    }
+  `,
+};
+
 const _frustum = new THREE.Frustum();
 const _pv = new THREE.Matrix4();
 /** Every bucket of a kind: one per level, and the shadow casters. */
@@ -101,9 +141,138 @@ export class Forest {
       rec.lone[i] = t.lone ? 1 : 0;
     });
     this.chunks.set(key, rec);
+    this._canopyDirty = true;
   }
 
-  removeChunk(key) { this.chunks.delete(key); }
+  removeChunk(key) { this.chunks.delete(key); this._canopyDirty = true; }
+
+  /**
+   * Re-renders the canopy shadow map when it is stale (see `canopyShadow`).
+   * Cheap when it is not: three comparisons.
+   */
+  shadeCanopy(renderer, camera) {
+    const C = TREES.canopyShadow;
+    if (!C || !C.enabled) return;
+    const sun = ATMOSPHERE.sunDir;
+    const cx = Math.round(camera.position.x / C.snap) * C.snap;
+    const cz = Math.round(camera.position.z / C.snap) * C.snap;
+    const sunKey = sun.x * 1e6 + sun.y * 1e3 + sun.z;
+    if (!this._canopyDirty && cx === this._canopyX && cz === this._canopyZ && sunKey === this._canopySun) return;
+    this._canopyDirty = false;
+    this._canopyX = cx; this._canopyZ = cz; this._canopySun = sunKey;
+
+    const S = this._canopy || (this._canopy = this._canopySetup(C));
+    const size = C.extent, x0 = cx - size / 2, z0 = cz - size / 2;
+    // The shadow falls away from the sun, a crown's centre displaced by its
+    // height over the tangent of the sun's elevation, stretched along the fall
+    // by 1 / sin(elevation). Floored: a sun on the horizon would throw it off the map.
+    const sl = Math.hypot(sun.x, sun.z) || 1;
+    const sinE = Math.max(0.3, sun.y / Math.hypot(sun.x, sun.y, sun.z));
+    const run = Math.sqrt(1 - sinE * sinE) / sinE;
+    const fx = -sun.x / sl, fz = -sun.z / sl;
+    const [far0, far1] = TREES.farFade;
+    let n = 0;
+    for (const rec of this.chunks.values()) {
+      const { pos, h, kind: kinds } = rec;
+      for (let i = 0; i < rec.n; i++) {
+        const px = pos[i * 3], pz = pos[i * 3 + 2];
+        if (Math.abs(px - cx) > size / 2 || Math.abs(pz - cz) > size / 2) continue;
+        const kind = this.kinds[kinds[i]];
+        const fade = kind.variant.fade;
+        const d = Math.hypot(px - camera.position.x, pz - camera.position.z);
+        const f = 1 - (fade ? smooth(fade[0], fade[1], d) : smooth(far0, far1, d));
+        if (f <= 0.01) continue;
+        if (n === S.cap) S.grow();
+        const r = kind.variant.radius * h[i] * C.crown * f;
+        const lift = h[i] * f * 0.6 * run;
+        const along = Math.min(2 * r / sinE, 6 * r) + lift * 0.5;
+        const a = S.a.array, b = S.b.array;
+        a[n * 4] = (px + fx * lift - x0) / size;
+        a[n * 4 + 1] = (pz + fz * lift - z0) / size;
+        a[n * 4 + 2] = fx * along / size;
+        a[n * 4 + 3] = fz * along / size;
+        b[n * 2] = 2 * r / size;
+        b[n * 2 + 1] = C.density * (fade ? 0.7 : 1);
+        n++;
+      }
+    }
+    S.geo.instanceCount = n;
+    S.a.needsUpdate = true;
+    S.b.needsUpdate = true;
+
+    const prev = renderer.getRenderTarget(), clear = renderer.getClearColor(new THREE.Color()), alpha = renderer.getClearAlpha();
+    renderer.setRenderTarget(S.rt);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear(true, false, false);
+    renderer.render(S.scene, S.cam);
+    renderer.setRenderTarget(prev);
+    renderer.setClearColor(clear, alpha);
+
+    canopyShadow.uCanopy.value = S.rt.texture;
+    canopyShadow.uCanopyRect.value.set(x0, z0, 1 / size, C.strength);
+    canopyShadow.uCanopyFade.value.set(C.fade[0], C.fade[1]);
+  }
+
+  _canopySetup(C) {
+    const rt = new THREE.WebGLRenderTarget(C.size, C.size, {
+      depthBuffer: false, generateMipmaps: false,
+      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    });
+    const quad = new THREE.PlaneGeometry(1, 1);
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.index = quad.index;
+    geo.setAttribute('position', quad.getAttribute('position'));
+    const S = { rt, geo, cap: 0, a: null, b: null };
+    S.grow = () => {
+      const cap = Math.max(4096, S.cap * 2);
+      const a = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+      const b = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
+      if (S.a) { a.array.set(S.a.array); b.array.set(S.b.array); }
+      a.setUsage(THREE.DynamicDrawUsage); b.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('iA', a); geo.setAttribute('iB', b);
+      Object.assign(S, { cap, a, b });
+    };
+    S.grow();
+    // Straight to clip space from map coordinates: no camera to keep aligned.
+    // MAX blending, so a dense stand is as dark as one crown, not darker.
+    const material = new THREE.ShaderMaterial({
+      vertexShader: /* glsl */`
+        attribute vec4 iA;
+        attribute vec2 iB;
+        varying vec2 vQ;
+        varying float vD;
+        void main() {
+          vQ = position.xy * 2.0;
+          vD = iB.y;
+          vec2 across = normalize( vec2( -iA.w, iA.z ) + 1e-9 ) * iB.x;
+          vec2 p = iA.xy + iA.zw * position.y + across * position.x;
+          gl_Position = vec4( p * 2.0 - 1.0, 0.0, 1.0 );
+        }
+      `,
+      fragmentShader: /* glsl */`
+        varying vec2 vQ;
+        varying float vD;
+        void main() {
+          gl_FragColor = vec4( vD * ( 1.0 - smoothstep( 0.35, 1.0, length( vQ ) ) ), 0.0, 0.0, 1.0 );
+        }
+      `,
+      depthTest: false,
+      depthWrite: false,
+      // The quad's winding follows the sun's side: never cull it.
+      side: THREE.DoubleSide,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.MaxEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneFactor,
+    });
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.frustumCulled = false;
+    S.scene = new THREE.Scene();
+    S.scene.add(mesh);
+    S.cam = new THREE.OrthographicCamera();
+    S.dispose = () => { rt.dispose(); geo.dispose(); quad.dispose(); material.dispose(); };
+    return S;
+  }
 
   /**
    * The instanced meshes for one variant at one level, grown to hold `need`.
@@ -255,6 +424,12 @@ export class Forest {
   }
 
   dispose() {
+    if (this._canopy) {
+      this._canopy.dispose();
+      this._canopy = null;
+      canopyShadow.uCanopy.value = null;
+      canopyShadow.uCanopyRect.value.w = 0;
+    }
     for (const kind of this.kinds) {
       for (const b of all(kind)) for (const m of b.meshes) { this.scene.remove(m); m.dispose(); }
     }

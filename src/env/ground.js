@@ -9,6 +9,7 @@
 
 import * as THREE from 'three';
 import { GROUND, TERRAIN_COLORS } from '../config.js';
+import { canopyShadow, CANOPY_GLSL } from '../forest.js';
 import { makeCanvas, paint, tileFbm, tileRidged, tileNoise, rng } from './textures.js';
 
 /**
@@ -407,7 +408,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
 
   if (map && macro) {
     material.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, uniforms);
+      Object.assign(shader.uniforms, uniforms, canopyShadow);
 
       // `worldpos_vertex` only defines worldPosition when something wants it, so ask here.
       shader.vertexShader = shader.vertexShader
@@ -440,6 +441,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           varying vec2 fr_bare;
           uniform vec3 uRockCol;
           uniform vec3 uSoilCol;
+          ${CANOPY_GLSL.pars}
           uniform sampler2D uSward;
           uniform sampler2D uSwardN;
           uniform sampler2D uSwardH;
@@ -819,7 +821,8 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             normal = normalize( mix( normal, normalize( ( viewMatrix * vec4( fr_nw, 0.0 ) ).xyz ), max( fr_sw, fr_gw ) ) );
           }
           #endif
-        `);
+        `)
+        .replace('#include <lights_fragment_end>', CANOPY_GLSL.apply('fr_wpos'));
     };
     material.customProgramCacheKey = () => `highroads-ground-${sward ? 1 : 0}${verge ? 1 : 0}`;
   }

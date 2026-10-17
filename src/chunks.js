@@ -2265,7 +2265,9 @@ export class ChunkManager {
       m.instanceColor = new THREE.InstancedBufferAttribute(colours.subarray(from * 3, to * 3), 3);
       // A 78 m cascade cannot resolve a 60 cm blade, so no cast.
       m.castShadow = false;
-      m.receiveShadow = true;
+      // The far tier lives past the 78 m shadow box: skip the PCF taps per
+      // blade fragment (the canopy shadow map darkens it instead).
+      m.receiveShadow = tier.key !== 'grassFar';
       // The shader only SHRINKS tufts (fade) and leans their tips by the wind
       // (< 0.3 m), so the instances' own bounds plus a margin are
       // conservative. Grass used to skip the cull entirely, and every grass
