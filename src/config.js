@@ -620,8 +620,8 @@ export const SIGNS = {
   foreignRadius: 30,
 
   /** Chevrons: along a bend that is sharper than this (1/m) within 60 m, one every `chevronStep`. */
-  chevronCurv: 1 / 320,
-  chevronStep: 28,
+  chevronCurv: 1 / 280,
+  chevronStep: 45,
   /**
    * A bend worth a warning: sharper than `bendCurv` for `curveHold`, after
    * `curveLead` of straighter road. The warning stands `curveLead` before it.
@@ -633,7 +633,7 @@ export const SIGNS = {
   spacing: 26,
 
   /** One roll per chunk; the weights of what it becomes. */
-  featureChance: 0.75,
+  featureChance: 0.45,
   mix: { speed: 0.17, warn: 0.17, guide: 0.18, marker: 0.12, pennant: 0.06, portal: 0.07, cantilever: 0.07, back: 0.16 },
 
   /** Generator-seeded extras in the library (env/signs.js). */
