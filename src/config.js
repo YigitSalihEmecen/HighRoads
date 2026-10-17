@@ -946,6 +946,8 @@ export const TRAFFIC = {
   restitution: 0.15,
   /** Ceiling on the speed change one impact may hand the player, m/s. */
   maxImpactDv: 11,
+  /** Seconds one impact's impulse is spread over: crumple time, so a hit shoves rather than teleports. */
+  impactTime: 0.18,
   /** Seconds a struck car spends spinning out before it is taken away. */
   spinTime: 4.5,
   /** How fast a spinning car sheds speed, m/s². */

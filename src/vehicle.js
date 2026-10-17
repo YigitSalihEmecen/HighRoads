@@ -61,6 +61,8 @@ export class RaycastVehicle {
     this.parked = false;
     this.parkedQuat = new THREE.Quaternion();
     this.parkedPos = new THREE.Vector3();
+    /** Impact impulses still being fed in, see shove(). */
+    this._shoves = [];
 
     // ---- scratch (reused every substep; the physics loop allocates zero) --
     this.pos = new THREE.Vector3();
@@ -301,8 +303,28 @@ export class RaycastVehicle {
     this._aero(dt);
     this._stability(dt, input);
     this._integrateWheelSpin(dt, input);
+    this._applyShoves(dt);
 
     this.throttle = drive.throttle;
+  }
+
+  /**
+   * A horizontal impulse (N·s) and yaw impulse handed over evenly across
+   * `time` seconds of substeps: a crash crumples, it does not teleport.
+   */
+  shove(x, z, yaw, time) {
+    this._shoves.push({ x, z, yaw, time, t: time });
+  }
+
+  _applyShoves(dt) {
+    for (let i = this._shoves.length - 1; i >= 0; i--) {
+      const sh = this._shoves[i];
+      const k = Math.min(dt, sh.t) / sh.time;
+      this.body.applyImpulse({ x: sh.x * k, y: 0, z: sh.z * k }, true);
+      if (sh.yaw) this.body.applyTorqueImpulse({ x: 0, y: sh.yaw * k, z: 0 }, true);
+      sh.t -= dt;
+      if (sh.t <= 0) this._shoves.splice(i, 1);
+    }
   }
 
   _readState() {
@@ -802,6 +824,7 @@ export class RaycastVehicle {
     this._spinVis = 0;
     this.slip = 0;
     this.upsideDownFor = 0;
+    this._shoves.length = 0;
     this.parkedPos.copy(position);
     this.parkedQuat.copy(q);
     for (const w of this.wheels) {

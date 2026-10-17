@@ -58,6 +58,7 @@ const vehicle = {
     },
     applyTorqueImpulse() {},
   },
+  shove(x, z) { this.body.applyImpulse({ x, y: 0, z }); },
 };
 
 const traffic = new Traffic({ scene: new THREE.Scene(), path, chunks, fleet });

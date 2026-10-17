@@ -281,11 +281,21 @@ export class Traffic {
     out.s = player.s;
     out.v = player.v;
     out.flashing = !!player.flashing;
-    out.halfLen = player.vehicle ? player.vehicle.V.chassis.hz : 2.2;
-    out.halfWid = player.vehicle ? player.vehicle.V.chassis.hx : 0.9;
+    const ch = player.vehicle ? player.vehicle.V.chassis : { hx: 0.9, hz: 2.2 };
+    out.halfLen = ch.hz;
+    out.halfWid = ch.hx;
     let along = player.speed || 0;
     if (player.vehicle && player.vehicle.body) {
       const f = this.path.frameAt(player.s, this._fC);
+      // The chassis as it sits, not as if it pointed down the road: a car
+      // drifting sideways is short along the road and wide across it.
+      const fwd = player.vehicle.fwd;
+      if (fwd) {
+        const c = Math.min(1, Math.abs(fwd.x * f.tan.x + fwd.z * f.tan.z) / Math.max(Math.hypot(fwd.x, fwd.z), 1e-6));
+        const sn = Math.sqrt(1 - c * c);
+        out.halfLen = ch.hz * c + ch.hx * sn;
+        out.halfWid = ch.hz * sn + ch.hx * c;
+      }
       const lv = player.vehicle.body.linvel();
       along = lv.x * f.tan.x + lv.y * f.tan.y + lv.z * f.tan.z;
     }
@@ -646,14 +656,15 @@ export class Traffic {
    *
    *     j = -(1 + e) * (v_rel . n) * m1*m2/(m1 + m2)
    *
-   * applied to the player and to nothing else. The struck car takes a scripted
-   * spin-out and leaves immediately, so no correction impulse is ever needed.
-   * The player's delta-v is capped.
+   * The player takes it spread over `TRAFFIC.impactTime` (a crumple, not a
+   * wall); the struck car takes the equal and opposite share as a change of
+   * speed going into its scripted spin-out, so a car rammed from behind is
+   * shoved ahead instead of braking into the player. The impulse is capped.
    */
   _resolvePlayer(dt, player) {
     const v = player.vehicle;
-    const hitLen = v.V.chassis.hz;
-    const hitWid = v.V.chassis.hx;
+    const hitLen = this._player.halfLen;
+    const hitWid = this._player.halfWid;
     const mP = v.V.mass;
 
     for (const car of this.cars) {
@@ -691,12 +702,13 @@ export class Traffic {
       let j = -(1 + TRAFFIC.restitution) * rel * reduced;
       j = Math.min(j, TRAFFIC.maxImpactDv * mP);
 
-      v.body.applyImpulse({ x: n.x * j, y: 0, z: n.z * j }, true);
       // A little yaw, signed by the end hit, makes the shove read as a crash.
       const yaw = sideways ? 0 : (dv > 0 ? -1 : 1) * j * 0.05;
-      if (yaw) v.body.applyTorqueImpulse({ x: 0, y: yaw, z: 0 }, true);
+      v.shove(n.x * j, n.z * j, yaw, TRAFFIC.impactTime);
 
       this._spinOut(car, -rel, sideways ? Math.sign(dv) : Math.sign(-ds));
+      const along = car.speed * car.dir - (j / mC) * (n.x * frame.tan.x + n.z * frame.tan.z);
+      car.speed = Math.max(0, along * car.dir);
       this.lastImpact = 1;
       this.impacts++;
       // A car that was hit is not a car that was passed cleanly.
@@ -710,7 +722,6 @@ export class Traffic {
     car.spun = TRAFFIC.spinTime;
     car.spunRate = clamp(closing * 0.10, 0.5, 3.2) * (side || 1);
     car.spunDrift = clamp(closing * 0.28, 1.5, 7) * (side || 1);
-    car.speed = Math.max(0, car.speed * 0.55);
     car.signal = 0;
     car.pendingLane = -1;
     car.hazard = true;

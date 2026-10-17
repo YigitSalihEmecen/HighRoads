@@ -446,8 +446,13 @@ arrive from behind a slow player. Indicator lamps are seated on the body by a
 one-off raycast per pooled model.
 
 `_separate` asserts spacing directly. `_resolvePlayer`: two boxes in road space,
-closed-form impulse `j = −(1+e)(v_rel·n)m₁m₂/(m₁+m₂)`, player only, capped at
-`TRAFFIC.maxImpactDv`; the struck car spins out with hazards on.
+closed-form impulse `j = −(1+e)(v_rel·n)m₁m₂/(m₁+m₂)`, capped at
+`TRAFFIC.maxImpactDv`, fed to the player by `vehicle.shove()` over
+`TRAFFIC.impactTime` of substeps (all in one frame read as a wall or a launch).
+The struck car takes `−j/m₂` as a speed change and spins out with hazards on —
+rammed from behind it is shoved ahead, not braked into you. The player's box is
+its oriented chassis projected onto the road axes, so a sideways drift is short
+along the road and wide across it.
 `probe/traffic.mjs [seed] [min] [speed] [lane]` soaks it (slow player: `… 3 14 1`).
 
 ### 4.9 Modes and scoring (`score.js`)
@@ -1345,6 +1350,7 @@ spread into every car's params), so a naive unused-key scan reports it all dead.
 | `VEHICLE.maxChassisSpeed` | 100 m/s | guardrail, not a speed limit |
 | Rapier `linearDamping` | **0** | all drag explicit in `_aero` (#4) |
 | `TRAFFIC.maxImpactDv` | 11 m/s | |
+| `TRAFFIC.impactTime` | 0.18 s | crumple time an impact is spread over |
 
 **The player's car is the only rigid body besides the static terrain trimeshes.**
 
