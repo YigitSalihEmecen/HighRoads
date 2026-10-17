@@ -30,6 +30,7 @@ import { RaycastVehicle } from './vehicle.js';
 import { ChaseCamera } from './camera.js';
 import { Powertrain } from './powertrain.js';
 import { Input, TiltSteering } from './input.js';
+import { AutoDrive } from './autodrive.js';
 import { HUD } from './hud.js';
 import { createScene } from './scene.js';
 import { Wind } from './wind.js';
@@ -143,6 +144,7 @@ export async function boot() {
   const game = new Game({ gfx, world, path, terrain, chunks });
   game.seed = startSeed;
   game.input.bindTouch(document);
+  game.autodrive.bind(document);
   try {
     game.setBuild(storedBuild() || firstBuild());
     game.applyBuild();
@@ -267,6 +269,8 @@ class Game {
     /** Exhaust flames on the engine simulator's pops. */
     this.flames = new ExhaustFlames();
     this.cam = new ChaseCamera(gfx.camera);
+    /** Drives through `input` like a player would; see autodrive.js. */
+    this.autodrive = new AutoDrive();
     this._sFrame = makeFrame();
 
     this.active = false;
@@ -645,7 +649,11 @@ class Game {
 
     PERF.begin();
     this.input.update(dt);
-    if (this.active) this._handleActions();
+    if (this.active) {
+      // Before the one-shot keys: its shift presses are handled this frame.
+      this.autodrive.drive(dt, this);
+      this._handleActions();
+    }
 
     const control = this.active ? this.input : IDLE_INPUT;
 

@@ -64,6 +64,7 @@ engine_sim/     vendored sibling — DO NOT EDIT
 | `worldtiles.js` | world-space chunked-LOD quadtree tiles drawing that function, plus near colliders (§3b) |
 | `biomes.js` | climate + Worley-cell biome map, ten biomes (§4.20) |
 | `sky.js` | the sky shader (stars, moon, clouds) and the five sky presets (§4.22) |
+| `autodrive.js` | the virtual driver behind the bottom-centre AUTO DRIVE switch: calm / aggressive; steers, works the pedals and shifts (Q/E, gearbox in manual) through `Input`, never the car directly; any drive key takes over (`probe/autodrive.mjs`) |
 | `camera.js` `input.js` `hud.js` `settings.js` `score.js` `wind.js` `util.js` | as named |
 
 `src/env/` — one factory per module returning shared geometry + one shared
@@ -1856,6 +1857,7 @@ npm run probe
 | `handling.mjs` | steering by speed, slide recovery, drift, rollover safety |
 | `smooth.mjs` | is the car smooth **on screen** under jitter and hitches |
 | `drive.mjs` | end to end: real car, physics, `engine_sim`, traffic |
+| `autodrive.mjs` | both auto-drive modes under the main.js loop: on its side of the road, no impacts, its own shifts, calm smoother than aggressive |
 | `route.mjs` | shelf share, earthwork, curvature, grade, self-clearance |
 | `xsec.mjs` | cross-sections — the fastest way to read an alignment |
 | `canopy.mjs` | **what the canopy looks like** — contact sheet, both tiers at true size. Needs Chrome |

@@ -714,6 +714,25 @@
   .tbtn-go { background: rgba(40,130,70,0.45); box-shadow: inset 0 0 0 1px rgba(94,240,161,0.45); }
   .tbtn-go:active, .tbtn-go.on { background: rgba(60,170,95,0.75); box-shadow: inset 0 0 0 1px var(--good), 0 0 18px rgba(94,240,161,0.5); }
 
+  /* --------------------------------------------------------- autodrive -- */
+
+  #autodrive {
+    position: fixed; z-index: 12; left: 50%; bottom: var(--edge-b); transform: translateX(-50%); display: none;
+    border-radius: 999px; overflow: hidden; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line-2);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  body.driving #autodrive { display: flex; }
+  body.paused #autodrive { display: none; }
+  #autodrive button {
+    -webkit-tap-highlight-color: transparent; min-height: 38px; padding: 0 1.1em; border: 0; background: transparent; color: var(--faint);
+    font-family: var(--display); font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; font-size: var(--fs-xs);
+    cursor: pointer; transition: background 0.2s, color 0.2s;
+  }
+  #autodrive button:hover { color: var(--ink); }
+  #ad-mode { box-shadow: inset 1px 0 0 var(--line-2); }
+  #ad-mode.hot { color: var(--accent-2); }
+  #ad-toggle.on { background: var(--accent); color: #140700; box-shadow: 0 0 18px var(--accent-glow); }
+
   /* ------------------------------------------------------------- pause -- */
 
   #pause-btn { position: fixed; z-index: 12; left: 50%; bottom: var(--edge-b); transform: translateX(-50%); display: none; }
@@ -948,6 +967,10 @@
   </div>
 </div>
 
+<div id="autodrive">
+  <button id="ad-toggle" type="button" aria-pressed="false">Auto drive</button>
+  <button id="ad-mode" type="button" aria-label="Driving style">Calm</button>
+</div>
 <button id="pause-btn" class="icon-btn" type="button" aria-label="Pause"><span><i></i><i></i></span></button>
 <div id="toast"></div>
 

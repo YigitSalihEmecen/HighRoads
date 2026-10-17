@@ -33,6 +33,7 @@ npm run probe
 | `grass.mjs` | Ground cover: how many tufts, what the scatter costs, whether the density matches the config, and that none of it is on the carriageway. |
 | `uishot.mjs` | **What the interface looks like.** Screenshots twelve real device viewports over CDP and reports any element overflowing its box. Not in `npm run probe` — it needs a local Chrome and writes images. `node probe/uishot.mjs`. |
 | `drive.mjs` | End to end: real car, real physics, real engine_sim, real traffic, for a given number of seconds. |
+| `autodrive.mjs` | `src/autodrive.js` in both modes through a real `Input`: stays on its side, no impacts, shifts itself in manual, aggressive faster, calm smoother. |
 
 Each takes an optional seed as the first argument.
 
