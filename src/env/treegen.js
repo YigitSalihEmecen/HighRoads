@@ -132,11 +132,28 @@ const hex = (rgb) => `#${new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2],
  * tree, plus a flutter on the leaves.
  */
 function windify(material, uniforms, leafy) {
+  // Cutouts (cards, billboards) soften their edge across the MSAA samples.
+  const cutout = !!material.map && material.alphaTest > 0;
+  if (cutout) material.alphaToCoverage = true;
   // Chained: TreeGen's card material has a patch of its own.
   const base = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
     base.call(material, shader, renderer);
     Object.assign(shader.uniforms, uniforms);
+    // Coverage held up with distance (Castaño 2010; Golus 2017): each mip
+    // averages leaf with gap, so alpha sinks under the cutoff and a far crown
+    // turns into see-through specks. Scale it back up by the mip level.
+    if (cutout) {
+      shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>', /* glsl */`
+        {
+          vec2 tg_t = vMapUv * vec2( textureSize( map, 0 ) );
+          vec2 tg_dx = dFdx( tg_t ), tg_dy = dFdy( tg_t );
+          float tg_mip = max( 0.0, 0.5 * log2( max( dot( tg_dx, tg_dx ), dot( tg_dy, tg_dy ) ) ) );
+          diffuseColor.a *= 1.0 + tg_mip * ${TREES.treegen.alphaMipScale.toFixed(4)};
+        }
+        #include <alphatest_fragment>
+      `);
+    }
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
         #include <common>

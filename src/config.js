@@ -250,6 +250,11 @@ export const TREES = {
      * of a 56k-triangle crown and of its 1.3k-triangle cards look the same.
      */
     shadowLevels: 2,
+    /**
+     * Cutout coverage held up with distance: alpha is scaled by 1 + this × the
+     * mip level, since averaged mips thin a crown until it reads as see-through.
+     */
+    alphaMipScale: 1.5,
   },
 
   /** Geometries built per species at boot, and species drawn per chunk. */
