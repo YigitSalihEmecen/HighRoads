@@ -84,6 +84,8 @@ export class TerrainField {
     /** Listeners told the bounding box of every newly indexed stretch of road. */
     this.onGrow = [];
     this.lakes = new Lakes(this, seed);
+    /** towns.js: levels the ground under settlements. Set by chunks.js. */
+    this.towns = null;
   }
 
   // ------------------------------------------------------------ indexing --
@@ -270,7 +272,8 @@ export class TerrainField {
     // Octave budget keyed on road distance, exactly as the road-space sheet
     // keyed it on |v| — so the field is resolution-independent.
     const natural0 = this.terrain.height(x, z, dMin);
-    const natural = this.lakes.carve(x, z, natural0, dMin);
+    const lakeCarved = this.lakes.carve(x, z, natural0, dMin);
+    const natural = this.towns ? this.towns.carve(x, z, lakeCarved) : lakeCarved;
 
     let num = 0, den = 0, sOut = NaN, vOut = NaN;
     for (let i = 0; i < n; i++) {

@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES } from './config.js';
+import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -25,6 +25,7 @@ import { PERF } from './perf.js';
 import { InstanceCuller } from './instcull.js';
 import { WorldTiles } from './worldtiles.js';
 import { WaterSystem } from './env/water.js';
+import { Towns } from './towns.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const ROAD_LIFT = 0.035;
@@ -291,7 +292,17 @@ export class ChunkManager {
     /** What kind of country each place is (biomes.js) — read by every scatter. */
     this.biomes = createBiomes(terrain, this.field.seed);
     this.field.lakes.biomeChance = (x, z) => this.biomes.mix(this.biomes.biomeAt(x, z), 'lake');
-    setEcology(this.biomes, (x, z) => this.field.lakes.shoreU(x, z));
+    /** Hamlets, villages and far cities (towns.js); they level the ground, so the field asks them. */
+    this.towns = TOWNS.enabled ? new Towns({
+      scene, path, field: this.field, terrain, biomes: this.biomes,
+      onChange: (x0, z0, x1, z1) => {
+        this.tiles._invalidate(x0, z0, x1, z1);
+        if (this._gyCache) this._gyCache.clear();
+      },
+    }) : null;
+    this.field.towns = this.towns;
+    setEcology(this.biomes, (x, z) => this.field.lakes.shoreU(x, z),
+      this.towns ? (x, z) => this.towns.clear(x, z) : null);
     this._tint = [1, 1, 1];
     /** Lake surfaces (env/water.js). */
     this.water = new WaterSystem({ scene, field: this.field });
@@ -566,6 +577,11 @@ export class ChunkManager {
         Math.max(TILES.msPerFrame, Math.min(0.25 * (this._frameMs || 16.7), 30)));
       if (PERF.on) PERF.add('.tiles', performance.now() - t0);
       this.water.update(fp.x, fp.z, this.time);
+      if (this.towns) {
+        const t1 = PERF.on ? performance.now() : 0;
+        this.towns.update(fp.x, fp.z);
+        if (PERF.on) PERF.add('.towns', performance.now() - t1);
+      }
     }
     const center = Math.floor(carS / CHUNK.length);
     // The spline is undefined before s = 0, so a negative chunk would collapse
@@ -683,6 +699,7 @@ export class ChunkManager {
 
     this.tiles.dispose();
     this.water.dispose();
+    if (this.towns) this.towns.dispose();
     this.road.dispose();
     if (this.forest) this.forest.dispose();
     if (this.trees) this.trees.dispose();

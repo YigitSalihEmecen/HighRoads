@@ -621,6 +621,53 @@ export const SIGNS = {
 };
 
 /**
+ * Settlements — see `towns.js` (where they go, and the ground they level) and
+ * `env/towns.worker.js` (City-gen building them). The road is cut into slots;
+ * each slot rolls one settlement or none. Distances in metres.
+ */
+export const TOWNS = {
+  enabled: true,
+  /** Road length per roll, and what a roll becomes. */
+  slot: 1500,
+  mix: { none: 0.25, hamlet: 0.3, village: 0.25, city: 0.2 },
+  /** Along the road: a hamlet lines one side, a village both (the road is its high street). */
+  hamletLength: [110, 200],
+  villageLength: [240, 420],
+  /** Sharpest bend (1/m) a settlement may sit on; the most the land beside it may stand off the road. */
+  maxCurv: 1 / 250,
+  maxRelief: 12,
+  /** Front row starts this far past the shoulder; a village may have a second row behind a lane. */
+  verge: 2.5,
+  backRow: 0.45,
+  backGap: 9,
+  /** Gaps between houses (not within a terrace): village, hamlet. */
+  gap: [2, 9],
+  hamletGap: [8, 26],
+  /** Ground is levelled to the road out to `flat` past the last row, blending back over `blend`. */
+  flat: 10,
+  blend: 45,
+  /** A village's chance of a church; a street lamp every `lampStep`. */
+  church: 0.55,
+  lampStep: 34,
+  /** City-gen detail near and far, and where a settlement switches. */
+  detail: [1, 0],
+  lodDistance: 420,
+
+  /** Cities: on the horizon, never on the road. Centre this far out, side this long. */
+  cities: true,
+  cityDist: [480, 760],
+  citySize: [360, 540],
+  /** Land under a city may vary this much before levelling; levelled ground blends back over `cityBlend`. */
+  cityRelief: 40,
+  cityBlend: 150,
+  cityDensity: [1.3, 2.3],
+
+  /** Generated within `buildRadius` of the focus, freed past `keep`. */
+  buildRadius: 2100,
+  keep: 2600,
+};
+
+/**
  * Wind noise — see `wind.js`. The one sound the engine simulator cannot make;
  * every number here was chosen by listening.
  */
@@ -1193,6 +1240,7 @@ function applyGraphics() {
     BUSHES.cap = 72;
     SIGNS.lod = 2;
     SIGNS.drawDistance = 400;
+    TOWNS.lodDistance = 320;
     GROUND.sward.size = 512;
     GROUND.sward.steps = [4, 12];
     ROAD_SURFACE.pom.steps = [2, 6];
@@ -1215,6 +1263,9 @@ function applyGraphics() {
     BUSHES.enabled = false;
     SIGNS.lod = 2;
     SIGNS.drawDistance = 300;
+    // Villages only, City-gen's plainest past 220 m: the horizon is too close for a city.
+    TOWNS.cities = false;
+    TOWNS.lodDistance = 220;
     // The turf's look without its march.
     GROUND.sward.size = 512;
     GROUND.sward.depth = 0;
@@ -1261,3 +1312,8 @@ try {
   const g = new URLSearchParams(location.search).get('trees') || localStorage.getItem(TREES_KEY);
   if (TREE_GENERATORS.includes(g)) TREES.generator = g;
 } catch (err) { /* no location or storage (Node) */ }
+
+/** `?towns=0` drops the settlements for one load (an A/B, probe/perf.mjs QUERY). */
+try {
+  if (new URLSearchParams(location.search).get('towns') === '0') TOWNS.enabled = false;
+} catch (err) { /* no location (Node) */ }

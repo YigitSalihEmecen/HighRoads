@@ -14,7 +14,10 @@ import { BIOMES } from './biomes.js';
  */
 let BIOME_FN = null;
 let LAKE_FN = null;
-export function setEcology(biomeSampler, lakeShore) { BIOME_FN = biomeSampler; LAKE_FN = lakeShore; }
+let TOWN_FN = null;
+export function setEcology(biomeSampler, lakeShore, townClear = null) {
+  BIOME_FN = biomeSampler; LAKE_FN = lakeShore; TOWN_FN = townClear;
+}
 
 /* ================================================================= forms == */
 
@@ -657,9 +660,12 @@ export function vegetation(terrain, x, z, relief, slope, lateral, out = {}) {
   out.floor = clamp01(canopy * 1.25) * (0.40 + 0.60 * moisture) *
     clamp01((lateral - CHUNK.plantClear) / 8);
 
-  out.canopy = canopy;
-  out.understorey = understorey;
-  out.ground = ground;
+  // Nothing grows where a settlement stands (towns.js).
+  const open = TOWN_FN ? 1 - TOWN_FN(x, z) : 1;
+  out.floor *= open;
+  out.canopy = canopy * open;
+  out.understorey = understorey * open;
+  out.ground = ground * open;
   out.edge = edge;
   out.moisture = moisture;
   out.rugged = rugged;

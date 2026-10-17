@@ -555,6 +555,7 @@ class Game {
     this.headlights = !!P.headlights;
     if (this.vehicle) this.vehicle.headlightBoost = P.night ? 24 : 1;
     if (this.traffic) this.traffic.lightsOn = !!(P.night || P.headlights);
+    if (this.chunks.towns) this.chunks.towns.setNight(P.night);
     if (this.ui && save) this.ui.refreshTitle();
     return P;
   }
