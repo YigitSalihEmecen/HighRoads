@@ -132,7 +132,7 @@ export class ChaseCamera {
     this._rigSeeded = false;
   }
 
-  update(dt, vehicle) {
+  update(dt, vehicle, terrain) {
     if (this.title) {
       this._updateTitle(dt, vehicle);
       return;
@@ -223,6 +223,8 @@ export class ChaseCamera {
       this.lookAt.copy(this._target);
     }
     this.initialised = true;
+
+    if (terrain) this.position.y = Math.max(this.position.y, terrain.height(this.position.x, this.position.z) + CAMERA.groundClearance);
 
     this.camera.position.copy(this.position);
     this.camera.up.copy(WORLD_UP);

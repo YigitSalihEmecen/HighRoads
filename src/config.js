@@ -986,6 +986,8 @@ export const CAMERA = {
    */
   chase: { dist: 4.8, height: 2.30, ahead: 6.0, zoom: 1.0 },
   close: { dist: 4.2, height: 1.80, ahead: 4.8, zoom: 0.5 },
+  /** Lowest the chase camera may sit above the terrain under it, metres. */
+  groundClearance: 1.4,
   /** Height of the point the camera aims at, above the contact plane. */
   aimHeight: 0.95,
   /**
