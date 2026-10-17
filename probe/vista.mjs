@@ -60,7 +60,9 @@ fs.mkdirSync(OUT, { recursive: true });
 const chrome = spawn(CHROME, [
   '--headless=new',
   // Software GL: without these the page never gets a WebGL context at all.
-  '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+  // GPU=1: the machine's GPU (Metal on a Mac), as in render.mjs.
+  ...(process.env.GPU ? ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist']
+    : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']),
   '--disable-gpu-sandbox', '--mute-audio', '--ignore-certificate-errors',
   // Chrome refuses to start sandboxed as root (containers, CI).
   ...(process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
@@ -148,8 +150,11 @@ console.log('  state: ' + await js(`(()=>{const g=window.__highroads, v=g.vehicl
   return 'car ' + [v.pos.x, v.pos.y, v.pos.z].map(n=>n.toFixed(1)).join(',') + ' vel ' + [lv.x,lv.y,lv.z].map(n=>n.toFixed(1)).join(',') +
     ' tiles ' + g.chunks.tiles.tiles.size + ' road y ' + g.path.frameAt(${atS}).pos.y.toFixed(1);})()`));
 
-/** Camera at (along, side, up) metres in the road frame at s, looking at (along2, side2, up2). */
-const views = [
+/**
+ * Camera at (along, side, up) metres in the road frame at s, looking at
+ * (along2, side2, up2). VIEWS='[["name",[a,s,u],[a,s,u]],…]' replaces the set.
+ */
+const views = process.env.VIEWS ? JSON.parse(process.env.VIEWS) : [
   ['aerial',   [-120, 0, 140], [220, 0, 0]],
   ['aerial-l', [-80, -60, 110], [160, 260, 0]],
   ['aerial-r', [-80, 60, 110], [160, -260, 0]],
@@ -171,6 +176,7 @@ for (const [name, a, b] of views) {
     return [c.position.x,c.position.y,c.position.z].map(n=>n.toFixed(1)).join(',') + ' fwd ' + g.vehicle.forwardSpeed.toFixed(2) + ' fov ' + c.fov.toFixed(1) + ' parent ' + (c.parent && c.parent.type);})()`));
   await shot(name);
 }
+if (process.env.EVAL) console.log('  eval: ' + await js(process.env.EVAL));
 if (consoleErrors.length) {
   console.log('\n  page errors:');
   for (const e of [...new Set(consoleErrors)].slice(0, 5)) console.log('   ' + String(e).split('\n')[0]);

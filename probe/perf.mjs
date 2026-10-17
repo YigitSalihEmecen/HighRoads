@@ -63,7 +63,9 @@ fs.mkdirSync(OUT, { recursive: true });
 const chrome = spawn(CHROME, [
   '--headless=new',
   // Software GL: without these the page never gets a WebGL context at all.
-  '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+  // GPU=1: the machine's GPU (Metal on a Mac), as in render.mjs.
+  ...(process.env.GPU ? ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist']
+    : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']),
   '--disable-gpu-sandbox', '--mute-audio', '--ignore-certificate-errors',
   // Chrome refuses to start sandboxed as root (containers, CI).
   ...(process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
@@ -118,7 +120,9 @@ ws.addEventListener('message', (e) => {
 const [W, H] = (process.argv[4] || '1280x720').split('x').map(Number);
 await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
 const sky = process.env.SKY ? `&sky=${process.env.SKY}` : '';
-await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}&perf${sky}` });
+// QUERY='towns=0' (any URL switch) for an A/B against the same drive.
+const query = process.env.QUERY ? `&${process.env.QUERY}` : '';
+await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}&perf${sky}${query}` });
 for (let i = 0; i < 240; i++) {
   if (await js(`!!document.getElementById('start') && !document.getElementById('start').disabled`)) break;
   await sleep(1000);
@@ -141,7 +145,7 @@ const rep = await js(`(()=>{const g=window.__highroads; const r=window.__perfMod
   r.meshes=meshes; r.instances=inst; r.heap=performance.memory?performance.memory.usedJSHeapSize:0; return r;})()`);
 const metrics = await send('Performance.getMetrics').catch(() => ({ metrics: [] }));
 const M = Object.fromEntries((metrics.metrics || []).map(m => [m.name, m.value]));
-console.log(`\nseed "${seed}", ${W}x${H}, ${rep.frames} frames over ${driveFor}s (${(rep.frames / driveFor).toFixed(1)} fps under SwiftShader)`);
+console.log(`\nseed "${seed}", ${W}x${H}, ${rep.frames} frames over ${driveFor}s (${(rep.frames / driveFor).toFixed(1)} fps ${process.env.GPU ? "on the GPU" : "under SwiftShader"})`);
 console.log(`car ${rep.kmh} km/h at s=${rep.s}; ${rep.chunks} chunks, ${rep.tiles} tiles, ${rep.meshes} meshes, ${rep.instances.toLocaleString()} instances`);
 console.log(`gpu: ${rep.geometries} geometries, ${rep.textures} textures, ${rep.programs} programs; JS heap ${(rep.heap / 1e6).toFixed(0)} MB (${((rep.heap - heap0) / 1e6).toFixed(1)} MB over the run)`);
 const sec = rep.sections;
