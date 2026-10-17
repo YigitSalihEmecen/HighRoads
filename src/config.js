@@ -383,8 +383,13 @@ export const BUSHES = {
 export const GRASS = {
   enabled: true,
 
-  /** Tufts per square metre at the verge, before rejections. An ask, not a count. */
-  density: 1.9,
+  /**
+   * Tufts per square metre at the verge, before rejections. An ask, not a
+   * count. A quarter-ish of the 1.9 it was when tufts were half the size:
+   * each covers four times the ground, so the field reads as full with far
+   * fewer instances (and the same fragments).
+   */
+  density: 0.55,
   /** Lateral band: from the paved edge out to here, metres. */
   halfExtent: 46,
   /** Full density out to here, then tapering to nothing at `halfExtent`. */
@@ -403,7 +408,7 @@ export const GRASS = {
   buildPerFrame: 1,
 
   /** Tuft height, metres. */
-  height: [0.22, 0.5],
+  height: [0.44, 1.0],
   /** Width as a fraction of height. A square-ish card overlaps into a field. */
   widthRatio: 0.95,
 
@@ -412,12 +417,12 @@ export const GRASS = {
 
   /** Wind direction (world XZ), strength in metres of tip travel, and rate. */
   windDir: { x: 0.86, z: 0.51 },
-  windStrength: 0.22,
+  windStrength: 0.36,
   windSpeed: 1.35,
 
   /** Blades drawn into one card, and the card texture's size in pixels. */
   bladesPerCard: 7,
-  textureSize: 128,
+  textureSize: 256,
 
   /** The THIRD tier: the woodland floor. Near-field only. */
   wood: {
@@ -427,9 +432,9 @@ export const GRASS = {
     /** Lateral band, metres. Trees start at `CHUNK.plantClear`; this follows. */
     halfExtent: 90,
     /** Tufts per square metre asked, before `floor` scales it down. */
-    density: 0.75,
+    density: 0.22,
     /** Height range, metres. */
-    height: [0.44, 0.96],
+    height: [0.88, 1.9],
     /** Nearly square, so neighbours overlap into a surface. */
     widthRatio: 0.82,
     /** Still brighter than the ground it stands on. */
@@ -1258,7 +1263,7 @@ function applyGraphics() {
     TREES.treegen.shadowLevels = 1;
 
     // Grass and shrubs scale down together.
-    GRASS.density = 1.3;
+    GRASS.density = 0.38;
     GRASS.far.ahead = 2;
     GRASS.far.fadeOut = [150, 220];
     BUSHES.samples = 600;

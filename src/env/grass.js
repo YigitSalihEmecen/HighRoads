@@ -32,6 +32,9 @@ function atlasTexture(cell, opts = {}) {
   ctx.clearRect(0, 0, cell * 2, cell * 2);
   const rnd = rng(opts.seed || 0x5f3759df);
   const long = !!opts.long;
+  // Cards are drawn twice the size they were painted for: half-width blades,
+  // and more of them, so a blade keeps its real width on screen.
+  const W = 0.55, M = 1.7;
 
   const blade = (ox, oy, x, rootW, tipY, lean, bow, v) => {
     const size = cell;
@@ -72,44 +75,44 @@ function atlasTexture(cell, opts = {}) {
 
   // 0 meadow (top-left): broad soft blades
   {
-    const n = long ? 7 : 9;
+    const n = Math.round((long ? 7 : 9) * M);
     for (let i = 0; i < n; i++) {
       const x = ((i + 0.5) / n + (rnd() - 0.5) * 0.4) * cell;
-      blade(0, 0, x, cell * (0.040 + rnd() * 0.030), cell * ((long ? 0.02 : 0.10) + rnd() * (long ? 0.16 : 0.36)),
+      blade(0, 0, x, cell * (0.040 + rnd() * 0.030) * W, cell * ((long ? 0.02 : 0.10) + rnd() * (long ? 0.16 : 0.36)),
         (rnd() - 0.5) * cell * 0.36, (rnd() - 0.5) * cell * 0.22, 0.80 + rnd() * 0.2);
     }
   }
   // 1 seed grass (top-right): tall thin stems, seed heads
   {
-    const n = 8;
+    const n = Math.round(8 * M);
     for (let i = 0; i < n; i++) {
       const x = ((i + 0.5) / n + (rnd() - 0.5) * 0.4) * cell;
       const tall = rnd() < 0.55;
-      const [hx, hy] = blade(cell, 0, x, cell * (0.018 + rnd() * 0.014), cell * (tall ? 0.06 + rnd() * 0.10 : 0.30 + rnd() * 0.25),
+      const [hx, hy] = blade(cell, 0, x, cell * (0.018 + rnd() * 0.014) * W, cell * (tall ? 0.06 + rnd() * 0.10 : 0.30 + rnd() * 0.25),
         (rnd() - 0.5) * cell * 0.30, (rnd() - 0.5) * cell * 0.18, 0.82 + rnd() * 0.18);
-      if (tall) head(hx, hy + cell * 0.05, cell * 0.035, 0);
+      if (tall) head(hx, hy + cell * 0.03, cell * 0.035 * W * 1.3, 0);
     }
   }
   // 2 flower (bottom-left): blades with flower heads
   {
-    const n = 6;
+    const n = Math.round(6 * M);
     for (let i = 0; i < n; i++) {
       const x = ((i + 0.5) / n + (rnd() - 0.5) * 0.4) * cell;
-      blade(0, cell, x, cell * (0.030 + rnd() * 0.02), cell * (0.30 + rnd() * 0.35),
+      blade(0, cell, x, cell * (0.030 + rnd() * 0.02) * W, cell * (0.30 + rnd() * 0.35),
         (rnd() - 0.5) * cell * 0.3, (rnd() - 0.5) * cell * 0.2, 0.8 + rnd() * 0.2);
     }
-    for (let i = 0; i < 4; i++) {
-      const x = ((i + 0.5) / 4 + (rnd() - 0.5) * 0.25) * cell;
-      const [hx, hy] = blade(0, cell, x, cell * 0.012, cell * (0.06 + rnd() * 0.12), (rnd() - 0.5) * cell * 0.1, 0, 0.85);
-      head(hx, hy, cell * (0.07 + rnd() * 0.03), 5 + Math.floor(rnd() * 3));
+    for (let i = 0; i < 6; i++) {
+      const x = ((i + 0.5) / 6 + (rnd() - 0.5) * 0.25) * cell;
+      const [hx, hy] = blade(0, cell, x, cell * 0.012 * W, cell * (0.06 + rnd() * 0.12), (rnd() - 0.5) * cell * 0.1, 0, 0.85);
+      head(hx, hy, cell * (0.07 + rnd() * 0.03) * 0.65, 5 + Math.floor(rnd() * 3));
     }
   }
   // 3 clover (bottom-right): round leaves low down
   {
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < 36; i++) {
       const x = cell + (0.12 + rnd() * 0.76) * cell;
       const y = cell + (0.55 + rnd() * 0.4) * cell;
-      const r = cell * (0.06 + rnd() * 0.04);
+      const r = cell * (0.06 + rnd() * 0.04) * 0.62;
       const v = Math.round(255 * (0.75 + rnd() * 0.25));
       ctx.fillStyle = `rgb(${v},0,0)`;
       for (let k = 0; k < 3; k++) {
@@ -117,8 +120,8 @@ function atlasTexture(cell, opts = {}) {
         ctx.beginPath(); ctx.arc(x + Math.cos(a) * r * 0.8, y + Math.sin(a) * r * 0.8, r * 0.75, 0, Math.PI * 2); ctx.fill();
       }
     }
-    for (let i = 0; i < 4; i++) {
-      blade(cell, cell, (0.1 + rnd() * 0.8) * cell, cell * 0.03, cell * (0.35 + rnd() * 0.3),
+    for (let i = 0; i < 7; i++) {
+      blade(cell, cell, (0.1 + rnd() * 0.8) * cell, cell * 0.03 * W, cell * (0.35 + rnd() * 0.3),
         (rnd() - 0.5) * cell * 0.3, 0, 0.85);
     }
   }

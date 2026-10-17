@@ -1903,7 +1903,9 @@ export class ChunkManager {
     // Seeded per chunk, salted off the prop seed so grass and trees differ.
     const rng = mulberry32(hashInt(index) ^ tier.salt);
 
-    const inner = EDGE - 0.35;             // start just inside the paved edge
+    // From the middle of the verge: the gravel shoulder carries no tufts.
+    const V = GROUND.verge;
+    const inner = V.enabled ? (V.band[0] + V.band[1]) / 2 : EDGE - 0.35;
     const outer = tier.halfExtent;
     if (!(outer > inner)) return null;
 
