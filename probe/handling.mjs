@@ -143,27 +143,3 @@ console.log('\n=== can a drift be held? (Sport, handbrake released, power on) ==
   console.log(`  seconds spent sliding but still controllable: ${held.toFixed(2)} of 3.00`);
   console.log(`  mean slip ${(slipSum / n).toFixed(3)}, final speed ${(sim.v.speed * 3.6).toFixed(0)} km/h`);
 }
-
-// Rerun the catch with the spin-recovery damper off, to separate assist from
-// honest steering and tyre work.
-console.log('\n=== how much of the catch is the assist? ===');
-{
-  const V0 = VEHICLE.spinRecovery;
-  for (const strength of [0, V0]) {
-    VEHICLE.spinRecovery = strength;
-    const sim = atSpeed('supercar', 30);
-    for (let i = 0; i < Math.round(0.7 / h); i++) step(sim, IN(1, 0.4, 0, true), 4000);
-    // Same rule as above: stop integrating once the slide is over.
-    let caught = -1, heading = 0;
-    for (let i = 0; i < Math.round(5.0 / h); i++) {
-      step(sim, IN(-1, 0.5, 0, false), 3000);
-      const y = sim.v.body.angvel().y;
-      if (caught >= 0) continue;
-      heading += y * h;
-      if (Math.abs(y) < 0.35 && i > 20) caught = i * h;
-    }
-    console.log(`  spinRecovery ${strength.toFixed(1)}: caught in ` +
-      `${caught >= 0 ? caught.toFixed(2) + ' s' : 'never'}, rotated ${((Math.abs(heading) * 180) / Math.PI).toFixed(0)} deg`);
-  }
-  VEHICLE.spinRecovery = V0;
-}

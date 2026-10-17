@@ -324,9 +324,14 @@ compression *rate*), `_antiRoll` (bar rate derived from a target roll angle),
   `V.maxSteer * counterLock` at full slew rate. Symmetric opening helps
   provoking a slide exactly as much as catching one, which is why it was not
   enough on its own.
-- **`_stability`**: yaw damper faded in between `driftAngle` (29°) and
-  `spinAngle` (60°). Below the first it does nothing and the tyres peak near 7°,
-  so ordinary cornering and a held drift are untouched (#38).
+- **No slide assists.** The slip-triggered yaw damper (`spinRecovery`), the
+  handbrake's rear-grip multiplier and the tyre-level traction cap that the
+  handbrake switched off are gone: each made the car behave differently by
+  state. A handbraked rear wheel is LOCKED, so it slides — kinetic friction
+  against the whole patch velocity instead of the slip-angle curve — which is
+  what starts a handbrake turn. `probe/handling.mjs`: catch 0.82 s (0.94 with
+  the damper), drift held 1.59 of 3 s (1.34). `angularDamping` 0.45 stays: at
+  0 the catch rotates 132° and drifts cannot be held.
 - **Yaw inertia is inflated 1.6×**. A solid box implies a yaw radius of gyration
   of 0.29·L; real cars measure 0.35–0.40. Largest single contributor to the car
   feeling like it has weight.

@@ -626,31 +626,22 @@ export class RaycastVehicle {
 
       // ---- lateral: Magic Formula ------------------------------------------
       // The rear runs more peak grip and less stiffness: the front lets go first.
-      const handbrakeCut = w.rear && input.handbrake ? V.handbrakeGripMul : 1;
       const surface = lerp(1, V.offRoadGrip, this.offRoad);
-      const peak = V.tyreFriction * w.load * handbrakeCut * surface * (w.rear ? V.rearGripBias : 1);
+      const peak = V.tyreFriction * w.load * surface * (w.rear ? V.rearGripBias : 1);
       const B = w.rear ? V.corneringStiffnessRear : V.corneringStiffnessFront;
 
       const alpha = Math.atan2(-vr, Math.max(Math.abs(vf), 0.8));
       w.slipAngle = alpha;
       const magic = peak * Math.sin(V.tyreShape * Math.atan(B * alpha));
 
-      const lat = lerp(-vr * mLat * handbrakeCut, magic * dt, slipBlend);
+      const lat = lerp(-vr * mLat, magic * dt, slipBlend);
 
       // ---- longitudinal ----------------------------------------------------
       // What this tyre could still carry along its heading after cornering.
       if (V.driveBias[i] > 0) {
         driveGrip += Math.sqrt(Math.max(0, maxImpulse * maxImpulse - lat * lat)) / dt;
       }
-      let driveImpulse = this.driveForce * V.driveBias[i] * dt;
-
-      // Traction control caps drive (never braking) at the friction left after
-      // cornering. The handbrake disables it so drifts survive.
-      if (driveImpulse !== 0 && !input.handbrake) {
-        const remaining = Math.sqrt(Math.max(0, maxImpulse * maxImpulse - lat * lat));
-        const budget = remaining * V.tractionControl;
-        if (Math.abs(driveImpulse) > budget) driveImpulse = sign(driveImpulse) * budget;
-      }
+      const driveImpulse = this.driveForce * V.driveBias[i] * dt;
 
       let brakeForce = drive.brake * V.brakeForce[i];
       if (input.handbrake && w.rear) brakeForce = Math.max(brakeForce, V.handbrakeForce);
@@ -661,6 +652,15 @@ export class RaycastVehicle {
 
       let lon = driveImpulse + brakeImpulse;
       let latOut = lat;
+
+      // A locked wheel is not rolling, so it has no slip angle: it slides, and
+      // kinetic friction opposes the whole contact-patch velocity.
+      if (input.handbrake && w.rear && this.speed > V.slipBlendSpeed[1]) {
+        const vs = Math.hypot(vf, vr);
+        const k = Math.min(maxImpulse, vs * mLong) / Math.max(vs, 1e-6);
+        lon = driveImpulse - vf * k;
+        latOut = -vr * k;
+      }
 
       // ---- friction circle -------------------------------------------------
       const mag = Math.hypot(latOut, lon);
@@ -729,20 +729,6 @@ export class RaycastVehicle {
         input.steer * V.airControl * V.mass * 0.12 * dt
       );
       this.body.applyTorqueImpulse(yaw, true);
-    }
-
-    // Slide containment: beyond a generous slip angle a yaw damper fades in,
-    // so a spin hands the driver the car back without affecting normal drifts.
-    if (!airborne && this.speed > 4) {
-      const vFwd = this.linvel.dot(this.fwd);
-      const vSide = this.linvel.dot(this.rightV);
-      const beta = Math.abs(Math.atan2(vSide, Math.abs(vFwd)));
-      const over = smoothstep(V.driftAngle, V.spinAngle, beta);
-      if (over > 0) {
-        const yawRate = this.angvel.dot(this.up);
-        this._d.copy(this.up).multiplyScalar(-yawRate * over * V.spinRecovery * V.mass * dt);
-        this.body.applyTorqueImpulse(this._d, true);
-      }
     }
 
     // Hard cap on tumbling — a trimesh edge case should never end the session.

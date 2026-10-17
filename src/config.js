@@ -811,13 +811,9 @@ export const VEHICLE = {
   rearGripBias: 1.00,
   /** Below this speed band, slip angle is meaningless; blend to velocity-cancelling. */
   slipBlendSpeed: [0.6, 3.5],
-  /** Traction control: how far drive torque may exceed the friction left after cornering. */
-  tractionControl: 2.0,
 
   /** Effective mass per tyre for the low-speed velocity-cancelling fallback. */
   lateralGripMass: 0.30,
-  /** Handbrake kills most of the rear lateral grip => predictable drifts. */
-  handbrakeGripMul: 0.28,
   /** Tyre forces applied this far above the contact patch, cutting roll moment. */
   frictionAnchorLift: 0.24,
   rollingResistance: 320,
@@ -868,11 +864,6 @@ export const VEHICLE = {
   uprightTorque: 5.5,
   /** Pitch/yaw authority while airborne. */
   airControl: 2.6,
-
-  /** Slide containment — where a drift stops being a drift and becomes a spin. */
-  driftAngle: 0.50,        // ~29 deg — past any ordinary slide
-  spinAngle: 1.05,         // ~60 deg — past here the car is going round
-  spinRecovery: 1.9,       // damper strength, N·m·s per rad/s per kg
 
   /** Chassis slip angles over which steering lock opens beyond the grip limit. */
   slideOpenFrom: 0.14,     // ~8 deg — the car is starting to move around
