@@ -674,35 +674,16 @@ export const SIGNS = {
  */
 export const TOWNS = {
   enabled: true,
-  /** Road length per roll, and what a roll becomes. */
+  /** Road length per roll, and the chance a roll is a city. */
   slot: 1500,
-  mix: { none: 0.25, hamlet: 0.3, village: 0.25, city: 0.2 },
-  /** Along the road: a hamlet lines one side, a village both (the road is its high street). */
-  hamletLength: [110, 200],
-  villageLength: [240, 420],
-  /** Sharpest bend (1/m) a settlement may sit on; the most the land beside it may stand off the road. */
-  maxCurv: 1 / 250,
-  maxRelief: 12,
-  /** Front row starts this far past the shoulder; a village may have a second row behind a lane. */
-  verge: 2.5,
-  backRow: 0.45,
-  backGap: 9,
-  /** Gaps between houses (not within a terrace): village, hamlet. */
-  gap: [2, 9],
-  hamletGap: [8, 26],
-  /** Ground is levelled to the road out to `flat` past the last row, blending back over `blend`. */
-  flat: 10,
-  blend: 45,
-  /** A village's chance of a church; a street lamp every `lampStep`. */
-  church: 0.55,
-  lampStep: 34,
-  /** City-gen detail near and far, and where a settlement switches. */
-  detail: [1, 0],
-  lodDistance: 420,
+  cityChance: 0.7,
 
-  /** Cities: on the horizon, never on the road. Centre this far out, side this long. */
+  /**
+   * Cities: on the horizon, never on the road (roadside hamlets and villages
+   * were removed). Centre this far out, side this long.
+   */
   cities: true,
-  cityDist: [480, 760],
+  cityDist: [850, 1300],
   citySize: [360, 540],
   /** Land under a city may vary this much before levelling; levelled ground blends back over `cityBlend`. */
   cityRelief: 40,
@@ -710,8 +691,8 @@ export const TOWNS = {
   cityDensity: [1.3, 2.3],
 
   /** Generated within `buildRadius` of the focus, freed past `keep`. */
-  buildRadius: 2100,
-  keep: 2600,
+  buildRadius: 2300,
+  keep: 2800,
 };
 
 /**
@@ -1294,7 +1275,8 @@ function applyGraphics() {
     BUSHES.cap = 72;
     SIGNS.lod = 2;
     SIGNS.drawDistance = 400;
-    TOWNS.lodDistance = 320;
+    // The fog closes at ~900 m: cities stand just inside it.
+    TOWNS.cityDist = [560, 820];
     GROUND.sward.size = 512;
     GROUND.sward.steps = [4, 12];
     ROAD_SURFACE.pom.steps = [2, 6];
@@ -1318,9 +1300,8 @@ function applyGraphics() {
     BUSHES.enabled = false;
     SIGNS.lod = 2;
     SIGNS.drawDistance = 300;
-    // Villages only, City-gen's plainest past 220 m: the horizon is too close for a city.
+    // The horizon is too close for a city.
     TOWNS.cities = false;
-    TOWNS.lodDistance = 220;
     // The turf's look without its march.
     GROUND.sward.size = 512;
     GROUND.sward.depth = 0;
@@ -1379,3 +1360,6 @@ try {
 try {
   if (new URLSearchParams(location.search).get('towns') === '0') TOWNS.enabled = false;
 } catch (err) { /* no location (Node) */ }
+
+// Cities are all there is of the towns now: none, nothing to plan.
+if (!TOWNS.cities) TOWNS.enabled = false;

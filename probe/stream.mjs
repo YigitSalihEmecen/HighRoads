@@ -13,13 +13,16 @@ globalThis.document = { createElement: () => ({ style: {}, getContext: () => nul
 globalThis.location = { search: '?perf' };
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import { WORLD } from '../src/config.js';
+import { WORLD, TOWNS } from '../src/config.js';
 import { createTerrain } from '../src/noise.js';
 import { RoadPath } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
 import { PERF } from '../src/perf.js';
 
 PERF.on = true;   // imports are hoisted above the location stub
+// A city is built in a worker in the browser; Node has none, and its
+// main-thread fallback (~100 ms a city) is not a streaming cost the game pays.
+TOWNS.enabled = false;
 const seed = process.argv[2] || WORLD.seed;
 const secs = Number(process.argv[3] || 40);
 const speed = Number(process.argv[4] || 40);

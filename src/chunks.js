@@ -319,7 +319,7 @@ export class ChunkManager {
     this.field.lakes.biomeChance = (x, z) => this.biomes.mix(this.biomes.biomeAt(x, z), 'lake');
     /** Hamlets, villages and far cities (towns.js); they level the ground, so the field asks them. */
     this.towns = TOWNS.enabled ? new Towns({
-      scene, path, field: this.field, terrain, biomes: this.biomes,
+      scene, path, field: this.field, terrain,
       onChange: (x0, z0, x1, z1) => {
         this.tiles._invalidate(x0, z0, x1, z1);
         if (this._gyCache) this._gyCache.clear();
