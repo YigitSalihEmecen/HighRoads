@@ -121,7 +121,9 @@ await send('Emulation.setDeviceMetricsOverride',
 // SKY=night (any sky.js preset) and CAM=cinematic (any CAM_MODES entry)
 // pick the look to shoot.
 const skyQ = process.env.SKY ? `&sky=${encodeURIComponent(process.env.SKY)}` : '';
-await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}${skyQ}` });
+// QUERY='terrain={"biome":"snow"}': any extra query, e.g. a world biome.
+const extraQ = process.env.QUERY ? '&' + process.env.QUERY.split('&').map((kv) => kv.replace(/=(.*)/, (m, v) => '=' + encodeURIComponent(v))).join('&') : '';
+await send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?seed=${encodeURIComponent(seed)}${skyQ}${extraQ}` });
 
 console.log(`\nseed "${seed}" — rendering through SwiftShader\n`);
 let booted = false;
@@ -137,6 +139,8 @@ if (!booted) {
 }
 console.log('  booted: ' + (await js(`document.getElementById('boot').textContent`)));
 await sleep(2500);
+// PRE='js': run on the title before its shot (e.g. open a sheet).
+if (process.env.PRE) { await js(process.env.PRE); await sleep(900); }
 await shot('game-garage');
 
 // The Drive button's async audio start can reject headless, so start directly.
@@ -155,7 +159,7 @@ await shot('game-flyin');
 await sleep(3000);
 await js(`(async()=>{const g=window.__highroads;
   if(!g.active){ try{ await g.powertrain.start(g.car()); }catch(e){} g.startRun(); }
-  g.input.touch.throttle=1; })()`);
+  ${process.env.AUTO ? 'g.autodrive.engage();' : 'g.input.touch.throttle=1;'} })()`);
 
 /**
  * Optional teleport, in metres of arc length. SwiftShader runs at ~20 fps, so

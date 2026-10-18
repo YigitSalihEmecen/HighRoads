@@ -20,6 +20,8 @@ import { ATMOSPHERE, ROAD, ROAD_SURFACE } from '../src/config.js';
 const q = new URLSearchParams(location.search);
 if (q.get('pom') === '0') ROAD_SURFACE.pom.depth = 0;
 const { createRoadAssets } = await import('../src/env/road.js');
+// ?terrain={"biome":"snow"}: a world's drifts and leaves, marched through its ground tile.
+const { createGroundAssets } = await import('../src/env/ground.js');
 
 const W = innerWidth, H = innerHeight;
 const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -37,7 +39,8 @@ sun.position.set(-40, 30, -60);
 scene.add(sun);
 
 const t0 = performance.now();
-const road = createRoadAssets({ anisotropy: renderer.capabilities.getMaxAnisotropy() });
+const road = createRoadAssets({ anisotropy: renderer.capabilities.getMaxAnisotropy(),
+  cover: createGroundAssets().material.userData.uniforms });
 const buildMs = performance.now() - t0;
 
 // Columns as chunks.js builds them: edge lines, a dashed divider each side,
