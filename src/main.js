@@ -34,6 +34,7 @@ import { AutoDrive } from './autodrive.js';
 import { HUD } from './hud.js';
 import { createScene } from './scene.js';
 import { Wind } from './wind.js';
+import { TyreSound } from './tyres.js';
 import { TyreFX } from './fx.js';
 import { ExhaustFlames } from './flames.js';
 import { Settings } from './settings.js';
@@ -260,6 +261,7 @@ class Game {
      * after the engine simulator has built that — inside the Drive click.
      */
     this.wind = new Wind();
+    this.tyreSound = new TyreSound();
     /** Tyre smoke and rubber. */
     this.fx = new TyreFX(gfx.scene, {
       anisotropy: gfx.renderer.capabilities.getMaxAnisotropy(),
@@ -384,6 +386,7 @@ class Game {
     this.vehicle.setParked(true);
     this.fx.reset();
     this.wind.update(0, 0);
+    this.tyreSound.update(0, null);
   }
 
   /** Back to the title screen. */
@@ -443,6 +446,7 @@ class Game {
     this.flames.reset();
     const ctx = this.powertrain.sim && this.powertrain.sim.ctx;
     this.wind.start(ctx);
+    this.tyreSound.start(ctx);
     if (this.traffic) {
       if (restart) this.traffic.dispose();
       this.traffic.setEnabled(this.mode === 'traffic');
@@ -732,6 +736,7 @@ class Game {
     this.fx.update(dt, this.vehicle);
     this.flames.update(dt, this.vehicle, this.powertrain.sim);
     this.wind.update(dt, this.active ? this.vehicle.forwardSpeed : 0);
+    this.tyreSound.update(dt, this.active ? this.vehicle : null, this.path, this.carS);
 
     PERF.lap('fx+wind');
     if (this.active && this.traffic) {
@@ -841,6 +846,7 @@ class Game {
     if (this.input.consume('KeyM')) {
       const muted = this.powertrain.toggleMute();
       this.wind.setMuted(muted);
+      this.tyreSound.setMuted(muted);
       this.hud.toast(muted ? 'audio muted' : 'audio on');
     }
 
