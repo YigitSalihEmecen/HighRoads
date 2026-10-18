@@ -194,7 +194,9 @@ export class ChaseCamera {
       0, CAMERA.yawRate, dt);
     const pitch = spring(this._pitch, pitchGoal, 0, CAMERA.pitchRate, dt);
     this._climb = damp(this._climb, vel.y, CAMERA.climbRate, dt);
-    const pivotY = spring(this._pivotY, vehicle.renderPos.y, this._climb, CAMERA.heightRate, dt);
+    const springY = spring(this._pivotY, vehicle.renderPos.y, this._climb, CAMERA.heightRate, dt);
+    const slack = CAMERA.heightSlack;
+    const pivotY = this._pivotY.x = clamp(springY, vehicle.renderPos.y - slack, vehicle.renderPos.y + slack);
     const dist = spring(this._dist, distGoal, 0, CAMERA.distRate, dt);
 
     const cp = Math.cos(pitch);

@@ -1004,6 +1004,8 @@ export const CAMERA = {
   yawRate: 1.8,
   pitchRate: 1.4,
   heightRate: 2.0,
+  /** Most the pivot may sit above or below the car, metres: bounds how far hills and bumps move the camera vertically. */
+  heightSlack: 0.35,
   distRate: 1.2,
   /** The climb rate fed forward to the height spring is smoothed at this rate: hills track, bumps don't. */
   climbRate: 0.8,
