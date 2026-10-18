@@ -1,17 +1,20 @@
 /**
- * settings.js — the settings sheet.
+ * settings.js — the settings sheet, and the world sheet.
  *
- * One sheet, opened from the title, the garage and the pause menu. Each
+ * Settings is opened from the title, the garage and the pause menu. Each
  * `_page` is a tab: graphics, driving (gearbox, camera, tilt) and audio (the
- * engine simulator's buses and tone, wind), terrain (the world's shape, its
- * road and what grows on it — applied by rebuilding the world).
+ * engine simulator's buses and tone, wind).
+ *
+ * World (the title's World button) is everything about the place you drive:
+ * seed, biome, sky, the road, the landscape and what grows on it. All but the
+ * sky are applied by rebuilding the world.
  */
 
 import { TiltSteering } from './input.js';
 import { CAM_MODES } from './camera.js';
 import {
   GRAPHICS_LEVELS, graphicsLevel, setGraphicsLevel, TREES, setTreeGenerator,
-  TERRAIN_SPEC, terrainSettings, terrainDefault, saveTerrain,
+  TERRAIN_SPEC, terrainSettings, terrainDefault, saveTerrain, WORLDS,
 } from './config.js';
 import { SKY_PRESETS } from './sky.js';
 
@@ -38,10 +41,10 @@ const BUSES = [
 ];
 
 export class Settings {
-  constructor(game) {
+  constructor(game, ids = { body: 'settings-body', tabs: 'set-tabs' }) {
     this.game = game;
-    this.body = document.getElementById('settings-body');
-    this.tabs = document.getElementById('set-tabs');
+    this.body = document.getElementById(ids.body);
+    this.tabs = document.getElementById(ids.tabs);
     this._pages = [];
     this._rows = [];
     /** Where new controls go: the page being built. */
@@ -179,15 +182,6 @@ export class Settings {
       setTreeGenerator(TREES.generator === 'legacy' ? 'treegen' : 'legacy');
       location.reload();
     });
-    this._sub('Atmosphere');
-
-    // Sky preset: cycles day → golden hour → dawn → overcast → full moon.
-    this.skyBtn = this._button('Sky: day', () => {
-      this.game.cycleSky();
-      this.refresh();
-    });
-
-    this._terrainPage();
 
     this._page('Driving');
     this._sub('Car');
@@ -239,56 +233,6 @@ export class Settings {
     this.refresh();
   }
 
-  /**
-   * Terrain: one control per `config.js:TERRAIN_SPEC` knob. They edit a
-   * pending copy; Apply saves it and rebuilds the world (a reload, like the
-   * graphics level), since every knob shapes what is generated.
-   */
-  _terrainPage() {
-    this._page('Terrain');
-    const live = terrainSettings();
-    const want = { ...live };
-    const apply = document.createElement('button');
-    const dirty = () => {
-      const changed = Object.keys(want).some((k) => want[k] !== live[k]);
-      apply.classList.toggle('on', changed);
-      apply.textContent = changed ? 'Apply — rebuilds the world' : 'Apply';
-    };
-    for (const sp of TERRAIN_SPEC) {
-      if (sp.group) { this._sub(sp.group); continue; }
-      if (sp.options) {
-        this._segment(sp.label, sp.hint, sp.options, want[sp.key], (v) => { want[sp.key] = v; dirty(); });
-      } else if (sp.toggle) {
-        const b = this._button('', () => { want[sp.key] = !want[sp.key]; show(); dirty(); });
-        b.title = sp.hint;
-        const show = () => {
-          b.textContent = `${sp.label}: ${want[sp.key] ? 'on' : 'off'}`;
-          b.classList.toggle('on', !want[sp.key]);
-        };
-        show();
-      } else {
-        const row = this._slider(sp.label, sp.hint, sp.min, sp.max, want[sp.key], (v) => {
-          // Snap to the default near it, so a knob can be put back exactly.
-          const d = terrainDefault(sp.key);
-          want[sp.key] = Math.abs(v - d) < (sp.max - sp.min) * 0.015 ? d : v;
-          dirty();
-        });
-        row.input.addEventListener('change', () => { row.input.value = String(want[sp.key]); row.show(want[sp.key]); });
-      }
-    }
-    this._sub('Rebuild');
-    apply.className = 'set-btn';
-    apply.type = 'button';
-    apply.addEventListener('click', () => {
-      if (!apply.classList.contains('on')) return;
-      saveTerrain(want);
-      location.reload();
-    });
-    this._host.appendChild(apply);
-    this._button('Reset terrain to defaults', () => { saveTerrain(null); location.reload(); });
-    dirty();
-  }
-
   /** A labelled segmented switch (the graphics one's look); `onPick` gets the option's value. */
   _segment(label, hint, options, value, onPick) {
     const row = document.createElement('div');
@@ -337,10 +281,6 @@ export class Settings {
       for (const g of this.gfxBtns) g.el.setAttribute('aria-pressed', String(g.lvl === lvl));
       if (this.gfxNote) this.gfxNote.textContent = GFX_NOTES[lvl] || '';
     }
-    if (this.skyBtn) {
-      const n = this.game.gfx.skyName || 'day';
-      this.skyBtn.textContent = 'Sky: ' + (SKY_PRESETS[n] ? SKY_PRESETS[n].label.toLowerCase() : n);
-    }
     if (this.autoBtn) {
       this.autoBtn.textContent = 'Gearbox: ' + (pt.autoShift ? 'auto' : 'manual');
       this.autoBtn.classList.toggle('on', !pt.autoShift);
@@ -374,3 +314,130 @@ export class Settings {
     }
   }
 }
+
+/**
+ * The world sheet: one control per `config.js:TERRAIN_SPEC` knob, plus the
+ * seed and the sky. The knobs and the seed edit a pending copy; Apply saves
+ * it and rebuilds the world (a reload, like the graphics level), since every
+ * one of them shapes what is generated. The sky changes live.
+ */
+export class WorldSheet extends Settings {
+  constructor(game) {
+    super(game, { body: 'world-body', tabs: 'world-tabs' });
+  }
+
+  _build() {
+    const live = terrainSettings();
+    const want = { ...live };
+    const apply = document.getElementById('world-apply');
+    const dirty = () => {
+      const changed = Object.keys(want).some((k) => want[k] !== live[k]) || !!this._seedChange();
+      apply.classList.toggle('on', changed);
+      apply.textContent = changed ? 'Apply — rebuilds the world' : 'Apply';
+    };
+
+    this._page('World');
+    this._sub('Seed');
+    this._seedField(dirty);
+    for (const sp of TERRAIN_SPEC) {
+      if (sp.group) {
+        if (sp.group === 'Climate') this._sub(sp.group);
+        else this._page(sp.group);
+        continue;
+      }
+      if (sp.options) {
+        this._segment(sp.label, sp.hint, sp.options, want[sp.key], (v) => { want[sp.key] = v; dirty(); note(); });
+        // What the chosen world biome is, in a line.
+        const hint = document.createElement('div');
+        hint.className = 'row-hint';
+        this._host.appendChild(hint);
+        const note = () => { if (sp.key === 'biome') hint.textContent = BIOME_NOTES[want.biome] || ''; };
+        note();
+      } else if (sp.toggle) {
+        const b = this._button('', () => { want[sp.key] = !want[sp.key]; show(); dirty(); });
+        b.title = sp.hint;
+        const show = () => {
+          b.textContent = `${sp.label}: ${want[sp.key] ? 'on' : 'off'}`;
+          b.classList.toggle('on', !want[sp.key]);
+        };
+        show();
+      } else {
+        const row = this._slider(sp.label, sp.hint, sp.min, sp.max, want[sp.key], (v) => {
+          // Snap to the default near it, so a knob can be put back exactly.
+          const d = terrainDefault(sp.key);
+          want[sp.key] = Math.abs(v - d) < (sp.max - sp.min) * 0.015 ? d : v;
+          dirty();
+        });
+        row.input.addEventListener('change', () => { row.input.value = String(want[sp.key]); row.show(want[sp.key]); });
+      }
+      if (sp.key === 'biome') {
+        this._sub('Sky');
+        // Sky preset: cycles day → golden hour → dawn → overcast → full moon. Live.
+        this.skyBtn = this._button('Sky: day', () => {
+          this.game.cycleSky();
+          this.refresh();
+        });
+      }
+    }
+
+    apply.addEventListener('click', () => {
+      if (!apply.classList.contains('on')) return;
+      saveTerrain(want);
+      const seed = this._seedChange();
+      if (!seed) { location.reload(); return; }
+      // A different world is a different page: the seed goes in the URL.
+      const url = new URL(location.href);
+      url.searchParams.set('seed', seed);
+      location.href = url.toString();
+    });
+    document.getElementById('world-reset').addEventListener('click', () => { saveTerrain(null); location.reload(); });
+    dirty();
+    this.refresh();
+  }
+
+  /** The seed box and its dice. */
+  _seedField(dirty) {
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    const input = document.createElement('input');
+    input.className = 'input';
+    input.type = 'text';
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.maxLength = 24;
+    input.setAttribute('aria-label', 'World seed');
+    input.value = this.game.seed;
+    input.addEventListener('input', dirty);
+    const dice = document.createElement('button');
+    dice.className = 'icon-btn';
+    dice.type = 'button';
+    dice.setAttribute('aria-label', 'Random world');
+    dice.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/></svg>';
+    dice.addEventListener('click', () => { input.value = Math.random().toString(36).slice(2, 8); dirty(); dice.blur(); });
+    row.append(input, dice);
+    this._host.appendChild(row);
+    this.seedInput = input;
+  }
+
+  /** The seed box's value, if it names a different world. */
+  _seedChange() {
+    const s = String(this.seedInput?.value || '').trim();
+    return s && s !== this.game.seed ? s : null;
+  }
+
+  refresh() {
+    if (this.skyBtn) {
+      const n = this.game.gfx.skyName || 'day';
+      this.skyBtn.textContent = 'Sky: ' + (SKY_PRESETS[n] ? SKY_PRESETS[n].label.toLowerCase() : n);
+    }
+  }
+}
+
+/** One line per world biome; keep them true to config.js:WORLDS. */
+const BIOME_NOTES = {
+  temperate: 'Green country: meadows, broadleaf and conifer woods, lakes and mountains.',
+  snow: 'Deep winter: snow on everything that lies flat, bare trees, snowy conifers, rock on the steeps.',
+  desert: 'Flat sand sea and gravel plain with dunes, mesas and the odd acacia. Sand drifts on the road.',
+  fall: 'Autumn: gold, orange and red woods, leaves on the ground and the road.',
+};
+for (const k in WORLDS) if (!BIOME_NOTES[k]) BIOME_NOTES[k] = WORLDS[k].label;

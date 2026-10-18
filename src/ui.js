@@ -4,7 +4,7 @@
  * index.html owns the markup and the stylesheet; this module moves between
  * screens (with a wipe where the 3D scene changes underneath), drives the
  * loading bar, the title menu, mode select, the garage panel, the settings
- * sheet, pause and game over. Game logic stays in main.js; this module calls
+ * and world sheets, pause and game over. Game logic stays in main.js; this module calls
  * the Game's methods and reads its state, nothing more.
  */
 
@@ -17,6 +17,7 @@ import {
 import { generateBuild, mutateBuild, finishBuild, newSeed } from './models.js';
 import { PRESETS } from '../car_gen/src/index.js';
 import { SKY_PRESETS } from './sky.js';
+import { WORLD_BIOME } from './config.js';
 import { PREMADE } from './premade.js';
 
 const $ = (id) => document.getElementById(id);
@@ -211,7 +212,7 @@ export class UI {
 
     document.addEventListener('keydown', (e) => {
       if (typing() || this._wiping) return;
-      if (this._modalOpen() || $('settings-screen').classList.contains('on')) return;
+      if (this._modalOpen() || this._sheetOpen()) return;
       if (this.screen === 'title') {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
@@ -238,6 +239,7 @@ export class UI {
   _menuAction(action) {
     if (action === 'drive') this.show('mode');
     else if (action === 'garage') this.openGarage();
+    else if (action === 'world') this.openWorld();
     else if (action === 'settings') this.openSettings();
     else if (action === 'howto') $('modal-howto').hidden = false;
     else if (action === 'credits') $('modal-credits').hidden = false;
@@ -256,7 +258,7 @@ export class UI {
       eng ? eng.label : '',
       spec ? spec.drive.toUpperCase() : '',
     ].filter(Boolean).join(' · ');
-    $('tc-seed').textContent = g.seed;
+    $('tc-seed').textContent = this._worldName();
     const sky = SKY_PRESETS[g.gfx.skyName] || SKY_PRESETS.day;
     $('tc-sky').textContent = sky.label;
   }
@@ -285,12 +287,11 @@ export class UI {
       c.addEventListener('dblclick', () => $('start').click());
     }
     $('mode-back').addEventListener('click', () => this.show('title'));
+  }
 
-    const input = $('seed-input');
-    input.value = this.game.seed;
-    input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') $('start').click(); });
-    input.addEventListener('keyup', (e) => e.stopPropagation());
-    $('seed-random').addEventListener('click', () => { input.value = Math.random().toString(36).slice(2, 8); });
+  /** The world in a few words: its seed and, off the default, its biome. */
+  _worldName() {
+    return WORLD_BIOME.label === 'Temperate' ? this.game.seed : `${this.game.seed} · ${WORLD_BIOME.label}`;
   }
 
   _pickMode(id) {
@@ -301,13 +302,7 @@ export class UI {
   _refreshMode() {
     this._pickMode(this.game.mode);
     $('mode-best').textContent = Math.round(this.game.run.best).toLocaleString();
-    $('seed-input').value = this.game.seed;
-  }
-
-  /** The seed box's value, if it names a different world. A new world is a reload. */
-  wantedSeed() {
-    const s = String($('seed-input').value || '').trim();
-    return s && s !== this.game.seed ? s : null;
+    $('mode-world').textContent = this._worldName();
   }
 
   /* ----------------------------------------------------------- pause -- */
@@ -368,12 +363,27 @@ export class UI {
     $('settings-close').addEventListener('click', () => this.closeSettings());
     $('g-settings').addEventListener('click', () => this.openSettings());
     $('settings-screen').addEventListener('click', (e) => { if (e.target.id === 'settings-screen') this.closeSettings(); });
+    $('world-close').addEventListener('click', () => this.closeWorld());
+    $('world-screen').addEventListener('click', (e) => { if (e.target.id === 'world-screen') this.closeWorld(); });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && $('settings-screen').classList.contains('on')) {
-        e.stopPropagation();
-        this.closeSettings();
-      }
+      if (e.key !== 'Escape') return;
+      if ($('settings-screen').classList.contains('on')) { e.stopPropagation(); this.closeSettings(); }
+      else if ($('world-screen').classList.contains('on')) { e.stopPropagation(); this.closeWorld(); }
     }, true);
+  }
+
+  _sheetOpen() {
+    return $('settings-screen').classList.contains('on') || $('world-screen').classList.contains('on');
+  }
+
+  openWorld() {
+    this.game.worldSheet.refresh();
+    $('world-screen').classList.add('on');
+  }
+
+  closeWorld() {
+    $('world-screen').classList.remove('on');
+    this.refreshTitle();
   }
 
   openSettings() {

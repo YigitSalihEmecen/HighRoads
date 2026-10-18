@@ -332,7 +332,7 @@
   .mode-card.sel::before { opacity: 1; }
   .mode-card .mc-check { position: absolute; left: var(--s5); top: var(--s5); width: 22px; height: 22px; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--line-3); transition: box-shadow 0.3s, background 0.3s; }
   .mode-card.sel .mc-check { background: var(--accent); box-shadow: inset 0 0 0 5px #1a0a02; }
-  .mode-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; width: min(980px, 100%); justify-self: center; }
+  .mode-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; width: min(980px, 100%); justify-self: center; }
   .field { display: grid; gap: var(--s1); }
   .field label { font-family: var(--display); font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: var(--faint); font-size: var(--fs-xs); }
   .field-row { display: flex; gap: var(--s2); align-items: stretch; }
@@ -559,7 +559,7 @@
 
   /* ------------------------------------------------------------ settings -- */
 
-  #settings-screen { z-index: 40; background: rgba(4,5,6,0.6); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); display: grid; place-items: center; }
+  #settings-screen, #world-screen { z-index: 40; background: rgba(4,5,6,0.6); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); display: grid; place-items: center; }
   .sheet {
     width: min(760px, calc(100vw - var(--sal) - var(--sar) - 2 * var(--s4)));
     max-height: calc(100dvh - var(--sat) - var(--sab) - 2 * var(--s4));
@@ -579,7 +579,10 @@
   .set-tab:hover { color: var(--ink); }
   .set-tab.on { color: var(--ink); }
   .set-tab.on::after { transform: scaleX(1); }
-  #settings-body { overflow-y: auto; padding: var(--s4); scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+  #settings-body, #world-body { overflow-y: auto; padding: var(--s4); scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+  #world-screen .sheet { grid-template-rows: auto auto 1fr auto; }
+  .sheet-foot { display: flex; gap: var(--s3); align-items: center; padding: var(--s3) var(--s4) var(--s4); border-top: 1px solid var(--line); }
+  .sheet-foot .set-btn { flex: 1; }
   .set-page { display: none; gap: var(--s3); }
   .set-page.on { display: grid; animation: fadeUp 0.4s var(--ease); }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
@@ -800,14 +803,17 @@
       <button class="menu-item rise" style="--i:5" data-action="garage" type="button">
         <span class="mi-n">02</span><span class="mi-t">Garage</span><span class="mi-d">Generate, shape, paint and tune your car.</span>
       </button>
-      <button class="menu-item rise" style="--i:6" data-action="settings" type="button">
-        <span class="mi-n">03</span><span class="mi-t">Settings</span><span class="mi-d">Graphics, driving and the engine's voice.</span>
+      <button class="menu-item rise" style="--i:6" data-action="world" type="button">
+        <span class="mi-n">03</span><span class="mi-t">World</span><span class="mi-d">Biome, seed, sky, road and landscape.</span>
       </button>
-      <button class="menu-item rise" style="--i:7" data-action="howto" type="button">
-        <span class="mi-n">04</span><span class="mi-t">How to play</span><span class="mi-d">Keys, pads and touch.</span>
+      <button class="menu-item rise" style="--i:7" data-action="settings" type="button">
+        <span class="mi-n">04</span><span class="mi-t">Settings</span><span class="mi-d">Graphics, driving and the engine's voice.</span>
       </button>
-      <button class="menu-item rise" style="--i:8" data-action="credits" type="button">
-        <span class="mi-n">05</span><span class="mi-t">Credits</span><span class="mi-d">Who made this.</span>
+      <button class="menu-item rise" style="--i:8" data-action="howto" type="button">
+        <span class="mi-n">05</span><span class="mi-t">How to play</span><span class="mi-d">Keys, pads and touch.</span>
+      </button>
+      <button class="menu-item rise" style="--i:9" data-action="credits" type="button">
+        <span class="mi-n">06</span><span class="mi-t">Credits</span><span class="mi-d">Who made this.</span>
       </button>
     </nav>
 
@@ -857,15 +863,7 @@
     </div>
 
     <div class="mode-foot rise-up" style="--i:3">
-      <div class="field">
-        <label for="seed-input">World seed</label>
-        <div class="field-row">
-          <input id="seed-input" class="input" type="text" spellcheck="false" autocomplete="off" maxlength="24" />
-          <button id="seed-random" class="icon-btn" type="button" aria-label="Random world">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/></svg>
-          </button>
-        </div>
-      </div>
+      <span class="chip">World <b id="mode-world">—</b></span>
       <button id="start" class="btn primary" type="button" disabled>Start <span class="key">Enter</span></button>
     </div>
   </div>
@@ -1021,6 +1019,24 @@
     </div>
     <nav class="set-tabs" id="set-tabs" aria-label="Settings sections"></nav>
     <div id="settings-body"></div>
+  </div>
+</section>
+
+<!-- ============================================================= WORLD -->
+<section id="world-screen" class="screen" aria-label="World">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="world-title">
+    <div class="sheet-head">
+      <div><div class="eyebrow">Where you drive</div><h2 id="world-title">World</h2></div>
+      <button class="icon-btn" id="world-close" type="button" aria-label="Close world">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <nav class="set-tabs" id="world-tabs" aria-label="World sections"></nav>
+    <div id="world-body"></div>
+    <div class="sheet-foot">
+      <button class="set-btn" id="world-apply" type="button">Apply</button>
+      <button class="btn sm ghost" id="world-reset" type="button">Reset</button>
+    </div>
   </div>
 </section>
 

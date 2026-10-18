@@ -37,7 +37,7 @@ import { Wind } from './wind.js';
 import { TyreSound } from './tyres.js';
 import { TyreFX } from './fx.js';
 import { ExhaustFlames } from './flames.js';
-import { Settings } from './settings.js';
+import { Settings, WorldSheet } from './settings.js';
 import { ScoreRun } from './score.js';
 import { GarageStudio } from './garage.js';
 import { UI, frame } from './ui.js';
@@ -168,6 +168,7 @@ export async function boot() {
   await frame();
   game.studio = new GarageStudio(gfx);
   game.settings = new Settings(game);
+  game.worldSheet = new WorldSheet(game);
   game.ui = new UI(game);
   game.ui.build();
 
@@ -184,14 +185,6 @@ export async function boot() {
   startBtn.disabled = false;
   const begin = async () => {
     if (game.active) return;
-    // A different world is a different page: the seed goes in the URL.
-    const seed = game.ui.wantedSeed();
-    if (seed) {
-      const url = new URL(location.href);
-      url.searchParams.set('seed', seed);
-      location.href = url.toString();
-      return;
-    }
     // First AudioContext touch: must be inside this click.
     await game.powertrain.start(game.car());
     /**
