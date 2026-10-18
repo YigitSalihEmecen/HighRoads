@@ -1022,7 +1022,7 @@ export const CAMERA = {
   speedRef: 68,
   speedLag: 0.5,
   /** How far the rig backs off and lifts at full speed, metres. Kept small. */
-  distGain: 0.1,
+  distGain: 0.6,
   heightGain: 0.03,
   /** Degrees of extra field of view at full speed — most of the speed cue. */
   fovSpeedGain: 3,
