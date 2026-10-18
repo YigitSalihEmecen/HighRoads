@@ -9,24 +9,24 @@
  *   road   – pink noise roar + tread hum, chopped at the wheels' rotation rate
  *   gravel – stone crackle (sparse grains, rate follows speed) over a crunch bed
  *   grass  – soft low swish with a slow flutter
- *   squeal – detuned tone + noise on tarmac when a tyre lets go
+ *   squeal – resonant noise bands on tarmac when a tyre lets go
  */
 
 import { ROAD } from './config.js';
 import { clamp, smoothstep } from './util.js';
 
 const T = {
-  volume: 0.5,
+  volume: 0.22,
   /** Rolling circumference of a tyre, m: sets the rotation rate of the hum. */
   circumference: 2.0,
   /** Seconds of smoothing on speed and surface weights, so a bump is not a click. */
   smoothing: 0.08,
   rampTime: 0.04,
   /** Layer levels at full tilt. */
-  roadLevel: 0.55,
+  roadLevel: 0.6,
   gravelLevel: 0.7,
   grassLevel: 0.45,
-  squealLevel: 0.28,
+  squealLevel: 0.2,
   /** m/s: a wheel is silent below `start` and at full roar by `full`. */
   start: 0.3,
   full: 45,
@@ -128,9 +128,9 @@ export class TyreSound {
     };
 
     // ---- road: roar, low rumble, tread hum --------------------------------
-    this.roadRoar = filter('bandpass', 600, 0.6);
+    this.roadRoar = filter('bandpass', 300, 0.5);
     this.roadRumble = filter('lowpass', 160, 0.9);
-    this.roadHum = filter('bandpass', 1100, 5);
+    this.roadHum = filter('bandpass', 450, 3);
     this.roadGain = gain();
     // The wheels' rotation chops the roar: a tyre is not a smooth source.
     this.roadChop = gain(1);
@@ -142,9 +142,10 @@ export class TyreSound {
     const roadSrc = src(pink);
     roadSrc.connect(this.roadRoar).connect(this.roadChop);
     roadSrc.connect(this.roadRumble).connect(this.roadChop);
-    const humGain = gain(0.5);
+    const humGain = gain(0.3);
     roadSrc.connect(this.roadHum).connect(humGain).connect(this.roadChop);
-    this.roadChop.connect(this.roadGain).connect(this.master);
+    // Rubber is dull: nothing above the mids gets through.
+    this.roadChop.connect(filter('lowpass', 1100, 0.5)).connect(this.roadGain).connect(this.master);
 
     // ---- gravel: stone crackle over a crunch bed ----------------------------
     this.grainSrc = src(grains);
@@ -166,27 +167,15 @@ export class TyreSound {
     src(pink).connect(this.grassFilter).connect(this.grassHigh)
       .connect(this.grassFlutter).connect(this.grassGain).connect(this.master);
 
-    // ---- squeal: two detuned voices with a wobble, plus a hiss ------------
+    // ---- squeal: stick-slip friction is resonant noise, not a pure tone -----
     this.squealGain = gain();
-    this.squealBand = filter('bandpass', 900, 3);
-    this.squealOscs = [0, 1].map((i) => {
-      const o = ctx.createOscillator();
-      o.type = i ? 'triangle' : 'sawtooth';
-      o.frequency.value = 900 * (i ? 1.51 : 1);
-      o.connect(this.squealBand);
-      o.start();
-      return o;
+    this.squealBands = [[1150, 9, 1], [2300, 7, 0.45]].map(([f, q, level]) => {
+      const band = filter('bandpass', f, q);
+      const g = gain(level);
+      src(pink).connect(band).connect(g).connect(this.squealGain);
+      return band;
     });
-    this.wobble = ctx.createOscillator();
-    this.wobble.frequency.value = 9;
-    const wobbleDepth = gain(18);
-    this.wobble.connect(wobbleDepth);
-    this.squealOscs.forEach((o) => wobbleDepth.connect(o.frequency));
-    this.wobble.start();
-    const squealHiss = filter('bandpass', 2200, 5);
-    const hissGain = gain(0.6);
-    src(pink).connect(squealHiss).connect(hissGain).connect(this.squealBand);
-    this.squealBand.connect(this.squealGain).connect(this.master);
+    this.squealGain.connect(this.master);
   }
 
   /**
@@ -257,9 +246,9 @@ export class TyreSound {
     const loose = this._gravel + this._grass;
 
     set(this.roadGain.gain, level * this._road * T.roadLevel * (1 + 0.5 * slide));
-    set(this.roadRoar.frequency, 380 + 900 * t);
-    set(this.roadRumble.frequency, 110 + 120 * t);
-    set(this.roadHum.frequency, 700 + 1500 * t);
+    set(this.roadRoar.frequency, 220 + 420 * t);
+    set(this.roadRumble.frequency, 90 + 110 * t);
+    set(this.roadHum.frequency, 320 + 480 * t);
     set(this.chopLfo.frequency, Math.max(0.5, v / T.circumference));
 
     set(this.gravelGain.gain,
@@ -271,13 +260,13 @@ export class TyreSound {
     set(this.grassFilter.frequency, 320 + 700 * t);
     set(this.grassFlutter.gain, 0.7 + 0.6 * this._flutter);
 
-    // A squeal needs speed, tarmac and a tyre past its limit.
-    const squeal = smoothstep(0.2, 0.9, this._slip) * smoothstep(3, 12, v) * this._road * (1 - loose);
-    set(this.squealGain.gain, squeal * contact * T.squealLevel);
-    const pitch = 780 + 380 * smoothstep(5, 35, v) + 120 * this._slip;
-    set(this.squealOscs[0].frequency, pitch);
-    set(this.squealOscs[1].frequency, pitch * 1.51);
-    set(this.squealBand.frequency, pitch * 1.2);
+    // A squeal needs speed, tarmac and a tyre well past its limit.
+    const squeal = smoothstep(0.35, 0.9, this._slip) * smoothstep(4, 14, v) * this._road * (1 - loose);
+    set(this.squealGain.gain, squeal * contact * T.squealLevel * (0.75 + 0.5 * this._flutter));
+    // The pitch drifts as the rubber grips and lets go.
+    const pitch = 950 + 350 * smoothstep(5, 35, v) + 260 * this._flutter;
+    set(this.squealBands[0].frequency, pitch);
+    set(this.squealBands[1].frequency, pitch * 2.03);
   }
 
   setVolume(v) {
@@ -296,7 +285,7 @@ export class TyreSound {
       try { s.stop(); } catch (err) { /* already stopped */ }
       s.disconnect();
     }
-    for (const o of [this.chopLfo, this.wobble, ...(this.squealOscs || [])]) {
+    for (const o of [this.chopLfo]) {
       if (!o) continue;
       try { o.stop(); } catch (err) { /* already stopped */ }
       o.disconnect();
