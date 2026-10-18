@@ -9,7 +9,7 @@
 
 import * as THREE from 'three';
 import { GROUND, TERRAIN_COLORS } from '../config.js';
-import { canopyShadow, CANOPY_GLSL } from '../forest.js';
+import { canopyShadow, CANOPY_GLSL, litterMap, LITTER_GLSL } from '../forest.js';
 import { makeCanvas, paint, tileFbm, tileRidged, tileNoise, rng } from './textures.js';
 
 /**
@@ -159,21 +159,13 @@ function swardMaps(size) {
     }
   }
 
+  if (S.kind === 'leaves') return leafLitter(H, L, D, N, px, R);
   const Hs = smooth3(H, N);
 
   // Occlusion: how far below its neighbourhood a texel sits.
-  const ao = new Float32Array(N * N);
-  const r = Math.max(2, Math.round(0.012 * px));
+  const ao = occlusion(Hs, N, Math.max(2, Math.round(0.012 * px)));
   let mean = 0;
-  for (let j = 0; j < N; j++) {
-    for (let i = 0; i < N; i++) {
-      let m = 0;
-      for (let k = -r; k <= r; k += r) for (let l = -r; l <= r; l += r) m += Hs[((j + k) & M) * N + ((i + l) & M)];
-      const c = Hs[j * N + i];
-      ao[j * N + i] = Math.min(1, Math.max(0.25, 0.75 + (c - m / 9) * 2.2 + c * 0.35));
-      mean += L[j * N + i] * ao[j * N + i];
-    }
-  }
+  for (let k = 0; k < N * N; k++) mean += L[k] * ao[k];
   mean /= N * N;
 
   const albedo = new Uint8Array(N * N * 4);
@@ -203,6 +195,244 @@ function swardMaps(size) {
   h.unpackAlignment = 1;
   return { albedo: dataTexture(albedo, N), normal: dataTexture(normal, N), height: h };
 }
+
+/** Occlusion: how far below its neighbourhood (radius r texels) each texel sits. */
+function occlusion(Hs, N, r) {
+  const M = N - 1;
+  const ao = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      let m = 0;
+      for (let k = -r; k <= r; k += r) for (let l = -r; l <= r; l += r) m += Hs[((j + k) & M) * N + ((i + l) & M)];
+      const c = Hs[j * N + i];
+      ao[j * N + i] = Math.min(1, Math.max(0.25, 0.75 + (c - m / 9) * 2.2 + c * 0.35));
+    }
+  }
+  return ao;
+}
+
+/**
+ * A relief packed for the TINTED look (snow, sand, leaf litter — `FR_TINT`
+ * in the shader): albedo RGB is a multiplier on the ground colour (stored
+ * /1.5) where A is 0, or the texel's OWN colour where A is 1 — a leaf, which
+ * is orange whatever the grass under it is. Normal and height as the turf's.
+ */
+function packTint(H, N, col, cover) {
+  const S = GROUND.sward, M = N - 1;
+  const albedo = new Uint8Array(N * N * 4);
+  const normal = new Uint8Array(N * N * 4);
+  const height = new Uint8Array(N * N);
+  const g = (S.depth * N / S.tile) / 2;
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const k = j * N + i, o = k * 4;
+      const own = cover[k] > 0.5 ? 1 : 1 / 1.5;
+      for (let c = 0; c < 3; c++) albedo[o + c] = Math.min(255, col[k * 3 + c] * own * 255);
+      albedo[o + 3] = cover[k] * 255;
+      const nx = -(H[j * N + ((i + 1) & M)] - H[j * N + ((i - 1) & M)]) * g;
+      const ny = -(H[((j + 1) & M) * N + i] - H[((j - 1) & M) * N + i]) * g;
+      const nl = Math.hypot(nx, ny, 1);
+      normal[o] = (nx / nl * 0.5 + 0.5) * 255;
+      normal[o + 1] = (ny / nl * 0.5 + 0.5) * 255;
+      normal[o + 2] = (1 / nl * 0.5 + 0.5) * 255;
+      normal[o + 3] = 255;
+      height[k] = Math.min(1, Math.max(0, H[k])) * 255;
+    }
+  }
+  const h = dataTexture(height, N, THREE.RedFormat);
+  h.unpackAlignment = 1;
+  return { albedo: dataTexture(albedo, N), normal: dataTexture(normal, N), height: h };
+}
+
+/**
+ * Fallen leaves over the turf (fall worlds): the grass tile, then leaves laid
+ * on it in drifts — each a pointed lens with a midrib, its edges curled up,
+ * the later ones over the earlier, the odd tall blade still standing through.
+ * Every leaf carries a random RANK, and the shader shows a leaf only where its
+ * rank is under the litter there (forest.js:litterMap — where trees stand), so
+ * a wood floor is buried and open grass keeps the odd stray leaf, from ONE tile:
+ *   albedo  RGB the turf, a multiplier (/1.5)
+ *   leaf    RGB the leaf's own colour (the mean leaf where there is none), A its rank
+ *   normal  RG the turf's, BA the surface with its leaves
+ *   height  R the turf, G the leaf's height (0 where none), B its rank
+ * Colours: orange, red, gold, brown, faded ochre.
+ */
+const LEAF_COLOURS = [[0.78, 0.30, 0.05], [0.58, 0.09, 0.04], [0.85, 0.56, 0.08], [0.36, 0.19, 0.07], [0.62, 0.40, 0.12], [0.72, 0.20, 0.05]];
+function leafLitter(H, L, D, N, px, R) {
+  const S = GROUND.sward, M = N - 1;
+  const Hs = smooth3(H, N);
+  const ao = occlusion(Hs, N, Math.max(2, Math.round(0.012 * px)));
+  let mean = 0;
+  for (let k = 0; k < N * N; k++) mean += L[k] * ao[k];
+  mean /= N * N;
+  const albedo = new Uint8Array(N * N * 4);
+  for (let k = 0; k < N * N; k++) {
+    const lum = (L[k] / mean) * (1 + (ao[k] - 1) * S.occlusion);
+    for (let c = 0; c < 3; c++) albedo[k * 4 + c] = Math.min(255, lum * (1 + (S.dry[c] - 1) * D[k]) / 1.5 * 255);
+  }
+  const avg = [0, 1, 2].map((c) => LEAF_COLOURS.reduce((a, l) => a + l[c], 0) / LEAF_COLOURS.length);
+  const leaf = new Uint8Array(N * N * 4);
+  for (let k = 0; k < N * N; k++) {
+    for (let c = 0; c < 3; c++) leaf[k * 4 + c] = avg[c] * 255;
+    leaf[k * 4 + 3] = 255;
+  }
+  const lh = new Float32Array(N * N);
+  const leaves = Math.round(S.leaves * S.tile * S.tile);
+  for (let n = 0; n < leaves; n++) {
+    const cx = R() * N, cy = R() * N;
+    const len = (0.03 + R() * 0.035) * px, wid = len * (0.42 + R() * 0.25);
+    const rot = R() * Math.PI * 2, c = Math.cos(rot), s = Math.sin(rot);
+    const base = LEAF_COLOURS[Math.floor(R() * LEAF_COLOURS.length)];
+    const shade = 0.75 + R() * 0.4;
+    // Later leaves lie higher; a low rank shows first as the litter thickens,
+    // and the drift field ranks whole patches low together.
+    const z = 0.5 + n / leaves * 0.35 + R() * 0.08;
+    const rank = Math.min(0.97, 0.75 * R() + 0.25 * (1 - tileFbm(cx / N, cy / N, 3, 3, 0.5, 601)) * 1.3);
+    const rr = Math.ceil(len);
+    for (let y = -rr; y <= rr; y++) {
+      for (let x = -rr; x <= rr; x++) {
+        const lx = (x * c + y * s) / len, ly = (y * c - x * s) / wid;
+        if (Math.abs(lx) >= 1) continue;
+        // A lens, blunter at the stalk end than at the tip.
+        const half = (1 - lx * lx) * (lx < 0 ? 1.1 : 0.9);
+        if (Math.abs(ly) >= half) continue;
+        const k = ((Math.round(cy) + y) & M) * N + ((Math.round(cx) + x) & M);
+        const e = Math.abs(ly) / half;
+        const h = z + 0.12 * e * e;
+        // A blade standing taller than the leaf pokes through it.
+        if (Hs[k] > h + 0.15) continue;
+        // A leaf already lying here with a lower rank stays on top as the litter thins.
+        if (lh[k] > 0 && leaf[k * 4 + 3] / 255 < rank) continue;
+        lh[k] = h;
+        const rib = Math.abs(ly) < 0.07 ? 0.78 : 1;
+        const edge = 1 - 0.35 * smoothstepJs(0.7, 1, e);
+        for (let q = 0; q < 3; q++) leaf[k * 4 + q] = Math.min(255, base[q] * shade * rib * edge * 255);
+        leaf[k * 4 + 3] = rank * 255;
+      }
+    }
+  }
+  const Ls = smooth3(lh, N);
+  const both = new Float32Array(N * N);
+  for (let k = 0; k < N * N; k++) both[k] = lh[k] > 0 ? Math.max(Hs[k], Ls[k]) : Hs[k];
+  const normal = new Uint8Array(N * N * 4);
+  const height = new Uint8Array(N * N * 4);
+  const g = (S.depth * px) / 2;
+  const nrm = (F, i, j, o) => {
+    const nx = -(F[j * N + ((i + 1) & M)] - F[j * N + ((i - 1) & M)]) * g;
+    const ny = -(F[((j + 1) & M) * N + i] - F[((j - 1) & M) * N + i]) * g;
+    const nl = Math.hypot(nx, ny, 1);
+    normal[o] = (nx / nl * 0.5 + 0.5) * 255;
+    normal[o + 1] = (ny / nl * 0.5 + 0.5) * 255;
+  };
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const k = j * N + i, o = k * 4;
+      nrm(Hs, i, j, o);
+      nrm(both, i, j, o + 2);
+      height[o] = Math.min(1, Hs[k]) * 255;
+      height[o + 1] = lh[k] > 0 ? Math.min(1, Ls[k]) * 255 : 0;
+      height[o + 2] = lh[k] > 0 ? leaf[o + 3] : 255;
+      height[o + 3] = 255;
+    }
+  }
+  return { albedo: dataTexture(albedo, N), normal: dataTexture(normal, N), height: dataTexture(height, N), leaf: dataTexture(leaf, N) };
+}
+
+/**
+ * Snow (snowy worlds): soft swells, a pillowy surface of drifted lumps and a
+ * fine crust, smoothed twice — powder has no sharp edge. Its colour is white
+ * gone blue where it is hollow, the way snow takes the sky into its shade.
+ */
+function snowMaps(size) {
+  if (!makeCanvas(1)) return null;
+  const S = GROUND.sward;
+  const N = size, M = N - 1, px = N / S.tile;
+  const H = new Float32Array(N * N);
+  const R = rng(0x5e0f);
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const u = i / N, v = j / N;
+      H[j * N + i] = 0.12 + 0.3 * tileFbm(u, v, 2, 3, 0.5, 401) + 0.03 * tileNoise(u * 160, v * 160, 160, 409);
+    }
+  }
+  const lumps = Math.round(6 * S.tile * S.tile);
+  for (let n = 0; n < lumps; n++) {
+    const cx = R() * N, cy = R() * N, r = (0.08 + R() * 0.26) * px, h = 0.08 + R() * 0.22;
+    const rr = Math.ceil(r);
+    for (let y = -rr; y <= rr; y++) {
+      for (let x = -rr; x <= rr; x++) {
+        const q = 1 - (x * x + y * y) / (r * r);
+        if (q <= 0) continue;
+        H[((Math.round(cy) + y) & M) * N + ((Math.round(cx) + x) & M)] += h * q * q;
+      }
+    }
+  }
+  let Hs = smooth3(smooth3(H, N), N);
+  let top = 0;
+  for (let k = 0; k < N * N; k++) top = Math.max(top, Hs[k]);
+  for (let k = 0; k < N * N; k++) Hs[k] /= top;
+  const ao = occlusion(Hs, N, Math.max(2, Math.round(0.05 * px)));
+  const col = new Float32Array(N * N * 3);
+  for (let k = 0; k < N * N; k++) {
+    const a = Math.pow(ao[k], 0.8);
+    const g = 0.97 + 0.03 * Hs[k];
+    col[k * 3] = g * (0.8 + 0.2 * a);
+    col[k * 3 + 1] = g * (0.87 + 0.13 * a);
+    col[k * 3 + 2] = g;
+  }
+  return packTint(Hs, N, col, new Float32Array(N * N));
+}
+
+/**
+ * Wind-rippled sand (desert worlds). Ripples are what make sand read as sand:
+ * crests across the wind ~30 cm apart, each a long gentle stoss and a short
+ * steep lee; the crest lines bend, fork and fade where the warp folds them,
+ * and a faint second set crosses the first in places. Tileable because the
+ * ripple counts across the tile are whole numbers and the warp tiles.
+ * Fine pale grains ride the crests; darker, heavier ones gather in troughs.
+ */
+function sandMaps(size) {
+  if (!makeCanvas(1)) return null;
+  const S = GROUND.sward;
+  const N = size;
+  const H = new Float32Array(N * N);
+  const col = new Float32Array(N * N * 3);
+  const R = rng(0x5a2d);
+  // Crests per tile along X and Z: 19 and 6 over 6 m is a 0.30 m wavelength.
+  const K = [19, 6], K2 = [-4, 17];
+  const ripple = (ph, a) => {
+    const p = ph - Math.floor(ph);
+    const t = p < a ? p / a : (1 - p) / (1 - a);
+    return t * t * (3 - 2 * t);
+  };
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const k = j * N + i, u = i / N, v = j / N;
+      const warp = (tileFbm(u, v, 2, 3, 0.5, 503) - 0.5) * 3.2 + (tileFbm(u, v, 7, 2, 0.5, 509) - 0.5) * 0.9;
+      const r1 = ripple(K[0] * u + K[1] * v + warp, 0.7);
+      const amp = 0.35 + 0.65 * smoothstepJs(0.32, 0.62, tileFbm(u, v, 3, 2, 0.5, 521));
+      const cross = smoothstepJs(0.55, 0.7, tileFbm(u, v, 2, 2, 0.5, 541)) * 0.3;
+      const r2 = ripple(K2[0] * u + K2[1] * v + warp * 0.6, 0.6);
+      const grain = tileNoise(u * 512, v * 512, 512, 557) - 0.5;
+      H[k] = 0.08 + 0.22 * tileFbm(u, v, 1, 3, 0.5, 531) + 0.55 * amp * r1 + cross * r2 * 0.4 + grain * 0.03;
+      const crest = r1 * amp;
+      const speck = R();
+      const lum = (0.93 + 0.1 * crest + grain * 0.12) * (speck < 0.04 ? 0.72 : speck > 0.985 ? 1.15 : 1);
+      col[k * 3] = lum * (0.985 + 0.015 * crest);
+      col[k * 3 + 1] = lum * (0.95 + 0.05 * crest);
+      col[k * 3 + 2] = lum * (0.88 + 0.12 * crest);
+    }
+  }
+  const Hs = smooth3(H, N);
+  const ao = occlusion(Hs, N, Math.max(2, Math.round(0.03 * N / S.tile)));
+  for (let k = 0; k < N * N; k++) {
+    const a = 1 + (ao[k] - 1) * 0.5;
+    for (let c = 0; c < 3; c++) col[k * 3 + c] *= a;
+  }
+  return packTint(Hs, N, col, new Float32Array(N * N));
+}
+
+const smoothstepJs = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 /** One pass of 3x3 smoothing on a wrapped field: a march across single-texel spikes shimmers. */
 function smooth3(H, N) {
@@ -354,7 +584,11 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
   if (map) map.anisotropy = Math.min(anisotropy, 8);
   const macro = GROUND.enabled ? macroTexture(128) : null;
   const S = GROUND.sward;
-  const sward = GROUND.enabled && S.enabled ? swardMaps(S.size) : null;
+  const grow = { snow: snowMaps, sand: sandMaps }[S.kind] || swardMaps;
+  const sward = GROUND.enabled && S.enabled ? grow(S.size) : null;
+  // Snow and sand carry colour of their own; with the leaves they lie on any ground.
+  const tint = S.kind === 'snow' || S.kind === 'sand';
+  const leaves = !!(sward && sward.leaf);
   const V = GROUND.verge;
   const verge = sward && V.enabled ? vergeMaps(V.size) : null;
   // Anisotropy only where it shows: the final colour fetch. Every tap of the
@@ -385,12 +619,17 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
     uSward: { value: sward && sward.albedo },
     uSwardN: { value: sward && sward.normal },
     uSwardH: { value: sward && sward.height },
+    uSwardL: { value: sward && sward.leaf },
     uSwardTile: { value: S.tile },
     /** relief depth (m), fade start, fade end (m), self-shadow strength */
     uPom: { value: new THREE.Vector4(S.depth, S.fade[0], S.fade[1], S.shadow) },
     uPomSteps: { value: new THREE.Vector2(S.steps[0], S.steps[1]) },
     uSwardLook: { value: new THREE.Vector3(S.contrast, S.occlusion, 0) },
     uSwardDry: { value: new THREE.Color(...S.dry) },
+    /** How far hex tiling turns each copy of the relief (1 a full turn; ripples keep to the wind). */
+    uHexSpin: { value: S.kind === 'sand' ? 0.06 : 1 },
+    /** How strongly the macro map's lush/parched cast colours the ground (snow keeps white). */
+    uMacroTint: { value: { snow: 0.1, sand: 0.4 }[S.kind] ?? 1 },
     uVergeA: { value: verge && verge.albedo },
     uVergeN: { value: verge && verge.normal },
     uVergeH: { value: verge && verge.height },
@@ -402,13 +641,17 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
     uStoneA: { value: new THREE.Color(V.stone[0]) },
     uStoneB: { value: new THREE.Color(V.stone[1]) },
   };
-  if (sward) material.defines = verge ? { FR_SWARD: '', FR_VERGE: '' } : { FR_SWARD: '' };
+  if (sward) {
+    material.defines = verge ? { FR_SWARD: '', FR_VERGE: '' } : { FR_SWARD: '' };
+    if (tint) material.defines.FR_TINT = '';
+    if (leaves) material.defines.FR_LEAVES = '';
+  }
   /** Live: the probes flip the march off and on through these. */
   material.userData.uniforms = uniforms;
 
   if (map && macro) {
     material.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, uniforms, canopyShadow);
+      Object.assign(shader.uniforms, uniforms, canopyShadow, litterMap);
 
       // `worldpos_vertex` only defines worldPosition when something wants it, so ask here.
       shader.vertexShader = shader.vertexShader
@@ -445,11 +688,19 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           uniform sampler2D uSward;
           uniform sampler2D uSwardN;
           uniform sampler2D uSwardH;
+          uniform sampler2D uSwardL;
           uniform float uSwardTile;
+          ${LITTER_GLSL}
+          // The litter at this pixel, set once per pixel before the march reads it.
+          float fr_litterV = 0.0;
+          // Is a leaf of this rank lying here?
+          float fr_leafOn( float rank ) { return 1.0 - smoothstep( fr_litterV - 0.04, fr_litterV + 0.04, rank ); }
           uniform vec4 uPom;
           uniform vec2 uPomSteps;
           uniform vec3 uSwardLook;
           uniform vec3 uSwardDry;
+          uniform float uHexSpin;
+          uniform float uMacroTint;
           uniform sampler2D uDetail;
           uniform vec2 uTile;
           uniform vec2 uContrast;
@@ -479,13 +730,13 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             p4 += dot( p4, p4.wzxy + 33.33 );
             return fract( ( p4.xxyz + p4.yzzw ) * p4.zywx );
           }
-          void fr_cell( vec2 v, out mat2 r, out vec2 o ) {
+          void fr_cell( vec2 v, float spin, out mat2 r, out vec2 o ) {
             vec4 h = fr_hash24( v );
-            float a = h.x * 6.2831853, c = cos( a ), s = sin( a );
+            float a = ( h.x - 0.5 ) * 6.2831853 * spin, c = cos( a ), s = sin( a );
             r = mat2( c, s, -s, c );
             o = h.zw;
           }
-          FrHex fr_hex( vec2 uv ) {
+          FrHex fr_hexS( vec2 uv, float spin ) {
             vec2 sk = mat2( 1.0, 0.0, -0.57735027, 1.15470054 ) * ( uv * 1.4 );
             vec2 base = floor( sk );
             vec3 t = vec3( fract( sk ), 0.0 );
@@ -494,11 +745,12 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             FrHex h;
             h.w = pow( max( vec3( -t.z * s2, s - t.y * s2, s - t.x * s2 ), 0.0 ), vec3( 5.0 ) );
             h.w /= h.w.x + h.w.y + h.w.z;
-            fr_cell( base + vec2( s ), h.r0, h.o0 );
-            fr_cell( base + vec2( s, 1.0 - s ), h.r1, h.o1 );
-            fr_cell( base + vec2( 1.0 - s, s ), h.r2, h.o2 );
+            fr_cell( base + vec2( s ), spin, h.r0, h.o0 );
+            fr_cell( base + vec2( s, 1.0 - s ), spin, h.r1, h.o1 );
+            fr_cell( base + vec2( 1.0 - s, s ), spin, h.r2, h.o2 );
             return h;
           }
+          FrHex fr_hex( vec2 uv ) { return fr_hexS( uv, 1.0 ); }
           vec4 fr_hexTex( sampler2D t, FrHex h, vec2 uv, vec2 gx, vec2 gy ) {
             return h.w.x * textureGrad( t, h.r0 * uv + h.o0, h.r0 * gx, h.r0 * gy )
                  + h.w.y * textureGrad( t, h.r1 * uv + h.o1, h.r1 * gx, h.r1 * gy )
@@ -519,7 +771,14 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           // verge's, or a blend where one hands over to the other.
           float fr_hAt( vec2 m, float gk, float sink, vec2 gx, vec2 gy ) {
             float h = 0.0;
-            if ( gk < 0.999 ) h = ( 1.0 - gk ) * textureGrad( uSwardH, m / uSwardTile, gx / uSwardTile, gy / uSwardTile ).r;
+            if ( gk < 0.999 ) {
+              #ifdef FR_LEAVES
+              vec3 t = textureGrad( uSwardH, m / uSwardTile, gx / uSwardTile, gy / uSwardTile ).rgb;
+              h = ( 1.0 - gk ) * mix( t.r, max( t.r, t.g ), fr_leafOn( t.b ) );
+              #else
+              h = ( 1.0 - gk ) * textureGrad( uSwardH, m / uSwardTile, gx / uSwardTile, gy / uSwardTile ).r;
+              #endif
+            }
             #ifdef FR_VERGE
             if ( gk > 0.001 ) {
               vec2 v = textureGrad( uVergeH, m / uVerge.w, gx / uVerge.w, gy / uVerge.w ).rg;
@@ -545,6 +804,11 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
         // After colour_fragment, before lighting: the overlay is albedo, not light.
         .replace('#include <color_fragment>', /* glsl */`
           #include <color_fragment>
+          #ifdef FR_LEAVES
+          // Leaves where the trees stand: a brown cast at any distance, the leaves themselves near.
+          fr_litterV = fr_litterAt( fr_wpos );
+          diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.26, 0.11, 0.035 ), fr_litterV * 0.45 );
+          #endif
           float fr_height = 0.0;      // detail relief for the bump, metres-ish
           float fr_nearW = 0.0;
           // The relief: the sward's weight and the verge's, the verge's share
@@ -552,7 +816,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
           // world metres, and past the march, how far hex tiling has taken
           // over. Its frame: world X and Z (the planar mapping) laid onto the
           // ground's slope.
-          float fr_sw = 0.0, fr_gw = 0.0, fr_gk = 0.0, fr_sink = 0.0, fr_hexW = 1.0, fr_vst = 0.0;
+          float fr_sw = 0.0, fr_gw = 0.0, fr_gk = 0.0, fr_sink = 0.0, fr_hexW = 1.0, fr_vst = 0.0, fr_leafVis = 0.0;
           vec2 fr_mp = fr_wpos.xz;
           vec2 fr_gx = dFdx( fr_mp ), fr_gy = dFdy( fr_mp );
           vec3 fr_W = normalize( fr_wnorm );
@@ -619,7 +883,12 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             fr_nearW = 1.0 - smoothstep( uNearFade.x, uNearFade.y, fr_dist );
             #ifdef FR_SWARD
             // Turf is green: the relief is the grass's, not the scree's or the snow's.
+            #if defined( FR_TINT ) || defined( FR_LEAVES )
+            // Snow, sand and leaf litter lie on any ground that is not bare.
+            float fr_green = 1.0;
+            #else
             float fr_green = smoothstep( 0.0, 0.035, vColor.g - max( vColor.r * 0.85, vColor.b ) );
+            #endif
             fr_sw = fr_green * fr_flat * fr_nearW * ( 1.0 - max( fr_rk, fr_sl ) );
             #ifdef FR_VERGE
             {
@@ -717,13 +986,31 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
                 if ( fr_hexW < 1.0 ) fr_s = textureGrad( uSward, fr_suv, fr_sgx, fr_sgy );
                 if ( fr_hexW > 0.0 ) {
                   vec2 fr_u0 = fr_wpos.xz / uSwardTile;
-                  fr_s = mix( fr_s, fr_hexTex( uSward, fr_hex( fr_u0 ), fr_u0, fr_sgx, fr_sgy ), fr_hexW );
+                  fr_s = mix( fr_s, fr_hexTex( uSward, fr_hexS( fr_u0, uHexSpin ), fr_u0, fr_sgx, fr_sgy ), fr_hexW );
                 }
+                #ifdef FR_LEAVES
+                {
+                  vec4 fr_l = vec4( 0.0 );
+                  if ( fr_hexW < 1.0 ) fr_l = textureGrad( uSwardL, fr_suv, fr_sgx, fr_sgy );
+                  if ( fr_hexW > 0.0 ) {
+                    vec2 fr_u0 = fr_wpos.xz / uSwardTile;
+                    fr_l = mix( fr_l, fr_hexTex( uSwardL, fr_hexS( fr_u0, uHexSpin ), fr_u0, fr_sgx, fr_sgy ), fr_hexW );
+                  }
+                  fr_leafVis = fr_leafOn( fr_l.a );
+                  vec3 fr_turf = mix( diffuseColor.rgb * mix( vec3( 1.0 ), fr_s.rgb * 1.5, uSwardLook.x ), fr_l.rgb, fr_leafVis ) * fr_lit;
+                  diffuseColor.rgb = mix( diffuseColor.rgb, fr_turf, fr_sw );
+                }
+                #elif defined( FR_TINT )
+                // A multiplier on the ground's colour, or (A = 1, a leaf) a colour of its own.
+                vec3 fr_turf = mix( diffuseColor.rgb * mix( vec3( 1.0 ), fr_s.rgb * 1.5, uSwardLook.x ), fr_s.rgb, fr_s.a ) * fr_lit;
+                diffuseColor.rgb = mix( diffuseColor.rgb, fr_turf, fr_sw );
+                #else
                 // Luminance (mean 1 with its occlusion), occlusion, and dry
                 // blades and bare soil toward straw and earth.
                 vec3 fr_turf = mix( vec3( 1.0 ), uSwardDry, fr_s.g )
                   * ( fr_s.r * 1.5 * mix( 1.0, fr_s.b, uSwardLook.y ) * fr_lit );
                 diffuseColor.rgb *= mix( vec3( 1.0 ), fr_turf, fr_sw * uSwardLook.x );
+                #endif
               }
               #ifdef FR_VERGE
               if ( fr_gw > 0.001 ) {
@@ -766,8 +1053,8 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
             vec4 fr_m = fr_hexTex( uMacroMap, fr_hex( fr_uvM ), fr_uvM, fr_gx / uMacro, fr_gy / uMacro );
             float fr_dry = smoothstep( 0.45, 0.85, fr_m.r ) * fr_flat;
             float fr_lush = smoothstep( 0.45, 0.15, fr_m.r ) * fr_flat;
-            diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 1.16, 1.07, 0.80 ), fr_dry * 0.45 );
-            diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.86, 1.02, 0.88 ), fr_lush * 0.40 );
+            diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 1.16, 1.07, 0.80 ), fr_dry * 0.45 * uMacroTint );
+            diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.86, 1.02, 0.88 ), fr_lush * 0.40 * uMacroTint );
             diffuseColor.rgb *= 0.93 + 0.14 * fr_m.g;
 
             fr_height = ( fr_sward * fr_a.r * ( 1.0 - fr_relief ) + fr_rock * fr_rockA * 1.6 ) * uBump;
@@ -800,8 +1087,20 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
               if ( fr_hexW < 1.0 ) fr_n2 = textureGrad( uSwardN, fr_suv, fr_sgx, fr_sgy ).xy * 2.0 - 1.0;
               if ( fr_hexW > 0.0 ) {
                 vec2 fr_u0 = fr_wpos.xz / uSwardTile;
-                fr_n2 = mix( fr_n2, fr_hexMajor( uSwardN, fr_hex( fr_u0 ), fr_u0, fr_sgx, fr_sgy ).xy, fr_hexW );
+                fr_n2 = mix( fr_n2, fr_hexMajor( uSwardN, fr_hexS( fr_u0, uHexSpin ), fr_u0, fr_sgx, fr_sgy ).xy, fr_hexW );
               }
+              #ifdef FR_LEAVES
+              {
+                // The turf's normal, or the surface with its leaves where they lie.
+                vec4 fr_n4 = vec4( 0.0 );
+                if ( fr_hexW < 1.0 ) fr_n4 = textureGrad( uSwardN, fr_suv, fr_sgx, fr_sgy ) * 2.0 - 1.0;
+                if ( fr_hexW > 0.0 ) {
+                  vec2 fr_u0 = fr_wpos.xz / uSwardTile;
+                  fr_n4 = mix( fr_n4, fr_hexMajor( uSwardN, fr_hexS( fr_u0, uHexSpin ), fr_u0, fr_sgx, fr_sgy ), fr_hexW );
+                }
+                fr_n2 = mix( fr_n4.xy, fr_n4.zw, fr_leafVis );
+              }
+              #endif
               fr_tn = fr_n2 * ( 1.0 - fr_gk );
             }
             #ifdef FR_VERGE
@@ -824,7 +1123,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
         `)
         .replace('#include <lights_fragment_end>', CANOPY_GLSL.apply('fr_wpos'));
     };
-    material.customProgramCacheKey = () => `highroads-ground-${sward ? 1 : 0}${verge ? 1 : 0}`;
+    material.customProgramCacheKey = () => `highroads-ground-${sward ? 1 : 0}${verge ? 1 : 0}${tint ? 1 : 0}${leaves ? 1 : 0}`;
   }
 
   return {
@@ -833,7 +1132,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
       material.dispose();
       if (map) map.dispose();
       if (macro) macro.dispose();
-      for (const m of [sward, verge]) if (m) { m.albedo.dispose(); m.normal.dispose(); m.height.dispose(); }
+      for (const m of [sward, verge]) if (m) { m.albedo.dispose(); m.normal.dispose(); m.height.dispose(); m.leaf?.dispose(); }
     },
   };
 }

@@ -29,7 +29,7 @@
  * the lakes — asks `biomeAt()`, so they cannot disagree about where a border is.
  */
 
-import { BIOME } from './config.js';
+import { BIOME, WORLD_BIOME } from './config.js';
 import { hashInt, mulberry32, smoothstep, clamp } from './util.js';
 
 /**
@@ -132,8 +132,27 @@ export const BIOMES = {
     // A rare biome: it only wins a cell when the cell's own roll lands it.
     rare: 0.10,
   },
+  // ---- the desert world's own (config.js:WORLDS) ----------------------------
+  erg: {
+    label: 'Dune sea', T: 0.96, M: 0.04,
+    trees: { dead: 1.0, acacia: 0.4 },
+    shrubs: { gorse: 1.0, juniper: 0.3 },
+    sward: [0.1, 0.9, 0.0], canopy: 0.04, lone: 1.0, under: 0.12, grass: 0.12, flowers: 0,
+    bloom: [[0.95, 0.80, 0.30]],
+    tint: [1.02, 1.0, 0.96], lake: 0.0,
+  },
+  reg: {
+    label: 'Desert scrub', T: 0.86, M: 0.16,
+    trees: { acacia: 1.0, dead: 0.45, olive: 0.25 },
+    shrubs: { gorse: 1.0, juniper: 0.6, lavender: 0.3, boxwood: 0.25 },
+    sward: [0.2, 0.8, 0.0], canopy: 0.14, lone: 0.95, under: 0.5, grass: 0.45, flowers: 0.02,
+    bloom: [[0.95, 0.80, 0.30], [0.62, 0.48, 0.86]],
+    tint: [0.96, 0.95, 0.92], lake: 0.05,
+  },
 };
 export const BIOME_NAMES = Object.keys(BIOMES);
+/** The regions this world's cells choose from (config.js:WORLDS). */
+const WORLD_NAMES = BIOME_NAMES.filter((n) => !WORLD_BIOME.biomes || WORLD_BIOME.biomes.includes(n));
 
 /** Normalised species weights per biome, computed once: the best species is 1. */
 for (const b of Object.values(BIOMES)) {
@@ -173,8 +192,8 @@ export function createBiomes(terrain, seed) {
     const cz = (cj + 0.15 + 0.7 * rng()) * S;
     const relief = terrain.height(cx, cz, 400) - terrain.continent(cx, cz);
     const { T, M } = climate(cx, cz, relief);
-    let best = 'meadow', bestScore = -Infinity;
-    for (const name of BIOME_NAMES) {
+    let best = WORLD_NAMES[0], bestScore = -Infinity;
+    for (const name of WORLD_NAMES) {
       const b = BIOMES[name];
       const dT = (T - b.T) / 0.22, dM = (M - b.M) / 0.24;
       let score = -(dT * dT + dM * dM) + rng() * BIOME.variety;

@@ -22,7 +22,8 @@
  */
 
 import * as THREE from 'three';
-import { ROAD, ROAD_SURFACE } from '../config.js';
+import { ROAD, ROAD_SURFACE, WORLD_BIOME, GROUND } from '../config.js';
+import { litterMap, LITTER_GLSL } from '../forest.js';
 import { makeCanvas, rng, tileFbm, tileNoise, paint } from './textures.js';
 
 /** The far wear mottle, world-planar: R wear, centred on 0.5. */
@@ -191,7 +192,12 @@ function asphaltMaps(size) {
   return { albedo: tex(albedo, THREE.RGBAFormat), normal: tex(normal, THREE.RGBAFormat), height: h };
 }
 
-export function createRoadAssets({ anisotropy = 1 } = {}) {
+/**
+ * @param {object} o.cover the ground material's uniforms (env/ground.js): the
+ *   snow and sand drifts on the road are marched through ITS relief tile, so a
+ *   drift is the same stuff as the verge beside it
+ */
+export function createRoadAssets({ anisotropy = 1, cover: ground = null } = {}) {
   const S = ROAD_SURFACE;
   const wear = wearTexture(256);
   const asphalt = asphaltMaps(S.textureSize);
@@ -237,16 +243,28 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
   };
   /** Live: the probes flip features through these. */
   material.userData.uniforms = uniforms;
+  // What the world biome leaves on the road: snow, drifted sand or fallen
+  // leaves. Drifts need the ground's relief tile; without one (no canvas) none.
+  const tile = ground && ground.uSwardH.value;
+  const cover = (WORLD_BIOME.road === 'leaves' || tile) ? WORLD_BIOME.road || '' : '';
+  if (cover) material.defines = { FR_COVER: '', ['FR_COVER_' + cover.toUpperCase()]: '' };
+  if (tile) {
+    uniforms.uCoverA = ground.uSward;
+    uniforms.uCoverH = ground.uSwardH;
+    /** tile (m), drift depth (m; none where the road marches nothing), march fade start, end (m) */
+    uniforms.uCover = { value: new THREE.Vector4(GROUND.sward.tile, S.pom.depth ? GROUND.sward.depth : 0, 10, 38) };
+  }
 
   if (wear && asphalt) {
     material.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, uniforms);
+      Object.assign(shader.uniforms, uniforms, litterMap);
 
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', /* glsl */`
           #include <common>
           attribute vec2 roadUV;
           attribute vec2 roadAge;
+
           varying vec3 fr_wpos;
           varying vec3 fr_wnorm;
           varying vec2 fr_road;
@@ -310,6 +328,53 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
           }
           // Coverage of a line of half-width w at distance d, antialiased by the footprint fw.
           float fr_line( float d, float w, float fw ) { return clamp( ( w + fw - d ) / ( 2.0 * fw ), 0.0, 1.0 ) * min( 1.0, w / fw ); }
+          #ifdef FR_COVER_LEAVES
+          ${LITTER_GLSL}
+          #endif
+          #if defined( FR_COVER_SNOW ) || defined( FR_COVER_SAND )
+          uniform sampler2D uCoverA;
+          uniform sampler2D uCoverH;
+          uniform vec4 uCover;
+          // How far inside a drift road point p = (across, along) metres is
+          // (> 0 inside). Warped noise smeared along the road — wind and
+          // traffic drag drifts out — in irregular patches, most at the edges,
+          // rare toward the middle, never in the wheel paths. Sand comes in
+          // tongues at the wind's slant.
+          float fr_drift( vec2 p ) {
+            float av = abs( p.x );
+            float edge = smoothstep( uPaint.x - 1.8, uPaint.x + 0.4, av );
+            float dv = av - ( min( floor( av / uDamage.w ), 1.0 ) + 0.5 ) * uDamage.w;
+            float wp = exp( -pow( abs( dv ) - 0.85, 2.0 ) / 0.07 );
+            #ifdef FR_COVER_SAND
+            vec2 q = vec2( p.x * 0.8 + p.y * 0.6, p.y * 0.8 - p.x * 0.6 ) / vec2( 1.6, 4.5 );
+            float a = 0.8 * edge - 0.4 * wp;
+            #else
+            vec2 q = vec2( p.x / 1.2, p.y / 5.0 );
+            float a = 0.82 * edge + 0.12 * exp( -dv * dv / 0.1 ) - 0.65 * wp;
+            #endif
+            q += ( vec2( fr_n2( q * 0.6 + 3.1 ), fr_n2( q * 0.6 + 8.3 ) ) - 0.5 ) * 2.2;
+            // No fine octave: the march holds this mask linear over the ~0.4 m a
+            // ray crosses, and a 20 cm octave made that guess snow where there
+            // was none — drifts that changed as the camera came up to them.
+            // The tile roughs the rim instead (fr_dH), sampled exactly.
+            float n = fr_n2( q ) * 0.66 + fr_n2( q * 2.7 + 5.0 ) * 0.34;
+            #ifdef FR_COVER_SAND
+            return a + ( n - 0.5 ) * 1.5 - 0.55;
+            #else
+            return a + ( n - 0.5 ) * 1.5 - 0.48;
+            #endif
+          }
+          // The drift's height (0..1 of uCover.y) at p: the mask, linear about
+          // p0 over the few decimetres a ray travels, its rim broken by the
+          // ground tile (snow lumps, sand ripples) and tapered, carrying the
+          // tile's relief on top.
+          float fr_dH( vec2 p, vec2 p0, float m0, vec2 mg, vec2 gx, vec2 gy ) {
+            float t = textureGrad( uCoverH, p / uCover.x, gx, gy ).r;
+            float s = clamp( ( m0 + dot( mg, p - p0 ) + ( t - 0.5 ) * 0.2 ) * 3.0, 0.0, 1.0 );
+            s = 1.0 - ( 1.0 - s ) * ( 1.0 - s );
+            return s * ( 0.45 + 0.55 * t );
+          }
+          #endif
         `)
         .replace('#include <color_fragment>', /* glsl */`
           #include <color_fragment>
@@ -460,12 +525,124 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
           // Relief the march does not carry, for the derivative bump: open
           // cracks cut down, patches stand a few millimetres proud.
           float fr_bumpH = fr_patch * 0.004 - fr_crk * 0.012 - fr_seal * 0.002 + fr_isPaint * fr_keep * 0.003;
+
+          // ---- what lies on the road (config.js:WORLDS.road): thickest by the
+          // edges and along the centre line, worn away in the wheel paths.
+          float fr_coverK = 0.0, fr_wetK = 0.0;
+          vec3 fr_coverN = fr_W;
+          #if defined( FR_COVER_SNOW ) || defined( FR_COVER_SAND )
+          {
+            // A drift is a layer standing ON the asphalt, so the surface drawn
+            // here is its FLOOR (the turf in ground.js is the other way up):
+            // march the camera ray from where it crosses the drift's top
+            // plane, nearer the camera, down to this point on the road,
+            // stopping where it first enters the drift. Reaching the road
+            // means it missed. Drifts stay on their footprint at every angle.
+            vec2 fr_p0 = vec2( fr_v, fr_s );
+            vec2 fr_cgx = dFdx( fr_p0 ) / uCover.x, fr_cgy = dFdy( fr_p0 ) / uCover.x;
+            float fr_m0 = fr_drift( fr_p0 );
+            #ifdef FR_COVER_SNOW
+            // Meltwater darkens the asphalt round every drift.
+            fr_wetK = smoothstep( -0.3, 0.0, fr_m0 );
+            diffuseColor.rgb *= 1.0 - 0.3 * fr_wetK;
+            #else
+            // Sand dusts the asphalt, more near a drift.
+            diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.66, 0.5, 0.32 ), 0.08 + 0.17 * smoothstep( -0.45, 0.0, fr_m0 ) );
+            #endif
+            if ( fr_m0 > -0.25 ) {
+              vec2 fr_mg = ( vec2( fr_drift( fr_p0 + vec2( 0.04, 0.0 ) ), fr_drift( fr_p0 + vec2( 0.0, 0.04 ) ) ) - fr_m0 ) / 0.04;
+              float fr_cfade = 1.0 - smoothstep( uCover.z, uCover.w, fr_dist );
+              float fr_cdep = uCover.y * fr_cfade * fr_W.y * fr_W.y;
+              vec2 fr_cp = fr_p0;
+              if ( fr_cdep > 0.002 ) {
+                vec3 fr_V = normalize( cameraPosition - fr_wpos );
+                vec3 fr_tv = vec3( dot( fr_V, fr_T ), dot( fr_V, fr_B ), max( dot( fr_V, fr_W ), 0.16 ) );
+                float fr_n = floor( mix( 16.0, 6.0, fr_tv.z ) * ( 0.4 + 0.6 * fr_cfade ) ) + 1.0;
+                vec2 fr_du = -fr_tv.xy / fr_tv.z * fr_cdep / fr_n;
+                float fr_layer = 1.0 / fr_n, fr_d = 0.0;
+                fr_cp -= fr_du * fr_n;
+                float fr_h = 1.0 - fr_dH( fr_cp, fr_p0, fr_m0, fr_mg, fr_cgx * 2.0, fr_cgy * 2.0 );
+                float fr_pd = 0.0, fr_ph = fr_h;
+                for ( int i = 0; i < 18; i ++ ) {
+                  if ( float( i ) >= fr_n || fr_d >= fr_h ) break;
+                  fr_pd = fr_d; fr_ph = fr_h;
+                  fr_cp += fr_du; fr_d += fr_layer;
+                  fr_h = 1.0 - fr_dH( fr_cp, fr_p0, fr_m0, fr_mg, fr_cgx * 2.0, fr_cgy * 2.0 );
+                }
+                float fr_a1 = fr_h - fr_d, fr_b1 = fr_ph - fr_pd;
+                fr_cp -= fr_du * clamp( fr_a1 / ( fr_a1 - fr_b1 - 1e-5 ), 0.0, 1.0 );
+              }
+              float fr_th = fr_dH( fr_cp, fr_p0, fr_m0, fr_mg, fr_cgx, fr_cgy );
+              float fr_al = smoothstep( 0.0, 0.1, fr_th );
+              vec3 fr_ca = textureGrad( uCoverA, fr_cp / uCover.x, fr_cgx, fr_cgy ).rgb * 1.5;
+              #ifdef FR_COVER_SNOW
+              // Thin snow over the asphalt is grey slush; deep, it is white.
+              vec3 fr_col = vec3( 0.84, 0.87, 0.92 ) * fr_ca;
+              fr_col = mix( fr_col * 0.5, fr_col, smoothstep( 0.08, 0.5, fr_th ) );
+              #else
+              vec3 fr_col = vec3( 0.66, 0.46, 0.25 ) * fr_ca;
+              fr_col = mix( fr_col * 0.8, fr_col, smoothstep( 0.05, 0.4, fr_th ) );
+              #endif
+              diffuseColor.rgb = mix( diffuseColor.rgb, fr_col, fr_al );
+              fr_coverK = fr_al;
+              // Its normal, from the drift's own slope: the rim, and the tile's lumps or ripples.
+              vec2 fr_gH = ( vec2( fr_dH( fr_cp + vec2( 0.025, 0.0 ), fr_p0, fr_m0, fr_mg, fr_cgx, fr_cgy ),
+                                   fr_dH( fr_cp + vec2( 0.0, 0.025 ), fr_p0, fr_m0, fr_mg, fr_cgx, fr_cgy ) ) - fr_th ) / 0.025;
+              vec2 fr_nxy = -fr_gH * max( uCover.y, 0.03 ) * 1.6;
+              fr_coverN = normalize( fr_T * fr_nxy.x + fr_B * fr_nxy.y + fr_W );
+            }
+          }
+          #endif
+          #ifdef FR_COVER_LEAVES
+          {
+            float fr_edgeK = smoothstep( uPaint.x - 1.8, uPaint.x + 0.3, fr_av );
+            float fr_midK = 1.0 - smoothstep( 0.1, 1.0, fr_av );
+            float fr_n = fr_n2( vec2( fr_v / 0.9, fr_s / 3.5 ) ) * 0.6 + fr_n2( vec2( fr_v / 0.22, fr_s / 0.6 ) ) * 0.4;
+            #ifdef FR_COVER_LEAVES
+            // Leaves one by one: a lattice of 0.17 m cells, each may hold a
+            // leaf (a pointed lens with a midrib) reaching into its neighbours.
+            // As many as the trees beside the road drop (forest.js:litterMap): none on open land.
+            float fr_d = clamp( ( 0.12 + 0.6 * fr_edgeK + 0.25 * fr_midK - 0.2 * fr_wp ) * ( 0.4 + 1.2 * fr_n ) * fr_litterAt( fr_wpos ) * 1.6, 0.0, 0.95 );
+            vec3 fr_avg = vec3( 0.5, 0.2, 0.06 );
+            float fr_near = 1.0 - smoothstep( 22.0, 40.0, fr_dist );
+            vec4 fr_leaf = vec4( 0.0 );
+            if ( fr_near > 0.0 ) {
+              vec2 fr_p = vec2( fr_v, fr_s ) / 0.17;
+              vec2 fr_c = floor( fr_p );
+              float fr_aa = max( fr_fv, fr_fs ) / 0.17 * 1.5;
+              for ( int j = -1; j <= 1; j ++ ) for ( int i = -1; i <= 1; i ++ ) {
+                vec2 fr_k = fr_c + vec2( float( i ), float( j ) );
+                float fr_h = fr_h2( fr_k );
+                if ( fr_h > fr_d ) continue;
+                vec2 fr_o = fr_k + 0.5 + ( vec2( fr_h2( fr_k + 3.7 ), fr_h2( fr_k + 9.1 ) ) - 0.5 ) * 0.6;
+                float fr_ang = fr_h2( fr_k + 5.3 ) * 6.2831853;
+                vec2 fr_q = fr_p - fr_o;
+                fr_q = vec2( cos( fr_ang ) * fr_q.x + sin( fr_ang ) * fr_q.y, cos( fr_ang ) * fr_q.y - sin( fr_ang ) * fr_q.x );
+                float fr_len = 0.32 + 0.22 * fr_h2( fr_k + 1.3 );
+                float fr_lx = fr_q.x / fr_len, fr_ly = fr_q.y / ( fr_len * 0.5 );
+                float fr_half = ( 1.0 - fr_lx * fr_lx ) * ( fr_lx < 0.0 ? 1.1 : 0.9 );
+                float fr_in2 = ( 1.0 - smoothstep( -fr_aa, fr_aa, abs( fr_ly ) * fr_len * 0.5 - fr_half * fr_len * 0.5 ) ) * step( abs( fr_lx ), 1.0 );
+                if ( fr_in2 <= 0.0 ) continue;
+                float fr_pick = fr_h2( fr_k + 7.9 );
+                vec3 fr_lc = fr_pick < 0.3 ? vec3( 0.7, 0.26, 0.04 ) : fr_pick < 0.5 ? vec3( 0.52, 0.08, 0.03 )
+                  : fr_pick < 0.72 ? vec3( 0.78, 0.5, 0.07 ) : fr_pick < 0.88 ? vec3( 0.32, 0.17, 0.06 ) : vec3( 0.56, 0.36, 0.1 );
+                fr_lc *= ( 0.8 + 0.35 * fr_h2( fr_k + 2.2 ) ) * ( abs( fr_ly ) < 0.08 ? 0.8 : 1.0 ) * ( 1.0 - 0.3 * smoothstep( 0.6, 1.0, abs( fr_ly ) / max( fr_half, 1e-3 ) ) );
+                fr_leaf = vec4( mix( fr_leaf.rgb, fr_lc, fr_in2 ), max( fr_leaf.a, fr_in2 ) );
+              }
+            }
+            // Past the lattice, the leaves are a stain of their average colour.
+            fr_coverK = mix( fr_d * 0.35, fr_leaf.a, fr_near );
+            diffuseColor.rgb = mix( diffuseColor.rgb, mix( fr_avg, fr_leaf.rgb, fr_near ), fr_coverK );
+            #endif
+          }
+          #endif
         `)
         .replace('#include <roughnessmap_fragment>', /* glsl */`
           #include <roughnessmap_fragment>
           roughnessFactor = mix( uRough.x, uRough.y, fr_age )
             - uRough.z * fr_wp * ( 0.4 + 0.6 * fr_age ) - uRough.w * fr_seal;
           roughnessFactor = mix( roughnessFactor, 0.72, fr_isPaint * ( 1.0 - fr_patch ) );
+          roughnessFactor = mix( roughnessFactor - 0.35 * fr_wetK, 0.88, fr_coverK );
         `)
         .replace('#include <normal_fragment_maps>', /* glsl */`
           #include <normal_fragment_maps>
@@ -474,7 +651,7 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
             vec3 fr_tn = textureGrad( uAsphN, fr_uv, fr_gx, fr_gy ).xyz * 2.0 - 1.0;
             vec3 fr_nw = normalize( fr_T * fr_tn.x + fr_B * fr_tn.y + fr_W * fr_tn.z );
             // Paint keeps some of the stone's relief: it is a film laid over it.
-            float fr_k = fr_nearW * mix( 0.4, 1.0, fr_age ) * ( 1.0 - 0.6 * fr_isPaint * fr_keep );
+            float fr_k = fr_nearW * mix( 0.4, 1.0, fr_age ) * ( 1.0 - 0.6 * fr_isPaint * fr_keep ) * ( 1.0 - fr_coverK );
             normal = normalize( mix( normal, normalize( ( viewMatrix * vec4( fr_nw, 0.0 ) ).xyz ), fr_k ) );
             // Screen-space derivative bump (Mikkelsen 2010) of the cracks and patch edges.
             vec3 fr_dpx = dFdx( -vViewPosition ), fr_dpy = dFdy( -vViewPosition );
@@ -483,11 +660,14 @@ export function createRoadAssets({ anisotropy = 1 } = {}) {
             float fr_det = dot( fr_dpx, fr_r1 );
             vec3 fr_grad = sign( fr_det ) * ( fr_hx * fr_r1 + fr_hy * fr_r2 );
             normal = normalize( mix( normal, abs( fr_det ) * normal - fr_grad, fr_crackW ) );
+            #if defined( FR_COVER_SNOW ) || defined( FR_COVER_SAND )
+            normal = normalize( mix( normal, normalize( ( viewMatrix * vec4( fr_coverN, 0.0 ) ).xyz ), fr_coverK ) );
+            #endif
           }
         `);
     };
     // Its own key — sharing ground's would hand this material ground's program.
-    material.customProgramCacheKey = () => 'highroads-road';
+    material.customProgramCacheKey = () => 'highroads-road-' + cover;
   }
 
   return {

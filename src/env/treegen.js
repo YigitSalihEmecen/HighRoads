@@ -20,7 +20,7 @@
  */
 
 import * as THREE from 'three';
-import { BUSHES, TREES } from '../config.js';
+import { BUSHES, TREES, WORLD_BIOME } from '../config.js';
 import { SHRUBS, TREE_FORMS } from '../foliage.js';
 import { SPECIES } from '../../tree_gen/src/species.js';
 import { BUSHES as BUSH_PRESETS, generateBush } from '../../tree_gen/src/bush.js';
@@ -123,6 +123,23 @@ const KEYS = [...Object.keys(TREEGEN_SPECIES), ...Object.keys(BUSH_PRESETS)];
 const defaultNames = () => [...Object.keys(TREEGEN_SPECIES),
   ...(BUSHES.enabled ? Object.keys(SHRUBS).filter((n) => n in BUSH_PRESETS) : [])];
 
+/**
+ * Fall worlds turn every deciduous crown: each species variant takes one of
+ * these [main, alt] palettes, so a wood is a patchwork of gold, orange and red.
+ */
+const DECIDUOUS = new Set(['oak', 'maple', 'beech', 'birch', 'aspen', 'poplar', 'larch', 'willow', 'cherry', 'acacia',
+  'bramble', 'hazel', 'rosebush', 'fern']);
+const FALL_PALETTES = [
+  [[0.80, 0.56, 0.10], [0.95, 0.76, 0.22]],
+  [[0.78, 0.35, 0.09], [0.94, 0.58, 0.15]],
+  [[0.60, 0.12, 0.07], [0.84, 0.28, 0.12]],
+  [[0.55, 0.22, 0.10], [0.74, 0.38, 0.16]],
+  [[0.84, 0.70, 0.16], [0.96, 0.86, 0.32]],
+  [[0.70, 0.60, 0.13], [0.88, 0.80, 0.26]],
+];
+/** Snow lying on every upward face of bark, leaves, cards and billboards (snowy worlds). */
+const SNOW = WORLD_BIOME.snow || 0;
+
 const hex = (rgb) => `#${new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2],
   THREE.LinearSRGBColorSpace).getHexString()}`;
 
@@ -150,6 +167,14 @@ function windify(material, uniforms, leafy, bark = false) {
         #ifdef USE_COLOR
           diffuseColor.rgb *= mix( vec3( 1.0 ), vColor, 0.3 );
         #endif
+      `);
+    }
+    if (SNOW) {
+      // The view-space normal turned back into the world: snow where it looks up.
+      shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', /* glsl */`
+        #include <normal_fragment_maps>
+        diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.86, 0.89, 0.94 ),
+          smoothstep( 0.18, 0.6, ( normal * mat3( viewMatrix ) ).y ) * ${(SNOW * (leafy ? 0.85 : 1)).toFixed(3)} );
       `);
     }
     if (cutout) {
@@ -195,7 +220,7 @@ function windify(material, uniforms, leafy, bark = false) {
         gl_Position = projectionMatrix * mvPosition;
       `);
   };
-  material.customProgramCacheKey = () => `highroads-treegen-${leafy ? 1 : 0}-${material.alphaTest > 0 ? 1 : 0}-${bark ? 1 : 0}`;
+  material.customProgramCacheKey = () => `highroads-treegen-${leafy ? 1 : 0}-${material.alphaTest > 0 ? 1 : 0}-${bark ? 1 : 0}-${SNOW}`;
 }
 
 /** Scale every part to unit height; returns the horizontal radius at that scale. */
@@ -237,8 +262,12 @@ function plan(names) {
         // Seeded from species and variant, never the world seed.
         seed: (0x7ee5 + KEYS.indexOf(name) * 131 + v * 7919) >>> 0,
         maxLeaves: caps.maxLeaves, maxBranches: caps.maxBranches,
+        // A snowy world's deciduous trees stand bare.
+        ...(WORLD_BIOME.bare?.includes(name) ? { leaves: 0 } : null),
       };
-      const p = pal ? pal[v % pal.length] : null;
+      const p = WORLD_BIOME.fallLeaves && DECIDUOUS.has(name)
+        ? FALL_PALETTES[(KEYS.indexOf(name) * 2 + v) % FALL_PALETTES.length]
+        : pal ? pal[v % pal.length] : null;
       jobs.push({
         name, v, params, bush,
         leaves: params.leaves !== 0 ? { shape: params.leafShape,

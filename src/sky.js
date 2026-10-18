@@ -25,7 +25,7 @@
  */
 
 import * as THREE from 'three';
-import { ATMOSPHERE } from './config.js';
+import { ATMOSPHERE, WORLD_BIOME } from './config.js';
 
 export const SKY_VERT = /* glsl */ `
   varying vec3 vDir;
@@ -275,8 +275,20 @@ export function applySky(gfx, name, extras = {}) {
   gfx.scene.fog.color.set(P.fog);
   if (P.fogDensity != null) gfx.scene.fog.density = P.fogDensity;
   else if (gfx.baseFogDensity != null) gfx.scene.fog.density = gfx.baseFogDensity;
-  gfx.scene.background = gfx.scene.fog.color;
   gfx.renderer.toneMappingExposure = P.exposure;
+  // The world biome's air: cold white haze over snow, warm dust over sand.
+  const W = WORLD_BIOME.sky;
+  if (W) {
+    if (W.fog) { gfx.scene.fog.color.multiply(new THREE.Color(...W.fog)); u.uHorizon.value.multiply(new THREE.Color(...W.fog)); }
+    if (W.fogDensity) gfx.scene.fog.density *= W.fogDensity;
+    if (W.exposure) gfx.renderer.toneMappingExposure *= W.exposure;
+    if (W.hemiGround && !P.night) gfx.hemi.groundColor.set(W.hemiGround);
+    if (W.grade && gfx.grade && !P.night) {
+      gfx.grade.uniforms.uWarm.value.set(W.grade[0]);
+      gfx.grade.uniforms.uCool.value.set(W.grade[1]);
+    }
+  }
+  gfx.scene.background = gfx.scene.fog.color;
   if (gfx.grade) {
     gfx.grade.uniforms.uWarm.value.set(P.warm);
     gfx.grade.uniforms.uCool.value.set(P.cool);

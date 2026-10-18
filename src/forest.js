@@ -22,7 +22,7 @@
  * driven.
  */
 import * as THREE from 'three';
-import { ATMOSPHERE, TREES } from './config.js';
+import { ATMOSPHERE, TREES, WORLD_BIOME } from './config.js';
 
 /**
  * The CANOPY SHADOW MAP: past the sun's 78 m shadow box no tree cast a shadow,
@@ -40,6 +40,29 @@ export const canopyShadow = {
   /** Camera distance over which it takes over from the real shadow map. */
   uCanopyFade: { value: new THREE.Vector2(0, 1) },
 };
+
+/**
+ * The LITTER MAP (fall worlds): the same splat, straight down and wider than
+ * the crown — where the leaves of every tree and shrub have fallen. The
+ * ground and the road read it (`LITTER_GLSL`) to lay leaves round the woods
+ * and none on open land. Rendered with the canopy map, so it follows the
+ * camera and the trees exactly as that does.
+ */
+export const litterMap = {
+  uLitter: { value: null },
+  /** x0, z0 of the map, 1 / its size, on (0 until the first render). */
+  uLitterRect: { value: new THREE.Vector4(0, 0, 0, 0) },
+};
+
+export const LITTER_GLSL = /* glsl */`
+  uniform sampler2D uLitter;
+  uniform vec4 uLitterRect;
+  float fr_litterAt( vec3 p ) {
+    vec2 u = ( p.xz - uLitterRect.xy ) * uLitterRect.z;
+    if ( uLitterRect.w <= 0.0 || any( lessThan( u, vec2( 0.0 ) ) ) || any( greaterThan( u, vec2( 1.0 ) ) ) ) return 0.0;
+    return texture2D( uLitter, u ).r * 0.9;
+  }
+`;
 
 export const CANOPY_GLSL = {
   pars: /* glsl */`
@@ -162,6 +185,8 @@ export class Forest {
     this._canopyX = cx; this._canopyZ = cz; this._canopySun = sunKey;
 
     const S = this._canopy || (this._canopy = this._canopySetup(C));
+    const L = WORLD_BIOME.fallLeaves ? this._litter || (this._litter = this._canopySetup(C)) : null;
+    let nl = 0;
     const size = C.extent, x0 = cx - size / 2, z0 = cz - size / 2;
     // The shadow falls away from the sun, a crown's centre displaced by its
     // height over the tangent of the sun's elevation, stretched along the fall
@@ -194,6 +219,16 @@ export class Forest {
         b[n * 2] = 2 * r / size;
         b[n * 2 + 1] = C.density * (fade ? 0.7 : 1);
         n++;
+        if (L) {
+          // Leaves lie out to about twice the crown, whatever the tree's draw distance.
+          if (nl === L.cap) L.grow();
+          const rl = kind.variant.radius * h[i] * 1.9 / size;
+          const la = L.a.array, lb = L.b.array;
+          la[nl * 4] = (px - x0) / size; la[nl * 4 + 1] = (pz - z0) / size;
+          la[nl * 4 + 2] = 2 * rl; la[nl * 4 + 3] = 0;
+          lb[nl * 2] = 2 * rl; lb[nl * 2 + 1] = fade ? 0.6 : 1;
+          nl++;
+        }
       }
     }
     S.geo.instanceCount = n;
@@ -205,6 +240,16 @@ export class Forest {
     renderer.setClearColor(0x000000, 0);
     renderer.clear(true, false, false);
     renderer.render(S.scene, S.cam);
+    if (L) {
+      L.geo.instanceCount = nl;
+      L.a.needsUpdate = true;
+      L.b.needsUpdate = true;
+      renderer.setRenderTarget(L.rt);
+      renderer.clear(true, false, false);
+      renderer.render(L.scene, L.cam);
+      litterMap.uLitter.value = L.rt.texture;
+      litterMap.uLitterRect.value.set(x0, z0, 1 / size, 1);
+    }
     renderer.setRenderTarget(prev);
     renderer.setClearColor(clear, alpha);
 
@@ -429,6 +474,12 @@ export class Forest {
       this._canopy = null;
       canopyShadow.uCanopy.value = null;
       canopyShadow.uCanopyRect.value.w = 0;
+    }
+    if (this._litter) {
+      this._litter.dispose();
+      this._litter = null;
+      litterMap.uLitter.value = null;
+      litterMap.uLitterRect.value.w = 0;
     }
     for (const kind of this.kinds) {
       for (const b of all(kind)) for (const m of b.meshes) { this.scene.remove(m); m.dispose(); }

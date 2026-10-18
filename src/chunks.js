@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS, TERRAIN, BARRIERS } from './config.js';
+import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS, TERRAIN, BARRIERS, WORLD_BIOME } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -38,6 +38,9 @@ function dashOn(s, half) {
 const EDGE = ROAD.halfWidth + ROAD.shoulder;
 /** The sun's side, flat (the default sun's azimuth): the slopes that dry out. Fixed, so a sky change never repaints the hills. */
 const SUNWARD = [-0.432, -0.902];
+/** World normal-y over which steep ground goes to bare rock (a world biome may move it). */
+const ROCK_SLOPE = [0.87, 0.7];
+const GRASS_COL = WORLD_BIOME.grassCol || null;
 
 /**
  * The road's along-coordinate is handed to the shader modulo this, so it
@@ -438,7 +441,7 @@ export class ChunkManager {
     this.matTerrain = this.ground.material;
     this.apron = null;
 
-    this.road = createRoadAssets({ anisotropy: this.anisotropy });
+    this.road = createRoadAssets({ anisotropy: this.anisotropy, cover: this.ground.material.userData.uniforms });
     this.matRoad = this.road.material;
 
     // Null where switched off; both come back texture-less rather than throwing
@@ -1195,17 +1198,17 @@ export class ChunkManager {
 
     // Peak and snow only where the ground is flat enough to hold them.
     out.lerp(this._peak, smoothstep(300, 520, rel) * 0.8);
-    const snow = smoothstep(430, 640, rel) * smoothstep(0.52, 0.86, ny);
+    const snow = WORLD_BIOME.snowLine === false ? 0 : smoothstep(430, 640, rel) * smoothstep(0.52, 0.86, ny);
     out.lerp(this._snow, snow);
 
     // The biome's own cast: straw in savanna, cold blue-green in the boreal
     // forest. Blended across a border like everything else biome-driven.
     {
       const B = this.biomes.biomeAt(x, z);
-      const ta = BIOMES[B.a].tint, tb = BIOMES[B.b].tint, t = B.t;
-      out.r *= ta[0] + (tb[0] - ta[0]) * t;
-      out.g *= ta[1] + (tb[1] - ta[1]) * t;
-      out.b *= ta[2] + (tb[2] - ta[2]) * t;
+      const ta = BIOMES[B.a].tint, tb = BIOMES[B.b].tint, t = B.t, k = WORLD_BIOME.tintMix ?? 1;
+      out.r *= 1 + (ta[0] + (tb[0] - ta[0]) * t - 1) * k;
+      out.g *= 1 + (ta[1] + (tb[1] - ta[1]) * t - 1) * k;
+      out.b *= 1 + (ta[2] + (tb[2] - ta[2]) * t - 1) * k;
     }
     // Lakes: wet mud under the water, a pale beach around it.
     const u = this.field.lakes.shoreU(x, z);
@@ -1224,7 +1227,8 @@ export class ChunkManager {
     if (bare) {
       const keep = smoothstep(V[1], V[1] + 3, av) * (u < 1.5 ? smoothstep(1.1, 1.4, u) : 1) * (1 - snow * 0.7);
       // Half the land is flatter than ny 0.99, a tenth steeper than 0.88.
-      let rock = smoothstep(0.87, 0.7, ny + (fine - 0.5) * 0.1);
+      const RS = WORLD_BIOME.rockSlope || ROCK_SLOPE;
+      let rock = smoothstep(RS[0], RS[1], ny + (fine - 0.5) * 0.1);
       // Crest outcrops only where the crest falls away: on a flat top a grey
       // patch with no relief reads as a puddle, not a tor.
       rock = Math.max(rock, ridge * smoothstep(0.66, 0.78, m2) * smoothstep(0.995, 0.95, ny) * 0.85, smoothstep(260, 460, rel) * 0.7);
@@ -2333,6 +2337,11 @@ export class ChunkManager {
       colours[o] = (colors[i0 * 3] * w0 + colors[i1 * 3] * w1 + colors[i2 * 3] * w2) * lift;
       colours[o + 1] = (colors[i0 * 3 + 1] * w0 + colors[i1 * 3 + 1] * w1 + colors[i2 * 3 + 1] * w2) * lift;
       colours[o + 2] = (colors[i0 * 3 + 2] * w0 + colors[i1 * 3 + 2] * w1 + colors[i2 * 3 + 2] * w2) * lift;
+      // A world biome may turn the tufts toward its own (snow: dead straw standing out of it).
+      if (GRASS_COL) {
+        const [c, k] = GRASS_COL;
+        for (let q = 0; q < 3; q++) colours[o + q] += (c[q] * lift - colours[o + q]) * k;
+      }
       // Which tuft. In bloom (the biome's flower share) it is a flower tuft
       // with a head from the biome's palette; otherwise the biome's sward mix
       // of meadow / seed / clover. The woodland floor is long sward and seed.

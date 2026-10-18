@@ -6,7 +6,7 @@
  */
 
 import { alea, clamp, lerp, smoothstep } from './util.js';
-import { TERRAIN } from './config.js';
+import { TERRAIN, WORLD_BIOME } from './config.js';
 
 /* ------------------------------------------------------- gradient noise -- */
 
@@ -248,6 +248,26 @@ export function createTerrain(seed) {
     return terraced * 135 + 18;
   }
 
+  // Dunes (desert worlds): transverse ridges across one prevailing wind,
+  // ~210 m apart — a long windward back and a steep slip face, each half a
+  // smoothstep so crest and trough are both level (C1, no knife edge). The
+  // crests wander with a warp and rise and fall along their length, which is
+  // what turns parallel lines into a dune field; a slow field decides dune
+  // sea from flat gravel plain between them.
+  const WIND_C = Math.cos(0.5), WIND_S = Math.sin(0.5);
+  function dunesH(x, y) {
+    const sea = smoothstep(-0.12, 0.22, fbm(nB, x + 1903.1, y - 711.7, 0.00021, 2, 0.5));
+    if (sea <= 0) return 0;
+    const along = x * WIND_C + y * WIND_S, across = y * WIND_C - x * WIND_S;
+    const ph = (along + fbm(nC, x - 77.7, y + 301.3, 0.0011, 2, 0.5) * 160) / 210;
+    const p = ph - Math.floor(ph);
+    const a = 0.74;
+    const t = p < a ? p / a : (1 - p) / (1 - a);
+    const crest = t * t * (3 - 2 * t);
+    const amp = 6 + 12 * smoothstep(-0.4, 0.5, fbm(nA, across * 0.6 - 431.9, along * 0.15 + 88.3, 0.0021, 2, 0.5));
+    return (crest - 0.35) * amp * sea;
+  }
+
   /* -------------------------------------------------------- continental -- */
 
   // The elevation the whole map sits on. Every archetype is a mean, and the
@@ -303,7 +323,7 @@ export function createTerrain(seed) {
       (w.mountain > E ? w.mountain * mountainH(wx, wy) : 0) +
       (w.canyon > E ? w.canyon * canyonH(wx, wy) : 0) +
       (w.plateau > E ? w.plateau * plateauH(wx, wy) : 0)
-    ) * TERRAIN.relief + continent(x, z);
+    ) * TERRAIN.relief + continent(x, z) + (WORLD_BIOME.dunes ? dunesH(wx, wy) : 0);
     lodOct = 99;
     return h;
   }
@@ -323,8 +343,10 @@ export function createTerrain(seed) {
     // sample honestly; it dies before the far field like the base octaves.
     const mid = 1 - smoothstep(150, 380, lateral);
 
-    h += erodedFbm(nC, x, z, 0.0075, 3, 0.5, 0.5) * 6.2 * lerp(0.35, 1, graded) * mid;
-    h += fbm(nC, x + 91.3, z - 55.1, 0.028, 2, 0.5) * 0.85 * detail * graded;
+    // Sand and snow lie smooth: the world biome scales the roughness down.
+    const rough = WORLD_BIOME.roughness ?? 1;
+    h += erodedFbm(nC, x, z, 0.0075, 3, 0.5, 0.5) * 6.2 * lerp(0.35, 1, graded) * mid * rough;
+    h += fbm(nC, x + 91.3, z - 55.1, 0.028, 2, 0.5) * 0.85 * detail * graded * rough;
     return h;
   }
 

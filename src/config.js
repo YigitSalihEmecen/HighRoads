@@ -568,6 +568,8 @@ export const GROUND = {
    */
   sward: {
     enabled: true,
+    /** What the tile is grown as: grass, grass under fallen leaves, snow, rippled sand (`WORLDS`). */
+    kind: 'grass',
     /** Texels a side, and metres of ground the tile covers. */
     size: 1024,
     tile: 3.0,
@@ -1430,6 +1432,8 @@ try {
  * the sheet is built from it, so a knob added there appears in it.
  */
 export const TERRAIN = {
+  /** The world's climate, a key of `WORLDS`: the whole world is that biome. */
+  biome: 'temperate',
   /** Lanes each way: 2 (the dual carriageway) or 1 (a two-lane country road). */
   lanes: 2,
   /** Height of the landforms, × the generator's. */
@@ -1456,6 +1460,9 @@ export const TERRAIN = {
 
 /** The menu, in order: `options` is a segmented switch, `toggle` an on/off, otherwise a slider. */
 export const TERRAIN_SPEC = [
+  { group: 'Climate' },
+  { key: 'biome', label: 'Biome', options: [['temperate', 'Temperate'], ['snow', 'Snowy'], ['desert', 'Desert'], ['fall', 'Fall']],
+    hint: 'what the whole world is: green country, deep winter, sand sea or autumn woods' },
   { group: 'Road' },
   { key: 'lanes', label: 'Lanes', options: [[2, 'Four'], [1, 'Two']], hint: 'four lanes, or a two-lane country road' },
   { key: 'barriers', label: 'Barriers', toggle: true, hint: 'steel guardrail and timber fence on bends and drops' },
@@ -1479,6 +1486,91 @@ export const TERRAIN_SPEC = [
   { key: 'cities', label: 'Cities', toggle: true, hint: 'cities on the horizon' },
 ];
 
+/**
+ * THE WORLD BIOMES (`TERRAIN.biome`). Each rewrites the config below before
+ * anything builds, so one choice reaches every system:
+ *
+ *   biomes     which `biomes.js` regions the Worley cells may pick from
+ *   relief, mix, roughness   × the landforms (`noise.js`); `dunes` adds a dune field
+ *   colors     overrides of `TERRAIN_COLORS` (the ground palette)
+ *   tintMix    how much of each region's own ground cast survives (0..1)
+ *   rockSlope  ny range over which steep ground goes to bare rock (`_groundColor`)
+ *   snowLine   whether high ground still takes snow
+ *   ground     overrides of `GROUND` contrast, and `sward` — the relief tile
+ *              marched near the car: `kind` grass / leaves / snow / sand
+ *   grass      × ground cover; `grassCol` [rgb, share] tufts go toward
+ *   bare       species grown without leaves; `snow` lies on every branch (0..1)
+ *   fallLeaves every broadleaf in autumn colour; `autumnShare` as in `TREES`
+ *   verge      false: no gravel verge, the ground runs to the asphalt (snow)
+ *   road       what lies on the carriageway: 'snow' | 'sand' | 'leaves'
+ *   sky        × fog colour and density, × exposure, the ground bounce, the grade's
+ *              warm/cool pair (`applySky`)
+ */
+export const WORLDS = {
+  temperate: {
+    label: 'Temperate',
+    biomes: ['meadow', 'broadleaf', 'autumn', 'boreal', 'birchwood', 'savanna', 'mediterranean', 'alpine', 'wetland', 'blossom'],
+  },
+  snow: {
+    label: 'Snowy',
+    biomes: ['boreal', 'birchwood', 'alpine', 'broadleaf'],
+    relief: 1.1, mix: { mountain: 1.5, hills: 1.2, plains: 0.8 },
+    colors: {
+      grassLow: 0xe9eef3, grassHigh: 0xf1f4f7, grassDeep: 0xdde5ee, grassDry: 0xf6f3ec,
+      scrub: 0x8b857c, rock: 0x6c6965, dirt: 0xe4e9ee,
+      lush: 0xd3deeb, shade: 0xc4d3e6,
+      bracken: 0xe2e7ea, heather: 0xdce2e9, fresh: 0xf7f9fb, rush: 0xd0d9e2,
+      soil: 0x5a5047, peak: 0xf0f3f6, snow: 0xf2f5f8, sand: 0xe4e9ee, mud: 0x6b7276,
+    },
+    tintMix: 0.15, rockSlope: [0.9, 0.77], soil: 0.35, verge: false,
+    ground: { contrastNear: 0.12, contrastFar: 0.1, sward: { kind: 'snow', tile: 4, depth: 0.07, contrast: 1, fade: [10, 34] } },
+    grass: 0.14, grassCol: [[0.62, 0.52, 0.34], 0.85],
+    bare: ['oak', 'maple', 'beech', 'birch', 'aspen', 'poplar', 'larch', 'willow', 'cherry', 'olive', 'acacia',
+      'bramble', 'hazel', 'rosebush', 'fern', 'gorse', 'heather', 'lavender', 'reeds'],
+    snow: 1,
+    road: 'snow',
+    sky: { fog: [0.97, 1.0, 1.05], fogDensity: 1.25, exposure: 0.8, hemiGround: 0xdfe6ee, grade: [0xf4efe8, 0x9fb8e0] },
+  },
+  desert: {
+    label: 'Desert',
+    biomes: ['erg', 'reg', 'savanna'],
+    // Mostly flat: plains and tablelands; the rare jebel and wadi keep it from boredom.
+    relief: 0.6, roughness: 0.25, dunes: true,
+    mix: { plains: 3, hills: 0.45, valley: 0.15, mountain: 0.12, canyon: 0.6, plateau: 1.1 },
+    colors: {
+      grassLow: 0xdcbc8c, grassHigh: 0xe0c697, grassDeep: 0xcfa874, grassDry: 0xead3a6,
+      scrub: 0xb38c63, rock: 0xa8684a, dirt: 0xb89f7c,
+      lush: 0xc0965f, shade: 0xc7a47a,
+      bracken: 0xd6a978, heather: 0xae9677, fresh: 0xe6cf9f, rush: 0xa48c63,
+      soil: 0xc59c70, peak: 0xc9a07c, snow: 0xc9a07c, sand: 0xe6d3a9, mud: 0x7a6a50,
+    },
+    tintMix: 0.3, rockSlope: [0.86, 0.68], snowLine: false, soil: 0.2,
+    ground: { contrastNear: 0.2, contrastFar: 0.18, sward: { kind: 'sand', tile: 6, depth: 0.05, contrast: 1, fade: [12, 40] } },
+    grass: 0.35, grassCol: [[0.78, 0.66, 0.42], 0.5],
+    road: 'sand',
+    sky: { fog: [1.06, 1.0, 0.88], fogDensity: 1.15, exposure: 0.92, hemiGround: 0xc9a77c },
+  },
+  fall: {
+    label: 'Fall',
+    biomes: ['autumn', 'broadleaf', 'birchwood', 'meadow', 'wetland'],
+    colors: {
+      grassLow: 0x98884a, grassHigh: 0xab9554, grassDeep: 0x78683b, grassDry: 0xbf9252,
+      scrub: 0x7c6440, dirt: 0x8e7a5e,
+      lush: 0x7b7740, shade: 0x726a49,
+      bracken: 0xa95f2e, heather: 0x86584a, fresh: 0xae9d4c, rush: 0x6b5c35,
+    },
+    tintMix: 0.6,
+    ground: { sward: { kind: 'leaves', leaves: 900 } },
+    grassCol: [[0.66, 0.55, 0.3], 0.5],
+    fallLeaves: true, autumnShare: 0.35,
+    road: 'leaves',
+    sky: { fog: [1.04, 1.0, 0.92] },
+  },
+};
+
+/** The world biome in force this load (`TERRAIN.biome`), set by `applyTerrain`. */
+export let WORLD_BIOME = WORLDS.temperate;
+
 const TERRAIN_KEY = 'highroads.terrain';
 const TERRAIN_DEFAULTS = JSON.parse(JSON.stringify(TERRAIN));
 const pathGet = (o, k) => k.split('.').reduce((a, p) => (a == null ? a : a[p]), o);
@@ -1497,10 +1589,13 @@ function terrainValue(spec, v) {
 
 /** The knob values in force this load, `{ key: value }` (dotted keys). */
 export function terrainSettings() {
+  if (chosen) return { ...chosen };
   const out = {};
   for (const sp of TERRAIN_SPEC) if (sp.key) out[sp.key] = pathGet(TERRAIN, sp.key);
   return out;
 }
+/** The knobs as chosen, before the world biome scaled any of them. */
+let chosen = null;
 
 export const terrainDefault = (key) => pathGet(TERRAIN_DEFAULTS, key);
 
@@ -1529,6 +1624,9 @@ function applyTerrain() {
     }
   }
 
+  chosen = terrainSettings();
+  applyWorld(WORLDS[TERRAIN.biome] || WORLDS.temperate);
+
   // The road's width, and everything sized off it.
   ROAD.lanesPerSide = TERRAIN.lanes;
   ROAD.halfWidth = ROAD.laneWidth * TERRAIN.lanes;
@@ -1552,6 +1650,29 @@ function applyTerrain() {
   GRASS.wood.density *= TERRAIN.grass;
   TOWNS.cities = TOWNS.cities && TERRAIN.cities;
   BARRIERS.enabled = BARRIERS.enabled && TERRAIN.barriers;
+}
+
+/** Rewrites the config for one world biome (see `WORLDS`). */
+function applyWorld(W) {
+  WORLD_BIOME = W;
+  if (W.relief) TERRAIN.relief *= W.relief;
+  for (const k in W.mix || {}) TERRAIN.mix[k] *= W.mix[k];
+  if (W.soil != null) TERRAIN.soil *= W.soil;
+  Object.assign(TERRAIN_COLORS, W.colors);
+  const G = W.ground || {};
+  for (const k of ['contrastNear', 'contrastFar']) if (G[k] != null) GROUND[k] = G[k];
+  if (G.sward) {
+    // Low graphics marches nothing (depth 0); a world keeps that.
+    const depth = GROUND.sward.depth;
+    Object.assign(GROUND.sward, G.sward);
+    if (!depth) GROUND.sward.depth = 0;
+  }
+  if (W.grass != null) {
+    GRASS.density *= W.grass;
+    GRASS.wood.density *= W.grass;
+  }
+  if (W.autumnShare != null) TREES.autumnShare = W.autumnShare;
+  if (W.verge === false) GROUND.verge.enabled = false;
 }
 
 applyTerrain();
