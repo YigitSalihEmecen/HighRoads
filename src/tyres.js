@@ -19,7 +19,9 @@ const T = {
   volume: 0.22,
   /** Seconds of smoothing on speed and surface weights, so a bump is not a click. */
   smoothing: 0.08,
-  rampTime: 0.04,
+  /** Surface weights follow the wheels almost at once: a boundary is an edge, not a fade. */
+  surfaceSmoothing: 0.015,
+  rampTime: 0.012,
   /** Layer levels at full tilt. */
   roadLevel: 0.6,
   gravelLevel: 0.7,
@@ -203,8 +205,8 @@ export class TyreSound {
         slip += w.slipAmount;
 
         const lat = Math.abs(path.lateralOffset(w.contact, s));
-        const toGrass = smoothstep(edge + 2.4, edge + 4.5, lat);
-        const toGravel = smoothstep(edge - 0.4, edge + 0.8, lat);
+        const toGrass = smoothstep(edge + 3.0, edge + 3.4, lat);
+        const toGravel = smoothstep(edge, edge + 0.3, lat);
         grass += toGrass;
         gravel += toGravel * (1 - toGrass);
         road += 1 - toGravel;
@@ -217,9 +219,10 @@ export class TyreSound {
 
     const k = 1 - Math.exp(-dt / T.smoothing);
     this._speed += (speed * (n ? 1 : 0) - this._speed) * k;
-    this._road += (road - this._road) * k;
-    this._gravel += (gravel - this._gravel) * k;
-    this._grass += (grass - this._grass) * k;
+    const ks = 1 - Math.exp(-dt / T.surfaceSmoothing);
+    this._road += (road - this._road) * ks;
+    this._gravel += (gravel - this._gravel) * ks;
+    this._grass += (grass - this._grass) * ks;
     this._slip += (slip - this._slip) * k;
     this._flutter += (Math.random() - 0.5 - this._flutter) * Math.min(1, dt * 14);
 

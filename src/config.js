@@ -703,7 +703,7 @@ export const TOWNS = {
  */
 export const WIND = {
   /** Master level for the whole layer, 0..1. Exposed in the settings drawer. */
-  volume: 0.45,
+  volume: 0.1,
 
   /** Seconds of noise generated at boot. Long enough that the loop is inaudible. */
   bufferSeconds: 10,
