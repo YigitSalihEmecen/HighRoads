@@ -6,7 +6,7 @@
  * how fast it is really turning (wheelspin included) and how hard it is
  * slipping; those become the gains and filters of four noise layers:
  *
- *   road   – pink noise roar + tread hum, chopped at the wheels' rotation rate
+ *   road   – smooth pink-noise roar + tread hum
  *   gravel – stone crackle (sparse grains, rate follows speed) over a crunch bed
  *   grass  – soft low swish with a slow flutter
  *   squeal – resonant noise bands on tarmac when a tyre lets go
@@ -17,8 +17,6 @@ import { clamp, smoothstep } from './util.js';
 
 const T = {
   volume: 0.22,
-  /** Rolling circumference of a tyre, m: sets the rotation rate of the hum. */
-  circumference: 2.0,
   /** Seconds of smoothing on speed and surface weights, so a bump is not a click. */
   smoothing: 0.08,
   rampTime: 0.04,
@@ -132,20 +130,14 @@ export class TyreSound {
     this.roadRumble = filter('lowpass', 160, 0.9);
     this.roadHum = filter('bandpass', 450, 3);
     this.roadGain = gain();
-    // The wheels' rotation chops the roar: a tyre is not a smooth source.
-    this.roadChop = gain(1);
-    this.chopLfo = ctx.createOscillator();
-    this.chopLfo.frequency.value = 1;
-    const chopDepth = gain(0.22);
-    this.chopLfo.connect(chopDepth).connect(this.roadChop.gain);
-    this.chopLfo.start();
+    this.roadMix = gain(1);
     const roadSrc = src(pink);
-    roadSrc.connect(this.roadRoar).connect(this.roadChop);
-    roadSrc.connect(this.roadRumble).connect(this.roadChop);
+    roadSrc.connect(this.roadRoar).connect(this.roadMix);
+    roadSrc.connect(this.roadRumble).connect(this.roadMix);
     const humGain = gain(0.3);
-    roadSrc.connect(this.roadHum).connect(humGain).connect(this.roadChop);
+    roadSrc.connect(this.roadHum).connect(humGain).connect(this.roadMix);
     // Rubber is dull: nothing above the mids gets through.
-    this.roadChop.connect(filter('lowpass', 1100, 0.5)).connect(this.roadGain).connect(this.master);
+    this.roadMix.connect(filter('lowpass', 1100, 0.5)).connect(this.roadGain).connect(this.master);
 
     // ---- gravel: stone crackle over a crunch bed ----------------------------
     this.grainSrc = src(grains);
@@ -249,7 +241,6 @@ export class TyreSound {
     set(this.roadRoar.frequency, 220 + 420 * t);
     set(this.roadRumble.frequency, 90 + 110 * t);
     set(this.roadHum.frequency, 320 + 480 * t);
-    set(this.chopLfo.frequency, Math.max(0.5, v / T.circumference));
 
     set(this.gravelGain.gain,
       level * this._gravel * T.gravelLevel * (1 + 0.8 * slide) * (0.85 + 0.3 * this._flutter));
@@ -284,11 +275,6 @@ export class TyreSound {
     for (const s of this._sources || []) {
       try { s.stop(); } catch (err) { /* already stopped */ }
       s.disconnect();
-    }
-    for (const o of [this.chopLfo]) {
-      if (!o) continue;
-      try { o.stop(); } catch (err) { /* already stopped */ }
-      o.disconnect();
     }
     this.ctx = null;
   }
