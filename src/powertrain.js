@@ -42,6 +42,11 @@ const REVERSE_FROM = 10, REVERSE_TO = 12.5;
 // engine_sim derives `launchRate` once from the preset it was built with;
 // `setCar` recomputes it via `_retuneLaunch` for the car actually on screen.
 const LAUNCH_RATE_FRAC = 0.9;
+// Wheelspin shown for a launch whose clutch slips the full flare, m/s. Slip is
+// scaled by the flare rather than converted through the gear ratio: that
+// conversion divides by ratio, so first gear read as a third of the spin that
+// fifth did and only a fifth-gear launch ever smoked.
+const LAUNCH_SMOKE = 14;
 
 // Builds a drivetrain profile from the car's own derived parameters, so the
 // simulator's inertias and resistances describe the vehicle actually on screen.
@@ -421,7 +426,7 @@ export class Powertrain {
     const ratio = params ? Math.abs(params.gearRatio) : 0;
     // Pulling away only: a clutch slipping after a shift at speed is not a launch.
     this.launchSlip = ratio > 0 && !params.shiftPhase && throttle > 0.3
-      ? dir * throttle * Math.max(0, params.clutchSlip) * (Math.PI / 30) / ratio * V.wheelRadius
+      ? dir * throttle * (Math.max(0, params.clutchSlip) / p.launchFlareRpm) * LAUNCH_SMOKE
         * (1 - smoothstep(6, 16, Math.abs(state.wheelSpeed)))
       : 0;
 
