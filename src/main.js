@@ -854,6 +854,8 @@ class Game {
       if (this.powertrain.autoShift) this.setAutoShift(false);
       else if (!this.powertrain.shiftDown()) this.hud.toast('would over-rev');
     }
+    const shiftTap = this.input.consume('ShiftLeft') | this.input.consume('ShiftRight');
+    if (shiftTap) this.hud.toast(this.powertrain.setTurbo(!this.powertrain.turbo) ? 'turbo on' : 'turbo off');
     if (this.input.consume('KeyG')) this.setAutoShift(!this.powertrain.autoShift);
     if (this.input.consume('KeyT')) {
       // Recentre: the phone's current attitude becomes straight ahead.

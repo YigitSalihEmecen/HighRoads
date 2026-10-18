@@ -124,6 +124,7 @@ export class Powertrain {
     this.engineChoice = 'stock';
     // Manual holds the gear until the driver asks.
     this.autoShift = true;
+    this.turbo = false;
     // `mechanical` is OFF deliberately: engine_sim's MechanicalLayer band-passed
     // noise is just a hiss over the note on this game; the transients bus stays.
     this.mix = { exhaust: 1.0, intake: 0.6, mechanical: 0.0, transmission: 0.22,
@@ -142,6 +143,12 @@ export class Powertrain {
     this.autoShift = !!on;
     if (this.sim) this.sim.setAutoShift(this.autoShift);
     return this.autoShift;
+  }
+
+  setTurbo(on) {
+    this.turbo = !!on;
+    if (this.sim) this.sim.setTurbo(this.turbo);
+    return this.turbo;
   }
 
   // Returns false if the simulator refused (it guards against over-revving).
@@ -237,6 +244,7 @@ export class Powertrain {
     this.sim = new EngineSim(audioContext, {
       engine: this.engineId(),
       vehicle: 'sports',
+      turbo: this.turbo,
       volume: this.volume,
     });
 
