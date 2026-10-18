@@ -16,7 +16,7 @@ import { ROAD } from './config.js';
 import { clamp, smoothstep } from './util.js';
 
 const T = {
-  volume: 0.22,
+  volume: 0.11,
   /** Seconds of smoothing on speed and surface weights, so a bump is not a click. */
   smoothing: 0.08,
   /** Surface weights follow the wheels almost at once: a boundary is an edge, not a fade. */
