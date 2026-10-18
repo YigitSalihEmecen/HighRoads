@@ -1401,10 +1401,12 @@ density, which is a look decision, not a free one.
 
 ---
 
-### 4.26 The terrain menu (`config.js:TERRAIN`, Settings › Terrain)
+### 4.26 The World sheet (`config.js:TERRAIN`, title › World)
 
 Every world knob a player may turn, in `TERRAIN` with its spec `TERRAIN_SPEC`
-(the settings tab is built from the spec). Saved to `highroads.terrain` and
+(`settings.js:WorldSheet` is built from the spec: World / Road / Landscape /
+Ground tabs, plus the seed and the sky, which used to live in the mode screen
+and Settings › Graphics). The seed goes in the URL on Apply. Saved to `highroads.terrain` and
 applied by `applyTerrain` after `applyGraphics`, before anything builds; Apply
 reloads, like the graphics level. `?terrain={"lanes":1}` overrides it for one
 load (a world's settings as a link; the probes' A/B — `vista.mjs QUERY=`).
@@ -1420,6 +1422,31 @@ against a saved setting.
 | rock, soil, dryness | `_groundColor`'s bare weights and dry/lush |
 | lakes | the lake chance per cell |
 | cities, barriers, signs | `TOWNS.cities`, `BARRIERS.enabled`, sign feature chance and chevron step |
+| biome | the world biome, below |
+
+### 4.27 World biomes (`config.js:WORLDS`, `TERRAIN.biome`)
+
+The whole world is one of Temperate / Snowy / Desert / Fall. `applyWorld`
+rewrites config before anything builds (so `WORLD_BIOME` is a constant for
+the load); `terrainSettings()` returns the knobs as CHOSEN, before the biome
+scaled `relief`/`mix`/`soil`, so the sheet never shows the scaled values.
+
+| reaches | how |
+|---|---|
+| regions | `biomes.js` cells pick only from `WORLDS[*].biomes` (desert adds `erg`, `reg`) |
+| landforms | relief/mix ×; `roughness` scales `height()`'s mid/fine terms; `dunes` adds `noise.js:dunesH` to `base` (transverse, 210 m, slip face 26 %, a dune-sea mask) |
+| verge | `verge: false` (snow): no gravel band, the ground's own snow runs to the asphalt |
+| ground colour | `TERRAIN_COLORS` overrides; `tintMix` damps the regions' casts; `rockSlope` (snow: steeps go to rock); `snowLine: false` |
+| relief tile | `GROUND.sward.kind`: `snowMaps`, `sandMaps` (ripples, whole crest counts per tile so it tiles; `uHexSpin` 0.06 keeps hex copies to the wind) under `FR_TINT` (albedo a multiplier on the ground colour); `leafLitter` under `FR_LEAVES`: turf plus leaves that each carry a RANK, shown only where the rank is under the litter (below). The march runs on any non-bare ground, not only green |
+| litter | `forest.js:litterMap`: every placed tree and shrub splatted straight down at 1.9× its crown into a second top-down map beside the canopy shadow map (same render, same refresh). Ground and road read it (`LITTER_GLSL`), so leaves lie round the woods and none on open land. A field-based guess (the canopy density) was tried first and read ~0.85 over open meadow — tree caps, not the field, decide where trees stand |
+| road | snow/sand: a DRIFT LAYER marched over the asphalt through the ground's own relief tile (`createRoadAssets({ cover })`): `fr_drift` is a warped, road-smeared mask (edges, rarely mid-lane, never the wheel paths; sand in slanted tongues), linearised about the pixel for the march (so it has NO fine octave: a 20 cm one made the linear guess invent snow over the ~0.4 m a grazing ray crosses, and drifts changed as the camera came up to them — the tile breaks the rim instead, sampled exactly), tapered at the rim; normal from its slope. The road surface is the drift's FLOOR, so the march starts where the ray crosses the drift's top plane, nearer the camera, and ends on the road (the turf is the other way up) — drifts keep their footprint at every angle. `probe/road.html?terrain=…` takes the ground tile too. `FR_COVER_LEAVES`: a 0.17 m lattice of lens leaves × the litter, a stain past 40 m |
+| trees | `bare` → TreeGen `leaves: 0`; `snow` → every TreeGen material whitens where the world normal looks up (`windify`); `fallLeaves` → `treegen.js:FALL_PALETTES` for deciduous species |
+| grass | density ×, `grassCol` pulls tufts toward straw |
+| air | `sky.js:applySky` × fog colour/density, × exposure, ground bounce, grade pair |
+
+`probe/render.mjs` takes `QUERY='terrain={"biome":"snow"}'`, `AUTO=1` (auto
+drive, stays on the road) and `PRE='js'` (on the title, before its shot).
+Node probes: `--localstorage-file=f.json` with `highroads.terrain` set.
 
 ## 5. The config contract
 
