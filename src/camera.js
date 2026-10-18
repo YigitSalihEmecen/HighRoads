@@ -208,7 +208,7 @@ export class ChaseCamera {
 
     this._target
       .copy(this._pivot)
-      .addScaledVector(this.heading, cfg.ahead + speedT * 4)
+      .addScaledVector(this.heading, cfg.ahead + speedT * 1.5)
       .addScaledVector(WORLD_UP, CAMERA.aimHeight * hScale);
 
     if (this.initialised && this._introT < 1) {
@@ -348,7 +348,7 @@ export class ChaseCamera {
   }
 
   _applyFov(dt, speedT, vehicle, zoom = 1) {
-    const target = CAMERA.fov + speedT * CAMERA.fovSpeedGain * zoom + vehicle.slip * 2;
+    const target = CAMERA.fov + speedT * CAMERA.fovSpeedGain * zoom + vehicle.slip * 0.5;
     this.fov = damp(this.fov, target, 2.2, dt);
     if (Math.abs(this.camera.fov - this.fov) > 0.01) {
       this.camera.fov = this.fov;
