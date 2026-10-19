@@ -21,7 +21,7 @@ import { createBarrierMaterials, BarrierMesher, barrierRuns } from './env/barrie
 import { createTreeAssets } from './env/legacy/trees.js';
 import { createTreeGenAssets } from './env/treegen.js';
 import { Forest } from './forest.js';
-import { TerrainField, ROAD_SINK } from './terrainfield.js';
+import { TerrainField, ROAD_SINK, FAR as CARVE_REACH } from './terrainfield.js';
 import { PERF } from './perf.js';
 import { InstanceCuller } from './instcull.js';
 import { WorldTiles } from './worldtiles.js';
@@ -606,6 +606,7 @@ export class ChunkManager {
     {
       const fp = this.focus || this.path.frameAt(carS, this._frame).pos;
       const t0 = PERF.on ? performance.now() : 0;
+      this._growRoad(fp.x, fp.z, 3);
       this.tiles.update(fp.x, fp.z, TILES.buildPerFrame,
         Math.max(TILES.msPerFrame, Math.min(0.25 * (this._frameMs || 16.7), 30)));
       if (PERF.on) PERF.add('.tiles', performance.now() - t0);
@@ -689,6 +690,25 @@ export class ChunkManager {
     this._cullGrass(carS);
   }
 
+  /**
+   * Grows the road until its end is out of reach of every built tile. New
+   * road reshapes the ground within CARVE_REACH of it (the carve, and the
+   * octave budget keyed on road distance), so road generated any nearer
+   * rebuilt hillsides in full view and left stale ground standing over the
+   * new ribbon until the rebuild caught up (probe/pops.mjs). `steps` caps the
+   * control points per call: where the road swings back toward the car an
+   * uncapped catch-up was a 9 ms frame.
+   */
+  _growRoad(fx, fz, steps = 512) {
+    const R = TILES.radius + CARVE_REACH + ROAD.ctrlSpacing;
+    const path = this.path;
+    for (let n = 0; n < steps; n++) {
+      const e = path.pts[path.framedUpTo].p;
+      if (Math.hypot(e.x - fx, e.z - fz) > R) return;
+      path.ensureLength(path.length + ROAD.ctrlSpacing);
+    }
+  }
+
   /** Builds `count` chunks immediately — used once, before the first frame. */
   preload(carS, count = CHUNK.preload) {
     const center = Math.floor(carS / CHUNK.length);
@@ -701,6 +721,7 @@ export class ChunkManager {
     }
     this._stepSheets(center, Infinity);
     const fp = this.path.frameAt(carS, this._frame).pos;
+    this._growRoad(fp.x, fp.z);
     this.tiles.preload(fp.x, fp.z);
     while (this._flushProps());
   }

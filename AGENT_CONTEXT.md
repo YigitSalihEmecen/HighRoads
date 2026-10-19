@@ -193,13 +193,20 @@ leave a hole. That is the whole idea.
 2. The road distance field: a spatial hash of dense spline samples (32 m
    cells) and of the control polyline (200 m cells) gives the nearest road
    passes. Each pass contributes its own cut/fill target; passes are blended by
-   `exp(−Δd/12)` on their distance, so where the road doubles back the ground
-   is the smooth compromise of both, never a step.
+   `exp(−Δd/12) / (max(d − edge, 0)² + 1)`, so where the road doubles back the
+   ground is the smooth compromise of both, never a step — and each pass owns
+   its own carriageway outright (the exponential alone let a pass 35 m off and
+   18 m higher lift the ground a metre over the lanes, seed `dune`).
 3. Under the lanes the ground sits `ROAD_SINK` (0.16 m) under the ribbon, so
    the ribbon (still road-space, with its own collider) is always on top.
 4. `Lakes.carve` (below) last.
 
-The hash grows with the road (`sync()` → `onGrow` listeners). Results are
+The hash grows with the road (`sync()` → `onGrow` listeners). **The road is
+generated until its END is `TILES.radius + FAR` from the car**
+(`chunks.js:_growRoad`): new road reshapes everything within `FAR` (650 m) of
+it, carve and octave budget alike, so road grown any nearer rebuilt hillsides in
+full view — 600–840 tiles a minute on twisty seeds — and left stale ground over
+the new ribbon, up to 46 m (`probe/pops.mjs`). Results are
 cached per region (`beginRegion`/`endRegion`) while a tile builds. The right
 vector everywhere is `(−tan.z, tan.x)`.
 

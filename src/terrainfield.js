@@ -30,9 +30,10 @@
  *
  * Where the route doubles back, more than one pass of the road is in range. Each
  * pass produces its own clamped height and the results are blended with weights
- * that fall off exponentially with distance (`CARVE_FALLOFF`). On a carriageway
- * the own pass's weight dominates the next one (≥ 160 m away by the router's
- * self-clearance invariant) by e^-13, so the road is exact; between two passes
+ * that fall off exponentially with distance (`CARVE_FALLOFF`) and with the
+ * inverse square of the distance past the shoulder. The router lets a pass come
+ * back within ~35 m of an earlier one, so the square term is what keeps the road
+ * exact: on its carriageway a pass's weight is 1, the other's ~1e-4; between two passes
  * the blend is smooth, so there is no seam where "nearest road" switches. This
  * replaces the foreign-segment clamp and every bug it accumulated (#55, #57, #60).
  *
@@ -51,7 +52,7 @@ const UP = new THREE.Vector3(0, 1, 0);
 /** Below this, a pass is refined against the dense spline samples. */
 const NEAR = 96;
 /** Beyond this no road influences the ground. */
-const FAR = 650;
+export const FAR = 650;
 /** Metres over which another pass's weight falls by e. */
 const CARVE_FALLOFF = 12;
 /** Dense spatial-hash cell, metres. */
@@ -311,7 +312,11 @@ export class TerrainField {
       }
       y -= sink;
 
-      const w = Math.exp(-(P.d - dMin) / CARVE_FALLOFF);
+      // The inverse-square term makes a pass own its carriageway outright: on
+      // the exponential alone a pass 35 m off and 18 m higher lifted the
+      // ground a metre over the lanes (seed 'dune', probe/pops.mjs).
+      const e = Math.max(P.d - EDGE, 0);
+      const w = Math.exp(-(P.d - dMin) / CARVE_FALLOFF) / (e * e + 1);
       num += w * y;
       den += w;
     }
