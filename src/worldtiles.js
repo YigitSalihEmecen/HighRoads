@@ -50,7 +50,7 @@ export class WorldTiles {
     this.tiles = new Map();          // key -> tile
     this.queue = [];
     this.focus = new THREE.Vector3();
-    this._sample = { y: 0, natural: 0, d: 0, s: 0, v: 0 };
+    this._sample = { y: 0, natural: 0, d: 0, s: 0, v: 0, open: 0 };
     this._color = new THREE.Color();
     this.built = 0;
     // New road changes the ground around it: rebuild whatever it reaches.
@@ -220,7 +220,8 @@ export class WorldTiles {
         const x = x0 + (gi - 1) * step;
         f.sample(x, z, smp);
         H[gj * G + gi] = smp.y;
-        if (gi >= 1 && gi <= V && gj >= 1 && gj <= V) D[(gj - 1) * V + (gi - 1)] = smp.d;
+        // Under a bridge is not the roadside: no verge down in the gap.
+        if (gi >= 1 && gi <= V && gj >= 1 && gj <= V) D[(gj - 1) * V + (gi - 1)] = smp.open > 0.5 ? 1e4 : smp.d;
       }
       f.endRegion();
       yield;

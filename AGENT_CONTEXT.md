@@ -36,6 +36,7 @@ car_gen/        car generator SUBMODULE (YigitSalihEmecen/Car-gen) — every car
 tree_gen/       tree generator SUBMODULE (YigitSalihEmecen/Tree-Gen) — every tree is grown; change it in its own repo, then bump
 roadsign_gen/   road-sign generator SUBMODULE (YigitSalihEmecen/Roadsign-gen) — TypeScript; we import its built lib/roadsign.js (§4.14b)
 city_gen/       building/block/city generator SUBMODULE (YigitSalihEmecen/City-Gen) — TypeScript; we import its built lib/citygen.js (§4.14c)
+bridge_gen/     bridge generator SUBMODULE (YigitSalihEmecen/Bridge-Gen) — plain ESM, imported from src/ (§4.14e)
 style_examples/ reference art the low-poly foliage was built against
 engine_sim/     vendored sibling — DO NOT EDIT
 ```
@@ -44,6 +45,7 @@ engine_sim/     vendored sibling — DO NOT EDIT
 |---|---|
 | `chunks.js` | terrain/road mesh, colliders, streaming, **every scatter** |
 | `forest.js` | the TreeGen canopy's draw: per-tree level of detail + culling over world-wide instanced meshes (§4.11b) |
+| `bridges.js` | gaps cut across the road (a term in the field) and every bridge, gap and valley: Bridge-gen's build fitted onto the road, colliders, rivers (§4.14e) |
 | `towns.js` | settlements: plans hamlets, villages and far cities along the road, levels their ground (a term in the field), builds them through a worker (§4.14c) |
 | `config.js` | all tunables, **23 blocks** + the graphics levels |
 | `vehicle.js` | raycast vehicle: suspension, tyres, aero, stability |
@@ -1153,6 +1155,65 @@ colliders. Built on the worker (50–170 ms in Node, which has none —
 
 `?towns=0` drops them for one load. `probe/towns.mjs` checks the plan (§10).
 
+### 4.14e Bridges (`bridge_gen/`, `bridges.js`, `path.js:_planCrossing`)
+
+Bridge-gen is plain ES modules importing only `three` and `three/addons/`, so
+it is imported straight from `bridge_gen/src/` (no bundle, no worker). Change
+it in its own repo, bump the pointer; `npm test` there checks every part is
+closed. Its library contract: `buildBridge(P)` builds straight along local X,
+deck at y = 0; `P.ground(x)` is the host's terrain under it; `P.segment` caps
+the deck's ring spacing (a flat deck is otherwise one ring per end, and a
+bridge bent onto the road would chord); `bakeTextures(renderer, _, { maxRes })`.
+
+**Two kinds, one span list** (`Bridges.spans`, in road order by `os0`, binary
+searched — `open()` runs per field sample):
+
+| kind | where | what makes it |
+|---|---|---|
+| gap | every `BRIDGES.every` of road from `first` | the ROUTER: `_planCrossing` lays a straight run at a steady grade (≤ `maxGrade`) and records a gap square-ish to it (`skew`), span/depth from `classes`. Refused where the run comes back alongside older road or stands > `maxEarth` off the land at its approaches; the gap closes (`reach`) short of older road. `_gapProximity` makes later road avoid it like its own (`wSelf`) |
+| valley | wherever the road, routed over its own ground, stands `valley.on` m over the natural ground at its centreline | `_scan`: stations in order from `valley.from`, a pure function of the road; held while over `off`, stretched to where it lands (`land`, at most `pad`), joined within `merge`, never into a gap's run. Follows bends: the warp carries banking |
+
+**The gap is a term in the natural ground** (`carve`, before the lakes):
+a channel along its line, rim `rimDrop` under the road (the rim follows the
+run's own grade), V/U/flat section `depth` deep, cut back at `wall` past the
+rim where the land is higher, wandering past 60–220 m from the road, closing
+by `reach`. The router's `_ground` never sees it — that is what keeps the road
+high. **The fill is withheld** (`open`, in `TerrainField.sample`'s dense pass:
+`y → min(natural, ceiling)`): over a gap on its own run, square to the gap's
+line with a `rim`-metre edge; over a valley span, ramped 8 m in at each end.
+Another pass of the road crossing a gap fills it as usual. `out.open` keeps the
+verge shading out from under a bridge (`worldtiles.js`).
+
+**Bends**: where the road stands high over its ground (`valley.on`), the router
+holds each turn to `ROUTE.bridgeTurn` of `maxCurvature` (`_addControlPoint`), so
+valley bridges sweep instead of tracing contours.
+
+**The bridge** (`design`): weights by length, depth, world biome and region
+biome — timber trestle for short gaps (a bridge ≤ 75 m, abutments counted, nearly always), stone arch(ade),
+steel or timber truss, girder viaduct, tied arch, cable-stayed, suspension (the
+last three never on a bend), and a solid stone causeway (Bridge-gen's
+`causeway`: the stone arch's body with no arches, buttressed) for dry valley
+bridges half on their hillside (`_groundProfile`'s `hill`: the share of deck
+whose high edge is within 3 m of it) — and every parameter rolled from the crossing's
+seed (a freed bridge rebuilt is the same bridge). Lanes and lane width make the
+deck exactly `halfWidth + shoulder` each side, so its asphalt is the shoulder;
+the ribbon carries on over it, 6 cm above the deck (`DECK`), so the road is
+seamless. Paint is dropped (under the ribbon). `_warp`: local x → station
+`sC + x` along the road's flat right, y += road height + z·tan(bank) — shears,
+so piers stay plumb; normals by the inverse transpose. `_groundProfile` gives
+Bridge-gen the lowest of centreline and both edges every 2 m.
+
+Colliders: the deck to its parapets (strip trimesh) and a wall per edge. `groundAt`
+reads the deck over a span; barriers stop 6 m short of one (turned down),
+signs keep 12 m off. Rivers (gaps only): a sheet wall to wall, each row
+`rise` (`riverRise` × depth) over the floor, using the lakes' water shader;
+dry rows where the gap stops cutting or the land at its ends is not above it.
+
+Built one at a time as a resumable job (`_buildJob`, ≤ 4 ms of steps a frame),
+within `buildRadius` (capped at the tile radius), freed past `keep`. Bridge-gen's
+own build is one step: ~5–30 ms, up to ~50 ms for a long stone arcade (its wall is extruded un-indexed and welded). A worker would hide it; not done.
+`?terrain={"bridges":false}` (World › Road) turns them off. `probe/bridges.mjs`.
+
 ### 4.15 Tyre effects (`fx.js`)
 
 Both driven by ONE quantity, `wheel.slipAmount` — the same number the skid audio
@@ -1476,7 +1537,7 @@ Node probes: `--localstorage-file=f.json` with `highroads.terrain` set.
 
 ## 5. The config contract
 
-`config.js` exports **23** blocks: `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `TREES`,
+`config.js` exports **25** blocks (`BARRIERS`, `BRIDGES` among them): `WORLD`, `ROAD`, `ROUTE`, `CHUNK`, `TREES`,
 `BUSHES`, `GRASS`, `ROAD_SURFACE`, `GROUND`, `SIGNS`, `TOWNS`, `WIND`, `FX`, `VEHICLE`,
 `TRAFFIC`, `CAMERA`, `TITLE`, `ATMOSPHERE`, `SCORE`, `TERRAIN_COLORS`, `TILES`,
 `BIOME`, `WATER` — plus
@@ -1501,7 +1562,7 @@ const files=[...fs.readdirSync('src').map(f=>'src/'+f),
              ...fs.readdirSync('src/env').map(f=>'src/env/'+f)];
 for(const f of files){ if(!f.endsWith('.js'))continue;
   const t=fs.readFileSync(f,'utf8');
-  for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|TREES|BUSHES|GRASS|ROAD_SURFACE|GROUND|SIGNS|TOWNS|VEHICLE|TRAFFIC|CAMERA|TITLE|ATMOSPHERE|SCORE|TILES|WATER|BIOME|TERRAIN_COLORS|WIND|FX)\.(\w+)/g)){
+  for(const m of t.matchAll(/\b(WORLD|ROAD|ROUTE|CHUNK|TREES|BUSHES|GRASS|ROAD_SURFACE|GROUND|SIGNS|TOWNS|VEHICLE|TRAFFIC|CAMERA|TITLE|ATMOSPHERE|SCORE|TILES|WATER|BIOME|TERRAIN_COLORS|WIND|FX|BARRIERS|BRIDGES)\.(\w+)/g)){
     if(blocks[m[1]]&&!blocks[m[1]].has(m[2])){console.log('MISSING '+m[0]+' in '+f);bad++;}}}
 console.log(bad?bad+' missing':'config audit clean');"
 ```
@@ -1904,6 +1965,7 @@ npm run probe
 | `traffic.mjs` | spawn distance, stalls, overlaps, lane error, population, Δv |
 | `score.mjs` | the near-miss mechanic, without physics |
 | `props.mjs` | LEGACY canopy and understorey: per-species counts both tiers, determinism, **whether the far tier is the same tree**, caps, batches, cost, clearance, float, and that the scatter is LUMPY |
+| `bridges.mjs` | gap and valley bridges over 100 km (`KM=`): per 10 km, kinds, gap bridges straight and unbanked, no embankment under a deck, both ends on the ground, deck just under the ribbon, `groundAt` on the shoulder, worst build step, rivers, no guardrail on a bridge, determinism; `LIST=1` each one, `WHY=1` each failure |
 | `towns.mjs` | settlements over 45 km (`KM=`): per 10 km by kind, villages the road passes through, lots off every carriageway, each lot's floor and footing against the ground, levelled ground, cities clear of all road, nothing growing on a lot, determinism, City-gen's triangles and build time; `LIST=1` prints each one's station |
 | `signs.mjs` | road-sign placement against a stub library: per km by role, nothing on the shoulder, foot level with the road, chevrons on the outside of bends, facing, determinism; `LIST=1` prints each chunk's. `signs.html` is the library's contact sheet (`&cam=x,y,z,tx,ty,tz`) |
 | `forest.mjs` | the TreeGen canopy: triangles per level, determinism, scatter caps/clearance/float/lumpiness, the forest's per-frame LOD pass (§4.11b). `forest.html` is its contact sheet (`?level=N`, `?species=oak`) |

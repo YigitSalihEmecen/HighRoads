@@ -121,6 +121,12 @@ export const ROUTE = {
 
   /** Fraction a candidate must beat the incumbent by, against argmin flicker. */
   hysteresis: 0.04,
+  /**
+   * Where the road stands high over its ground (a valley bridge to be), its
+   * turn per control point is held to this fraction of `maxCurvature`, so
+   * viaducts bend in long, engineered sweeps instead of tracing contours.
+   */
+  bridgeTurn: 0.35,
 
   /**
    * How far a terrain vertex may travel into its own turn, as a fraction.
@@ -1272,6 +1278,58 @@ export const BARRIERS = {
   colliders: true,
 };
 
+/**
+ * Gaps and the bridges over them — see `bridges.js` (the gap, the bridge,
+ * Bridge-gen's build) and `path.js:_planCrossing` (the straight run laid over it).
+ */
+export const BRIDGES = {
+  enabled: true,
+  /** The first crossing no earlier than this (the title screen's road), then one per `every` metres of road. */
+  first: 2400,
+  every: [3600, 7400],
+  /** Gap classes: chance, clear span along the road (m), depth under the deck (m). */
+  classes: [
+    { w: 0.32, span: [24, 60], depth: [8, 18] },
+    { w: 0.34, span: [60, 160], depth: [14, 34] },
+    { w: 0.22, span: [160, 330], depth: [24, 55] },
+    { w: 0.12, span: [330, 560], depth: [38, 78] },
+  ],
+  /** The gap's axis strays up to this far (radians) from square to the road. */
+  skew: 0.38,
+  /** Straight road either side of the bridge, metres. */
+  approach: 40,
+  /** Grade limit over the run; and how far the run may stand off its natural ground before the router looks elsewhere. */
+  maxGrade: 0.035,
+  maxEarth: 14,
+  /** Gap length each way from the road, and how far its line wanders once clear of the bridge. */
+  reach: [320, 560],
+  wander: 60,
+  /** Rise over run of the cut beyond the rim; the rim's height under the road; the soft rim, metres. */
+  wall: 0.9,
+  rimDrop: 0.6,
+  rim: 8,
+  /** Chance a gap carries a river (`riverDry` in the desert), its channel under the floor, and how far it fills the floor (× gap depth, metres). */
+  river: 0.8,
+  riverDry: 0.15,
+  riverDepth: 1.1,
+  riverRise: [0.1, 0.2],
+  riverRiseMax: 7,
+  /**
+   * Bridges the land asks for: wherever the road, routed over its own
+   * ground, stands `on` metres over the natural land at its centreline it
+   * goes on a bridge instead of an embankment, held while over `off`,
+   * stretched out to where it lands (`land`, at most `pad` further), stretches
+   * within `merge` joined, under `minLength` left as embankments. Scanned
+   * every `step` metres from `from`.
+   */
+  valley: { from: 600, step: 4, on: 16, off: 8, land: 1.8, pad: 150, merge: 160, minLength: 50 },
+  /** Built within this distance of the focus (capped at the tile radius), freed past `keep`. */
+  buildRadius: 2400,
+  keep: 2900,
+  /** Texture bake cap, px. */
+  texRes: 1024,
+};
+
 /* =============================================================== graphics == */
 
 /**
@@ -1346,6 +1404,7 @@ function applyGraphics() {
     SIGNS.drawDistance = 400;
     // The fog closes at ~900 m: cities stand just inside it.
     TOWNS.cityDist = [560, 820];
+    BRIDGES.texRes = 512;
     GROUND.sward.size = 512;
     GROUND.sward.steps = [4, 12];
     ROAD_SURFACE.pom.steps = [2, 6];
@@ -1373,6 +1432,7 @@ function applyGraphics() {
     SIGNS.drawDistance = 300;
     // The horizon is too close for a city.
     TOWNS.cities = false;
+    BRIDGES.texRes = 512;
     // The turf's look without its march.
     GROUND.sward.size = 512;
     GROUND.sward.depth = 0;
@@ -1466,6 +1526,8 @@ export const TERRAIN = {
   cities: true,
   barriers: true,
   signs: 1,
+  /** Gaps in the land, and the bridges that carry the road over them. */
+  bridges: true,
 };
 
 /** The menu, in order: `options` is a segmented switch, `toggle` an on/off, otherwise a slider. */
@@ -1477,6 +1539,7 @@ export const TERRAIN_SPEC = [
   { key: 'lanes', label: 'Lanes', options: [[2, 'Four'], [1, 'Two']], hint: 'four lanes, or a two-lane country road' },
   { key: 'barriers', label: 'Barriers', toggle: true, hint: 'steel guardrail and timber fence on bends and drops' },
   { key: 'signs', label: 'Signs', min: 0, max: 2, hint: 'how many roadside signs' },
+  { key: 'bridges', label: 'Bridges', toggle: true, hint: 'gorges and valleys the road bridges, every few kilometres' },
   { group: 'Landscape' },
   { key: 'relief', label: 'Relief', min: 0.4, max: 1.8, hint: 'height of the hills and mountains' },
   { key: 'mix.plains', label: 'Plains', min: 0, max: 3, hint: 'how often the land lies flat' },
@@ -1662,6 +1725,7 @@ function applyTerrain() {
   GRASS.wood.density *= TERRAIN.grass;
   TOWNS.cities = TOWNS.cities && TERRAIN.cities;
   BARRIERS.enabled = BARRIERS.enabled && TERRAIN.barriers;
+  BRIDGES.enabled = BRIDGES.enabled && TERRAIN.bridges;
 }
 
 /** Rewrites the config for one world biome (see `WORLDS`). */

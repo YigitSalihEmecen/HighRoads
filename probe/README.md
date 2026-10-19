@@ -14,6 +14,7 @@ npm run probe
 | script | answers |
 | --- | --- |
 | `pops.mjs` | **Does the ground change in view?** Drives the focus and counts tiles the road's growth rebuilt within 1200 m of the car, how far the drawn ground stands over the road ribbon by distance, and how far level-of-detail swaps jump (mrad from the car). Exits non-zero on ground over the ribbon or more than 30 in-view rebuilds. |
+| `bridges.mjs` | Gap and valley bridges (`bridges.js`): how many and which kinds, that a gap bridge is straight and unbanked, no embankment under any deck, both ends on the ground, the deck just under the ribbon, the worst build step, rivers, no guardrail on a bridge, determinism. `LIST=1`, `WHY=1`. |
 | `surface.mjs` | Is anything standing in the carriageway, or missing from under it? Casts down the drivable width along the whole route, against the window of chunks the GAME keeps alive. Exits non-zero on any step over 30 cm or any hole. Was `tunnel.mjs`. |
 | `traffic.mjs` | Do cars appear in view, stop dead, or overlap? Drives a synthetic player for several minutes and reports spawn distance, stalls, overlaps, lane error, population and impact Δv. |
 | `terrain.mjs` | How faceted is the ground? Angle between adjacent face normals, by distance band. |

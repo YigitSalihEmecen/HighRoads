@@ -29,3 +29,7 @@
 	path = city_gen
 	url = https://github.com/YigitSalihEmecen/City-Gen.git
 	branch = main
+[submodule "bridge_gen"]
+	path = bridge_gen
+	url = https://github.com/YigitSalihEmecen/Bridge-Gen.git
+	branch = main

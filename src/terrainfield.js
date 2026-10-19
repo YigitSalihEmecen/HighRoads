@@ -87,6 +87,8 @@ export class TerrainField {
     this.lakes = new Lakes(this, seed);
     /** towns.js: levels the ground under settlements. Set by chunks.js. */
     this.towns = null;
+    /** bridges.js: cuts the gaps the road bridges, and keeps its fill out of them. Set by chunks.js. */
+    this.bridges = null;
   }
 
   // ------------------------------------------------------------ indexing --
@@ -258,9 +260,10 @@ export class TerrainField {
   // -------------------------------------------------------------- height --
 
   /**
-   * The ground at (x, z). Writes `{y, natural, d, s, v}` into `out` when given:
+   * The ground at (x, z). Writes `{y, natural, d, s, v, open}` into `out` when given:
    * `d` distance to the nearest centreline, `s`/`v` that road's station and
-   * signed lateral offset (NaN if no road is within NEAR).
+   * signed lateral offset (NaN if no road is within NEAR), `open` how much of
+   * the point lies under a bridge rather than beside a road (bridges.js).
    */
   sample(x, z, out) {
     // Settle any lake here FIRST: settling asks roadDistance(), which reuses
@@ -273,13 +276,14 @@ export class TerrainField {
     // Octave budget keyed on road distance, exactly as the road-space sheet
     // keyed it on |v| — so the field is resolution-independent.
     const natural0 = this.terrain.height(x, z, dMin);
-    const lakeCarved = this.lakes.carve(x, z, natural0, dMin);
+    const gapped = this.bridges ? this.bridges.carve(x, z, natural0) : natural0;
+    const lakeCarved = this.lakes.carve(x, z, gapped, dMin);
     const natural = this.towns ? this.towns.carve(x, z, lakeCarved) : lakeCarved;
 
-    let num = 0, den = 0, sOut = NaN, vOut = NaN;
+    let num = 0, den = 0, sOut = NaN, vOut = NaN, openOut = 0;
     for (let i = 0; i < n; i++) {
       const P = this._passes[i];
-      let yRoad, av = P.d, bankY = 0, sink = 0;
+      let yRoad, av = P.d, bankY = 0, sink = 0, open = 0;
       if (P.dense) {
         const pts = this.path.pts;
         const a = pts[P.j], b = pts[P.j + 1];
@@ -293,7 +297,8 @@ export class TerrainField {
         bankY = v * Math.tan(f.bank) * bankFade;
         yRoad = f.pos.y + bankY;
         sink = ROAD_SINK * (1 - smoothstep(ROAD.halfWidth - 0.6, ROAD.halfWidth + 0.9, av));
-        if (P.d === dMin) { sOut = s; vOut = v; }
+        if (this.bridges) open = this.bridges.open(x, z, s);
+        if (P.d === dMin) { sOut = s; vOut = v; openOut = open; }
       } else {
         yRoad = P.y;
       }
@@ -311,6 +316,8 @@ export class TerrainField {
         y -= CHUNK.ditchDepth * Math.sin(Math.PI * dt) * fit;
       }
       y -= sink;
+      // Over its own gap the road is on a bridge: cut stays, fill and ditch go.
+      if (open > 0) y += (Math.min(natural, ceiling) - y) * open;
 
       // The inverse-square term makes a pass own its carriageway outright: on
       // the exponential alone a pass 35 m off and 18 m higher lifted the
@@ -322,7 +329,7 @@ export class TerrainField {
     }
     const y = den > 0 ? num / den : natural;
     if (out) {
-      out.y = y; out.natural = natural; out.d = dMin; out.s = sOut; out.v = vOut;
+      out.y = y; out.natural = natural; out.d = dMin; out.s = sOut; out.v = vOut; out.open = openOut;
     }
     return y;
   }
@@ -404,6 +411,8 @@ export class Lakes {
     // Road clearance: sample the shoreline.
     const rMax = lake.r * 1.45;
     if (f.roadDistance(lake.cx, lake.cz) < rMax + WATER.roadClear) { lake.ok = false; return false; }
+    // Nor in a gap the road bridges (bridges.js): its water would spill down the gorge.
+    if (f.bridges && f.bridges.nearGap(lake.cx, lake.cz, rMax + WATER.beach + 40)) { lake.ok = false; return false; }
     // The level sits a little under the lowest of the centre and its ring, so
     // the water fills the basin rather than hanging on a slope.
     let lo = t.height(lake.cx, lake.cz, 400);

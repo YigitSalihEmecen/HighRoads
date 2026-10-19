@@ -7,8 +7,8 @@
  */
 
 import * as THREE from 'three';
-import { ROAD, ROUTE } from './config.js';
-import { clamp, lerp } from './util.js';
+import { ROAD, ROUTE, BRIDGES } from './config.js';
+import { clamp, lerp, smoothstep, hashInt, hashString, mulberry32 } from './util.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -47,6 +47,15 @@ export class RoadPath {
     this.maxTurn = ROAD.maxCurvature * ROAD.ctrlSpacing;
     /** Next control-point segment to sample (segment i spans ctrl[i]..ctrl[i+1]). */
     this.nextSegment = 1;
+    /**
+     * Gap crossings, in road order (`_planCrossing`): where a gap will be cut
+     * across the road and the straight run laid over it. bridges.js carves the
+     * gap and builds the bridge from these.
+     */
+    this.crossings = [];
+    this._run = null;
+    this._crossSeed = hashString(String(seed));
+    this._nextCross = BRIDGES.first;
 
     // Seed the control polygon and enough samples for the first frames.
     for (let i = 0; i < 4; i++) this._addControlPoint();
@@ -226,7 +235,9 @@ export class RoadPath {
 
     // Coming back alongside road already laid. Squared, so the penalty is
     // negligible at the edge of the exclusion and overwhelming inside it.
-    const self = this._selfProximity(x, z);
+    // A gap already planned counts the same: road routed into one would cross
+    // it on a fill embankment.
+    const self = Math.max(this._selfProximity(x, z), this._gapProximity(x, z));
 
     // Earthwork is free up to the budget and quadratic past it.
     const over = Math.max(0, earth - ROUTE.earthFree);
@@ -271,7 +282,23 @@ export class RoadPath {
     // gets there.
     this.bearing += t.nA(s * ROUTE.bearingDrift, 19.4) * ROAD.maxCurvature * spacing;
 
+    if (!this._run && BRIDGES.enabled && s >= this._nextCross) {
+      this._nextCross = this._planCrossing(prev)
+        ? s + this._run.length * spacing + lerp(BRIDGES.every[0], BRIDGES.every[1], mulberry32(hashInt(this._crossSeed ^ i))())
+        : s + spacing;
+    }
+    if (this._run) {
+      const p = this._run.shift();
+      if (!this._run.length) this._run = null;
+      this.lastTurn = 0;
+      this.grade = p.grade;
+      this.ctrl.push(new THREE.Vector3(p.x, p.y, p.z));
+      return;
+    }
+
     const ch = this._character(s);
+    const V = BRIDGES.valley;
+    const prevRise = prev.y - this._ground(prev.x, prev.z);
     let best = null;
 
     for (let c = 0; c < ROUTE.candidates; c++) {
@@ -288,6 +315,8 @@ export class RoadPath {
       grade = clamp(grade, this.grade - ROAD.maxGradeChange, this.grade + ROAD.maxGradeChange);
       grade = clamp(grade, -ROAD.maxGrade, ROAD.maxGrade);
       const y = prev.y + grade * spacing;
+      const high = smoothstep(V.on * 0.6, V.on, Math.max(prevRise, y - want + ROUTE.rideHeight));
+      if (Math.abs(turn) > this.maxTurn * lerp(1, ROUTE.bridgeTurn, high) + 1e-9) continue;
 
       const cost = this._spanCost(prev, x, y, z, heading, turn, grade, ch);
       // Straight on is the incumbent and has to be beaten by a margin, or the
@@ -302,6 +331,85 @@ export class RoadPath {
     this.lastTurn = best.turn;
     this.grade = best.grade;
     this.ctrl.push(new THREE.Vector3(best.x, best.y, best.z));
+  }
+
+  /**
+   * Plans a gap across the road ahead of `prev`, the last control point, and
+   * the straight run that will carry the road over it: `n` control points on
+   * the current heading at a steady grade, so the bridge is straight, level in
+   * its banking and square to its own deck. The gap is recorded here and cut
+   * by bridges.js — the router's ground (`_ground`) never sees it, so the
+   * road keeps its height over the gap instead of diving into it. Refused
+   * (false) where the run would come back alongside older road, cross older
+   * road with its gap, or stand far off the land at either end.
+   */
+  _planCrossing(prev) {
+    const B = BRIDGES, spacing = ROAD.ctrlSpacing, i = this.ctrl.length;
+    const rng = mulberry32(hashInt(this._crossSeed + i * 0x9e3779b1));
+    let u = rng() * B.classes.reduce((a, c) => a + c.w, 0), cls = B.classes[0];
+    for (const c of B.classes) if ((u -= c.w) <= 0) { cls = c; break; }
+    const span = lerp(cls.span[0], cls.span[1], rng());
+    const depth = lerp(cls.depth[0], cls.depth[1], rng());
+    const dev = (rng() * 2 - 1) * B.skew;
+    const cos = Math.cos(dev), sin = Math.sin(dev);
+    // Half-width of the gap square to its own line, and the bridge's half
+    // length: rim to rim along the deck's edges, plus the soft rim.
+    const hw = span / 2 * cos;
+    const deck = ROAD.halfWidth + ROAD.shoulder + 2.5;
+    const half = (hw + B.rim + deck * Math.abs(sin)) / cos + 2;
+    const n = Math.ceil((2 * half + 2 * B.approach) / spacing) + 2;
+    const dx = Math.sin(this.heading), dz = -Math.cos(this.heading);
+    const cx = prev.x + dx * spacing * n / 2, cz = prev.z + dz * spacing * n / 2;
+    const ax = -dz * cos + dx * sin, az = dx * cos + dz * sin;
+    const reach = [lerp(B.reach[0], B.reach[1], rng()), lerp(B.reach[0], B.reach[1], rng())];
+
+    // The gap closes short of older road on its line (the last few points, the
+    // approach, aside); too short a gap is no gap.
+    for (let j = 0; j < i - 6; j++) {
+      const c = this.ctrl[j];
+      const off = Math.abs((c.x - cx) * az - (c.z - cz) * ax);
+      if (off > hw + 120) continue;
+      const along = (c.x - cx) * ax + (c.z - cz) * az;
+      if (along < 0) reach[0] = Math.min(reach[0], -along - 100);
+      else reach[1] = Math.min(reach[1], along - 100);
+    }
+    if (Math.min(reach[0], reach[1]) < Math.max(180, hw + 120)) return false;
+
+    const end = this._ground(prev.x + dx * spacing * n, prev.z + dz * spacing * n) + ROUTE.rideHeight;
+    const target = clamp((end - prev.y) / (n * spacing), -B.maxGrade, B.maxGrade);
+    const run = [];
+    let grade = this.grade, y = prev.y;
+    for (let k = 1; k <= n; k++) {
+      grade = clamp(target, grade - ROAD.maxGradeChange, grade + ROAD.maxGradeChange);
+      y += grade * spacing;
+      const x = prev.x + dx * spacing * k, z = prev.z + dz * spacing * k;
+      if (this._selfProximity(x, z) > 0) return false;
+      // Only the approaches: under the bridge the land may do anything.
+      if (Math.abs(k - n / 2) * spacing > half - 10 && Math.abs(this._ground(x, z) + ROUTE.rideHeight - y) > B.maxEarth) return false;
+      run.push({ x, y, z, grade });
+    }
+    this._run = run;
+    this.crossings.push({
+      index: this.crossings.length, i0: i, seed: hashInt(this._crossSeed ^ (i * 0x2c1b3c6d)),
+      x0: prev.x, z0: prev.z, ys: [prev.y, ...run.map((p) => p.y)], dx, dz, n,
+      cx, cz, ax, az, span, hw, depth, dev, half, reach,
+      wander: [(rng() * 2 - 1) * B.wander, lerp(140, 320, rng()), rng() * 6.28],
+    });
+    return true;
+  }
+
+  /** 0 clear of every planned gap, 1 on its line: `_selfProximity` for gaps. */
+  _gapProximity(x, z) {
+    let worst = 0;
+    for (let n = this.crossings.length - 1; n >= 0 && n >= this.crossings.length - 4; n--) {
+      const c = this.crossings[n];
+      const along = (x - c.cx) * c.ax + (z - c.cz) * c.az;
+      if (Math.abs(along) > (along < 0 ? c.reach[0] : c.reach[1]) + 60) continue;
+      const off = Math.abs((x - c.cx) * c.az - (z - c.cz) * c.ax);
+      const t = 1 - off / (c.hw + 40);
+      if (t > worst) worst = t;
+    }
+    return worst;
   }
 
   /** Samples one control-point segment onto the arc-length table. */

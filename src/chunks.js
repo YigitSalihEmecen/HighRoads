@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS, TERRAIN, BARRIERS, WORLD_BIOME } from './config.js';
+import { CHUNK, ROAD, ROAD_SURFACE, ROUTE, GRASS, GROUND, TREES, BUSHES, SIGNS, TERRAIN_COLORS, TILES, TOWNS, TERRAIN, BARRIERS, BRIDGES, WORLD_BIOME } from './config.js';
 import { clamp, lerp, smoothstep, smin, smax, mulberry32, hashInt } from './util.js';
 import {
   FOLIAGE, SHRUBS, TREE_NAMES, SHRUB_NAMES, vegetation, suitability, guildAffinity, setEcology,
@@ -27,6 +27,7 @@ import { InstanceCuller } from './instcull.js';
 import { WorldTiles } from './worldtiles.js';
 import { WaterSystem } from './env/water.js';
 import { Towns } from './towns.js';
+import { Bridges } from './bridges.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const ROAD_LIFT = 0.035;
@@ -243,7 +244,7 @@ function lateralAt(frame, rightFlat, v, outDir) {
 }
 
 export class ChunkManager {
-  constructor({ scene, world, RAPIER, path, terrain, anisotropy = 1, trees = null, signs = null }) {
+  constructor({ scene, world, RAPIER, path, terrain, anisotropy = 1, trees = null, signs = null, bridgeMaterials = null }) {
     this.scene = scene;
     this._treeAssets = trees;
     /** env/signs.js library, built by main.js; null = no signs (and in the probes). */
@@ -339,6 +340,16 @@ export class ChunkManager {
     this._tint = [1, 1, 1];
     /** Lake surfaces (env/water.js). */
     this.water = new WaterSystem({ scene, field: this.field });
+    /** Gaps cut across the road and the bridges over them (bridges.js); a term in the field, like the cities. */
+    this.bridges = BRIDGES.enabled ? new Bridges({
+      scene, path, field: this.field, terrain, biomes: this.biomes, world, RAPIER,
+      materials: bridgeMaterials, water: this.water,
+      onChange: (x0, z0, x1, z1) => {
+        this.tiles._invalidate(x0, z0, x1, z1);
+        if (this._gyCache) this._gyCache.clear();
+      },
+    }) : null;
+    this.field.bridges = this.bridges;
     this._sand = new THREE.Color(TERRAIN_COLORS.sand);
     this._mud = new THREE.Color(TERRAIN_COLORS.mud);
 
@@ -577,9 +588,11 @@ export class ChunkManager {
     this.field.sync();
     const f = this.path.frameAt(s, this._frame);
     this._rightFlat.crossVectors(f.tan, WORLD_UP).normalize();
-    if (Math.abs(v) <= ROAD.halfWidth) {
+    const span = this.bridges && Math.abs(v) <= ROAD.halfWidth + ROAD.shoulder + 2 ? this.bridges.spanAt(s) : null;
+    if (Math.abs(v) <= ROAD.halfWidth || span) {
       // On the carriageway the surface is the road ribbon (and its collider),
-      // which sits ROAD_SINK + ROAD_LIFT above the terrain under it.
+      // which sits ROAD_SINK + ROAD_LIFT above the terrain under it; on a
+      // bridge, its deck to the parapets.
       out.set(f.pos.x + this._rightFlat.x * v, f.pos.y + v * Math.tan(f.bank) + ROAD_LIFT,
         f.pos.z + this._rightFlat.z * v);
       return out;
@@ -615,6 +628,11 @@ export class ChunkManager {
         const t1 = PERF.on ? performance.now() : 0;
         this.towns.update(fp.x, fp.z);
         if (PERF.on) PERF.add('.towns', performance.now() - t1);
+      }
+      if (this.bridges) {
+        const t1 = PERF.on ? performance.now() : 0;
+        this.bridges.update(fp.x, fp.z);
+        if (PERF.on) PERF.add('.bridges', performance.now() - t1);
       }
     }
     const center = Math.floor(carS / CHUNK.length);
@@ -754,6 +772,7 @@ export class ChunkManager {
     this.tiles.dispose();
     this.water.dispose();
     if (this.towns) this.towns.dispose();
+    if (this.bridges) this.bridges.dispose();
     this.road.dispose();
     if (this.forest) this.forest.dispose();
     if (this.trees) this.trees.dispose();
@@ -855,7 +874,6 @@ export class ChunkManager {
   *_barrierJob(s0, s1, origin, objects, colliders) {
     const B = BARRIERS, step = B.step;
     const f = this._signFrame, g = this._cA;
-    const right = this._rightFlat;
     const k0 = Math.ceil(s0 / step), k1 = Math.ceil(s1 / step) - 1;
     const woodShare = B.woodShare[Math.min(1, ROAD.lanesPerSide - 1)];
     const v = ROAD.halfWidth + B.offset;
@@ -885,32 +903,15 @@ export class ChunkManager {
         if (b <= a) continue;
         let wood = run.wood;
         if (wood) for (let k = a; k <= b; k++) if (drop(k) > B.steelDrop) { wood = false; break; }
-        const pts = [];
-        for (let k = a; k <= b; k++) {
-          const s = k * step;
-          this.path.frameAt(s, f);
-          right.crossVectors(f.tan, WORLD_UP).normalize();
-          const p = this.groundAt(s, side * v, g);
-          pts.push({
-            x: p.x - origin.x, y: p.y - origin.y, z: p.z - origin.z,
-            ox: right.x * side, oz: right.z * side,
-            post: k <= k1, rail: k < b && k <= k1,
-          });
-        }
-        if (wood) mesher.wood(pts, rng);
-        else mesher.steel(pts, rng, run.a >= k0, run.b <= k1);
-        if (!this.world || !B.colliders) continue;
-        // A thin box per span: the player's car stops against it.
-        for (let i = 0; i + 1 < pts.length; i++) {
-          if (!pts[i].rail) continue;
-          const p = pts[i], q = pts[i + 1];
-          const dx = q.x - p.x, dz = q.z - p.z, len = Math.hypot(dx, dz);
-          const th = Math.atan2(-dz, dx);
-          colliders.push(this.world.createCollider(
-            this.RAPIER.ColliderDesc.cuboid(len / 2, 0.45, 0.08)
-              .setTranslation(origin.x + (p.x + q.x) / 2, origin.y + (p.y + q.y) / 2 + 0.45, origin.z + (p.z + q.z) / 2)
-              .setRotation({ x: 0, y: Math.sin(th / 2), z: 0, w: Math.cos(th / 2) })
-              .setFriction(0.3)));
+        // A bridge has its own parapets: the run stops at each end of one, turned down there.
+        const onBridge = (k) => !!(this.bridges && this.bridges.spanAt(k * step, 6));
+        for (let pa = a; pa <= b; pa++) {
+          if (onBridge(pa)) continue;
+          let pb = pa;
+          while (pb < b && !onBridge(pb + 1)) pb++;
+          const head = pa === a ? run.a >= k0 : true, tail = pb === b ? run.b <= k1 : true;
+          this._barrierPiece(pa, pb, k1, side, v, origin, wood, head, tail, mesher, rng, colliders);
+          pa = pb;
         }
       }
     }
@@ -927,6 +928,40 @@ export class ChunkManager {
       mesh.updateMatrix();
       this.scene.add(mesh);
       objects.push(mesh);
+    }
+  }
+
+  /** Stations `a..b` of one barrier run (the chunk's posts, `k1` its last), meshed into `mesher`, with colliders. */
+  _barrierPiece(a, b, k1, side, v, origin, wood, head, tail, mesher, rng, colliders) {
+    const B = BARRIERS, step = B.step;
+    const f = this._signFrame, g = this._cA, right = this._rightFlat;
+    if (b <= a) return;
+    const pts = [];
+    for (let k = a; k <= b; k++) {
+      const s = k * step;
+      this.path.frameAt(s, f);
+      right.crossVectors(f.tan, WORLD_UP).normalize();
+      const p = this.groundAt(s, side * v, g);
+      pts.push({
+        x: p.x - origin.x, y: p.y - origin.y, z: p.z - origin.z,
+        ox: right.x * side, oz: right.z * side,
+        post: k <= k1, rail: k < b && k <= k1,
+      });
+    }
+    if (wood) mesher.wood(pts, rng);
+    else mesher.steel(pts, rng, head, tail);
+    if (!this.world || !B.colliders) return;
+    // A thin box per span: the player's car stops against it.
+    for (let i = 0; i + 1 < pts.length; i++) {
+      if (!pts[i].rail) continue;
+      const p = pts[i], q = pts[i + 1];
+      const dx = q.x - p.x, dz = q.z - p.z, len = Math.hypot(dx, dz);
+      const th = Math.atan2(-dz, dx);
+      colliders.push(this.world.createCollider(
+        this.RAPIER.ColliderDesc.cuboid(len / 2, 0.45, 0.08)
+          .setTranslation(origin.x + (p.x + q.x) / 2, origin.y + (p.y + q.y) / 2 + 0.45, origin.z + (p.z + q.z) / 2)
+          .setRotation({ x: 0, y: Math.sin(th / 2), z: 0, w: Math.cos(th / 2) })
+          .setFriction(0.3)));
     }
   }
 
@@ -947,6 +982,7 @@ export class ChunkManager {
       const over = variant.role === 'portal';
       const run = variant.role === 'chevron';
       if (taken.some((t) => Math.abs(t.s - s) < S.spacing && !(run && t.run) && (over || t.over || t.side === side))) return;
+      if (this.bridges && this.bridges.spanAt(s, 12)) return;
       const { box } = variant;
       this.path.frameAt(s, f);
       let v, y;
