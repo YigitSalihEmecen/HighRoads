@@ -22,6 +22,7 @@
 import * as THREE from 'three';
 import { BUSHES, TREES, WORLD_BIOME } from '../config.js';
 import { SHRUBS, TREE_FORMS } from '../foliage.js';
+import { BIOMES } from '../biomes.js';
 import { SPECIES } from '../../tree_gen/src/species.js';
 import { BUSHES as BUSH_PRESETS, generateBush } from '../../tree_gen/src/bush.js';
 import { buildLods } from '../../tree_gen/src/lod.js';
@@ -113,6 +114,82 @@ export const TREEGEN_SPECIES = {
     },
     bark: { base: '#7d7466', dark: '#3a342b', light: '#a59c8b', style: 'fibrous', ridge: 1.5 },
   },
+
+  // ---- no legacy form: TreeGen only, so `palettes` live here ----------------
+  // The giant of the tall groves (chunks.js:_grove): a clear fluted column,
+  // short drooping limbs packed into the top half.
+  redwood: {
+    from: 'pine',
+    params: {
+      shape: 4, baseSize: 0.4, scale: 34, ratio: 0.024, ratioPower: 1.6, flare: 1.7, lobes: 9, lobeDepth: 0.12,
+      length: [1, 0.2, 0.45, 0], curve: [0, -35, -20, 0], curveV: [6, 30, 40, 0],
+      downAngle: [0, 96, 60, 60], downAngleV: [0, -18, 12, 10],
+      branches: [0, 76, 24, 12], attractionUp: 0.2,
+      leafShape: 'frond', leaves: 15, leafScale: 0.7, leafScaleX: 0.5, leafBend: 0.25,
+    },
+    bark: { base: '#7a4630', dark: '#341c12', light: '#a4664a', style: 'fibrous', ridge: 1.7 },
+    palettes: [
+      [[0.12, 0.26, 0.13], [0.20, 0.36, 0.17]],
+      [[0.14, 0.30, 0.16], [0.24, 0.42, 0.20]],
+    ],
+  },
+  // Space colonisation into a vase: the crown grows into its own volume.
+  elm: {
+    from: 'organic',
+    params: { shape: 6, baseSize: 0.32, scale: 20, pruneWidth: 0.5, scAttractors: 800, scIterations: 260,
+      scKill: 0.06, scStep: 0.045, scTipRadius: 0.016, scTropism: 0.3,
+      leaves: 40, leafShape: 'elliptic', leafScale: 0.5, leafScaleX: 0.6 },
+    bark: { base: '#5e5245', dark: '#241d17', light: '#85786a', style: 'blocky', ridge: 1.4 },
+    palettes: [
+      [[0.18, 0.40, 0.14], [0.32, 0.56, 0.20]],
+      [[0.24, 0.44, 0.15], [0.40, 0.62, 0.22]],
+    ],
+  },
+  // A lone veteran: a squat split trunk, limbs that wander (`oddity`), moss and brackets.
+  ancient: {
+    from: 'oak',
+    params: {
+      scale: 16, baseSize: 0.32, baseSplits: 0, ratio: 0.034, flare: 2.2, lobes: 7, lobeDepth: 0.18,
+      segSplits: [0.55, 0.25, 0.1, 0], splitAngle: [28, 20, 10, 0], splitAngleV: [8, 10, 10, 0],
+      length: [1, 0.75, 0.3, 0.4], curveV: [60, 150, 60, 0], branches: [0, 22, 24, 0],
+      downAngle: [0, 62, 45, 45], oddity: 0.2, leaves: 10, leafScale: 0.24,
+    },
+    growth: {
+      enabled: true,
+      moss: { on: true, type: 'mixed', amount: 0.6, reach: 0.4, side: 30, scale: 1.1, colors: ['#7d9a4c', '#3c5222'] },
+      fungus: { on: true, type: 'mixed', amount: 0.4, scale: 1.2, colors: ['#d8c191', '#5a3f22'] },
+    },
+    bark: { base: '#4a4036', dark: '#1a1511', light: '#70624f', style: 'ridged', ridge: 2.0 },
+    palettes: [
+      [[0.16, 0.36, 0.12], [0.30, 0.52, 0.18]],
+      [[0.22, 0.40, 0.13], [0.38, 0.58, 0.20]],
+    ],
+  },
+  // Black tupelo, Weber & Penn's own: four levels, a tiered crown, scarlet in fall.
+  tupelo: {
+    from: 'tupelo',
+    params: { leaves: 10, leafScale: 0.3 },
+    palettes: [
+      [[0.16, 0.38, 0.14], [0.28, 0.52, 0.20]],
+      [[0.62, 0.14, 0.08], [0.82, 0.30, 0.14]],
+    ],
+  },
+  // Krummholz: wind-bent, the trunk runs, kinks and corkscrews.
+  twisted: {
+    // TreeGen's bonsai at full size, carrying needle sprays.
+    from: 'bonsai',
+    params: { scale: 9, oddity: 0.4, leafShape: 'frond', leaves: 12, leafScale: 0.32, leafScaleX: 0.5, leafBend: 0.5 },
+    bark: { base: '#6b5040', dark: '#2a1d16', light: '#94745c', style: 'shaggy', ridge: 1.6 },
+    palettes: [
+      [[0.15, 0.30, 0.15], [0.26, 0.42, 0.20]],
+      [[0.20, 0.32, 0.16], [0.32, 0.46, 0.22]],
+    ],
+  },
+  baobab: { from: 'baobab' },
+  // `keep` thins every crown to a quarter: a palm needs the fronds to spare.
+  // Fronds are level-1 leaves: `downAngle[1]` droops the crown into a fountain.
+  palm: { from: 'palm', params: { leaves: -60, downAngle: [0, 92, 60, 62], downAngleV: [0, 26, 0, 26] } },
+  saguaro: { from: 'saguaro' },
 };
 
 const isBush = (name) => !(name in TREEGEN_SPECIES);
@@ -120,7 +197,12 @@ const defOf = (name) => TREEGEN_SPECIES[name] || { from: name };
 const presetOf = (name) => SPECIES[defOf(name).from] || BUSH_PRESETS[name];
 /** Seeds and bark textures are keyed by position in this list. */
 const KEYS = [...Object.keys(TREEGEN_SPECIES), ...Object.keys(BUSH_PRESETS)];
-const defaultNames = () => [...Object.keys(TREEGEN_SPECIES),
+/** Trees some region of this world lists: no saguaro in a birch wood, nor grown at boot for one. */
+const worldTrees = () => {
+  const regions = Object.entries(BIOMES).filter(([n]) => !WORLD_BIOME.biomes || WORLD_BIOME.biomes.includes(n));
+  return Object.keys(TREEGEN_SPECIES).filter((n) => regions.some(([, b]) => b.trees[n]));
+};
+const defaultNames = () => [...worldTrees(),
   ...(BUSHES.enabled ? Object.keys(SHRUBS).filter((n) => n in BUSH_PRESETS) : [])];
 
 /**
@@ -128,6 +210,7 @@ const defaultNames = () => [...Object.keys(TREEGEN_SPECIES),
  * these [main, alt] palettes, so a wood is a patchwork of gold, orange and red.
  */
 const DECIDUOUS = new Set(['oak', 'maple', 'beech', 'birch', 'aspen', 'poplar', 'larch', 'willow', 'cherry', 'acacia',
+  'elm', 'ancient', 'tupelo', 'baobab',
   'bramble', 'hazel', 'rosebush', 'fern']);
 const FALL_PALETTES = [
   [[0.80, 0.56, 0.10], [0.95, 0.76, 0.22]],
@@ -254,7 +337,7 @@ function plan(names) {
     const def = defOf(name);
     const preset = presetOf(name);
     const bush = isBush(name);
-    const pal = (bush ? SHRUBS : TREE_FORMS)[name]?.palettes;
+    const pal = def.palettes || (bush ? SHRUBS : TREE_FORMS)[name]?.palettes;
     const caps = bush ? BUSHES : G;
     for (let v = 0; v < caps.variants; v++) {
       const params = {
@@ -272,7 +355,7 @@ function plan(names) {
         name, v, params, bush,
         leaves: params.leaves !== 0 ? { shape: params.leafShape,
           colors: p ? [hex(p[1]), hex(p[0])] : preset.palette.leaf.summer } : null,
-        growth: preset.growth ? { ...preset.growth, detail: 1 } : null,
+        growth: (def.growth || preset.growth) ? { ...(def.growth || preset.growth), detail: 1 } : null,
       });
     }
   }

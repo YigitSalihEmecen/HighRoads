@@ -50,7 +50,7 @@ import { hashInt, mulberry32, smoothstep, clamp } from './util.js';
 export const BIOMES = {
   meadow: {
     label: 'Meadow', T: 0.58, M: 0.52,
-    trees: { oak: 1.0, maple: 0.5, cherry: 0.35, birch: 0.2, poplar: 0.25 },
+    trees: { oak: 1.0, maple: 0.5, cherry: 0.35, birch: 0.2, poplar: 0.25, elm: 0.5, ancient: 0.25 },
     shrubs: { bramble: 1.0, hazel: 0.6, rosebush: 0.8, boxwood: 0.4 },
     sward: [0.55, 0.15, 0.30], canopy: 0.32, lone: 0.55, under: 0.8, grass: 1.2, flowers: 0.22,
     bloom: [[0.95, 0.85, 0.30], [0.96, 0.96, 0.92], [0.80, 0.42, 0.78], [0.95, 0.45, 0.30]],
@@ -58,7 +58,7 @@ export const BIOMES = {
   },
   broadleaf: {
     label: 'Broadleaf forest', T: 0.55, M: 0.68,
-    trees: { oak: 1.0, beech: 1.0, maple: 0.5, birch: 0.25 },
+    trees: { oak: 1.0, beech: 1.0, maple: 0.5, birch: 0.25, elm: 0.5, tupelo: 0.2, redwood: 0.2, ancient: 0.15 },
     shrubs: { hazel: 1.0, bramble: 0.8, fern: 1.0, boxwood: 0.3 },
     sward: [0.60, 0.15, 0.25], canopy: 1.25, lone: 0.05, under: 1.0, grass: 0.9, flowers: 0.04,
     bloom: [[0.96, 0.96, 0.92], [0.70, 0.62, 0.92]],
@@ -66,7 +66,7 @@ export const BIOMES = {
   },
   autumn: {
     label: 'Autumn woodland', T: 0.45, M: 0.55,
-    trees: { maple: 1.0, aspen: 0.8, beech: 0.5, birch: 0.5, larch: 0.2 },
+    trees: { maple: 1.0, aspen: 0.8, beech: 0.5, birch: 0.5, larch: 0.2, tupelo: 0.5, elm: 0.3, ancient: 0.12 },
     shrubs: { bramble: 0.8, hazel: 0.8, fern: 0.7, heather: 0.3 },
     sward: [0.60, 0.25, 0.15], canopy: 1.0, lone: 0.12, under: 0.9, grass: 0.95, flowers: 0.03,
     bloom: [[0.95, 0.80, 0.30]],
@@ -74,7 +74,7 @@ export const BIOMES = {
   },
   boreal: {
     label: 'Boreal forest', T: 0.25, M: 0.62,
-    trees: { pine: 1.0, spruce: 0.9, fir: 0.9, larch: 0.35, birch: 0.15 },
+    trees: { pine: 1.0, spruce: 0.9, fir: 0.9, larch: 0.35, birch: 0.15, redwood: 0.3 },
     shrubs: { juniper: 1.0, fern: 0.8, heather: 0.6, bramble: 0.2 },
     sward: [0.55, 0.30, 0.15], canopy: 1.3, lone: 0.04, under: 0.8, grass: 0.75, flowers: 0.02,
     bloom: [[0.96, 0.96, 0.92]],
@@ -90,7 +90,7 @@ export const BIOMES = {
   },
   savanna: {
     label: 'Dry savanna', T: 0.86, M: 0.18,
-    trees: { acacia: 1.0, olive: 0.25, dead: 0.06 },
+    trees: { acacia: 1.0, olive: 0.25, dead: 0.06, baobab: 0.45 },
     shrubs: { gorse: 1.0, juniper: 0.5, lavender: 0.3, boxwood: 0.2 },
     sward: [0.30, 0.66, 0.04], canopy: 0.30, lone: 0.92, under: 0.6, grass: 0.85, flowers: 0.03,
     bloom: [[0.95, 0.80, 0.30]],
@@ -98,7 +98,7 @@ export const BIOMES = {
   },
   mediterranean: {
     label: 'Mediterranean scrub', T: 0.78, M: 0.34,
-    trees: { cypress: 1.0, olive: 0.9, pine: 0.3 },
+    trees: { cypress: 1.0, olive: 0.9, pine: 0.3, palm: 0.35, twisted: 0.25 },
     shrubs: { lavender: 1.0, gorse: 0.6, boxwood: 0.7, juniper: 0.4 },
     sward: [0.45, 0.45, 0.10], canopy: 0.45, lone: 0.55, under: 1.1, grass: 0.8, flowers: 0.10,
     bloom: [[0.62, 0.48, 0.86], [0.95, 0.85, 0.30]],
@@ -108,7 +108,7 @@ export const BIOMES = {
     label: 'Alpine', T: 0.08, M: 0.45,
     // Above the treeline only: cold lowland is boreal, not alpine.
     minRelief: 110,
-    trees: { larch: 0.8, pine: 0.6, dead: 0.6, fir: 0.3 },
+    trees: { larch: 0.8, pine: 0.6, dead: 0.6, fir: 0.3, twisted: 0.9 },
     shrubs: { heather: 1.0, juniper: 0.9 },
     sward: [0.60, 0.20, 0.20], canopy: 0.35, lone: 0.45, under: 0.8, grass: 0.6, flowers: 0.06,
     bloom: [[0.62, 0.48, 0.86], [0.96, 0.96, 0.92]],
@@ -116,7 +116,7 @@ export const BIOMES = {
   },
   wetland: {
     label: 'Wetland', T: 0.52, M: 0.82,
-    trees: { willow: 1.0, poplar: 0.6, birch: 0.35, beech: 0.15 },
+    trees: { willow: 1.0, poplar: 0.6, birch: 0.35, beech: 0.15, tupelo: 0.7, redwood: 0.25 },
     shrubs: { reeds: 1.0, fern: 0.6, bramble: 0.4, hazel: 0.3 },
     sward: [0.45, 0.50, 0.05], canopy: 0.70, lone: 0.40, under: 1.2, grass: 1.3, flowers: 0.08,
     bloom: [[0.98, 0.86, 0.30], [0.96, 0.96, 0.92]],
@@ -124,7 +124,7 @@ export const BIOMES = {
   },
   blossom: {
     label: 'Blossom grove', T: 0.62, M: 0.60,
-    trees: { cherry: 1.0, maple: 0.25, birch: 0.2 },
+    trees: { cherry: 1.0, maple: 0.25, birch: 0.2, elm: 0.15 },
     shrubs: { rosebush: 1.0, boxwood: 0.6, hazel: 0.3 },
     sward: [0.55, 0.10, 0.35], canopy: 0.70, lone: 0.30, under: 0.9, grass: 1.15, flowers: 0.30,
     bloom: [[0.98, 0.72, 0.82], [0.96, 0.96, 0.92], [0.95, 0.85, 0.30]],
@@ -135,7 +135,7 @@ export const BIOMES = {
   // ---- the desert world's own (config.js:WORLDS) ----------------------------
   erg: {
     label: 'Dune sea', T: 0.96, M: 0.04,
-    trees: { dead: 1.0, acacia: 0.4 },
+    trees: { dead: 1.0, acacia: 0.4, saguaro: 0.5 },
     shrubs: { gorse: 1.0, juniper: 0.3 },
     sward: [0.1, 0.9, 0.0], canopy: 0.04, lone: 1.0, under: 0.12, grass: 0.12, flowers: 0,
     bloom: [[0.95, 0.80, 0.30]],
@@ -143,7 +143,7 @@ export const BIOMES = {
   },
   reg: {
     label: 'Desert scrub', T: 0.86, M: 0.16,
-    trees: { acacia: 1.0, dead: 0.45, olive: 0.25 },
+    trees: { acacia: 1.0, dead: 0.45, olive: 0.25, saguaro: 1.0, baobab: 0.2 },
     shrubs: { gorse: 1.0, juniper: 0.6, lavender: 0.3, boxwood: 0.25 },
     sward: [0.2, 0.8, 0.0], canopy: 0.14, lone: 0.95, under: 0.5, grass: 0.45, flowers: 0.02,
     bloom: [[0.95, 0.80, 0.30], [0.62, 0.48, 0.86]],

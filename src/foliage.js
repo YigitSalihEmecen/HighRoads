@@ -433,6 +433,50 @@ export const FOLIAGE = {
     height: [5, 9], weight: 0.9, relief: [-40, 220], maxSlope: 0.6,
     lateral: [12, 165], rugged: 0.1, wet: -0.5, social: 0.2,
   },
+
+  // ---- TreeGen only (no legacy form) ------------------------------------
+  // `grove`: weight × (1 + grove) inside a tall grove (chunks.js:_grove).
+  redwood: {
+    guild: 'conifer',
+    height: [20, 30], weight: 0.35, relief: [-40, 300], maxSlope: 0.7,
+    lateral: [16, 165], rugged: 0.2, wet: 0.5, social: 0.95, grove: 10,
+  },
+  elm: {
+    guild: 'warm',
+    height: [13, 21], weight: 0.6, relief: [-50, 200], maxSlope: 0.55,
+    lateral: [13, 165], rugged: -0.4, wet: 0.2, social: 0.35,
+  },
+  ancient: {
+    // A lone veteran, wider than it is tall: never in a stand.
+    guild: 'warm',
+    height: [9, 14], weight: 0.7, relief: [-40, 160], maxSlope: 0.4,
+    lateral: [20, 165], rugged: -0.5, wet: 0.0, social: 0.0,
+  },
+  tupelo: {
+    guild: 'wet',
+    height: [12, 20], weight: 0.7, relief: [-60, 160], maxSlope: 0.5,
+    lateral: [13, 165], rugged: -0.4, wet: 0.6, social: 0.5,
+  },
+  twisted: {
+    guild: 'conifer',
+    height: [4, 8], weight: 0.6, relief: [120, 480], maxSlope: 1.0,
+    lateral: [13, 165], rugged: 0.95, wet: -0.3, social: 0.1,
+  },
+  baobab: {
+    guild: 'dry',
+    height: [8, 14], weight: 0.5, relief: [-40, 200], maxSlope: 0.4,
+    lateral: [16, 165], rugged: -0.3, wet: -0.8, social: 0.0,
+  },
+  palm: {
+    guild: 'dry',
+    height: [7, 11], weight: 0.4, relief: [-60, 120], maxSlope: 0.45,
+    lateral: [12, 165], rugged: -0.4, wet: -0.2, social: 0.2,
+  },
+  saguaro: {
+    guild: 'dry',
+    height: [4, 8], weight: 0.8, relief: [-40, 260], maxSlope: 0.6,
+    lateral: [12, 165], rugged: 0.0, wet: -0.9, social: 0.0,
+  },
 };
 
 /**

@@ -1254,6 +1254,19 @@ export class ChunkManager {
     return lerp(lerp(a, b, tx), lerp(c, d, tx), tz);
   }
 
+  /** Tall-grove weight at (x, z), 0..1 (`TREES.grove`). */
+  _grove(x, z) {
+    const G = TREES.grove;
+    return smoothstep(G.window[0], G.window[1], this.terrain.mask(x, z, G.freq, 6113, -2741));
+  }
+
+  /** Height factor for a tree at (x, z): the wood's age, and the grove `tall` it stands in. */
+  _heightMul(x, z, tall) {
+    const G = TREES.grove;
+    const age = smoothstep(0.367, 0.631, this.terrain.mask(x, z, G.ageFreq, -3307, 1559));
+    return lerp(G.age[0], G.age[1], age) * lerp(1, G.boost, tall);
+  }
+
   /**
    * A tree's foliage tint, multiplied into its instance colour (the bark
    * ignores most of it, env/treegen.js). A slow field drifts whole woods
@@ -1622,6 +1635,8 @@ export class ChunkManager {
     // ---- the canopy ------------------------------------------------------
 
     const grow = this.forest ? TREES.treegen.scale : 1;
+    /** A species' weight, raised inside a tall grove for `grove` species. */
+    const weightOf = (name, tall) => FOLIAGE[name].weight * (1 + (FOLIAGE[name].grove || 0) * tall);
     if (this.trees) {
       // The guild field at the chunk's middle, sampled once, only to weight
       // which species the chunk commits to.
@@ -1631,8 +1646,9 @@ export class ChunkManager {
         vegetation(this.terrain, mx, mz,
           p.y + origin.y - this.terrain.continent(mx, mz), 0.1, 60, field);
       }
+      const midTall = this._grove(p.x + origin.x, p.z + origin.z);
       const chosen = commit(TREE_NAMES, this.trees.library, TREES.picks,
-        (n) => (0.15 + guildAffinity(FOLIAGE[n], field)) * FOLIAGE[n].weight);
+        (n) => (0.15 + guildAffinity(FOLIAGE[n], field)) * weightOf(n, midTall));
       // The near cap follows the country: open meadow and savanna chunks hold
       // a fraction of a forest's grown trees. Without this nearly every chunk
       // ran into the same cap and the world's density evened out.
@@ -1657,13 +1673,14 @@ export class ChunkManager {
         const crelief = p.y + origin.y - this.terrain.continent(cx, cz);
         vegetation(this.terrain, cx, cz, crelief, cslope, Math.abs(cv), field);
         if (field.canopy < lerp(0.16, 0.24, TERRAIN.clumping)) continue;
+        const ctall = this._grove(cx, cz);
         const u = rng();
         // Drawn against the field AT THE SEED, not the chunk's picks, so the
         // copse's species is the one that belongs here.
         let best = null, bestW = 0;
         for (const name of kinds) {
           const w = suitability(FOLIAGE[name], field, crelief, cslope, Math.abs(cv)) *
-            FOLIAGE[name].weight * (0.25 + rng());
+            weightOf(name, ctall) * (0.25 + rng());
           if (w > bestW) { bestW = w; best = name; }
         }
         if (!best) continue;
@@ -1798,14 +1815,14 @@ export class ChunkManager {
         // dotted with strays read as a scatter, not a landscape of woods.
         // (canopy: median 0.04, 75th percentile 0.11, 90th 0.31 — woods are the top fifth.)
         if (!home && field.canopy < TERRAIN.clumping * 0.18) continue;
+        const tall = this._grove(wx, wz);
 
         // Weighted pick across every committed species that will grow here,
         // with the cluster's own species heavily favoured.
         let total = 0;
         for (let k = 0; k < kinds.length; k++) {
           const name = kinds[k];
-          let w = suitability(FOLIAGE[name], field, relief, slope, av) *
-            FOLIAGE[name].weight;
+          let w = suitability(FOLIAGE[name], field, relief, slope, av) * weightOf(name, tall);
           if (home) {
             // A stand is one species; guild-mates are admitted at `clusterMix`,
             // other guilds never, and `dead` has no guild so appears anywhere.
@@ -1834,7 +1851,7 @@ export class ChunkManager {
         // Height in metres, modulated by VIGOUR (oldest at the stand's heart)
         // and, for a few, sapling height so woodland regenerates underneath.
         let height = lerp(kind.height[0], kind.height[1], rng() * rng() + 0.15) * grow;
-        height *= lerp(1, 1 - TREES.vigour, edgeness);
+        height *= lerp(1, 1 - TREES.vigour, edgeness) * this._heightMul(wx, wz, tall);
         if (rng() < TREES.saplings) height *= 0.30 + rng() * 0.25;
         // Slight non-uniform squash, so a repeated variant does not read as a
         // row of clones.
@@ -1903,14 +1920,16 @@ export class ChunkManager {
           const keep = lerp(field.canopy * TREES.distantDensity, smoothstep(0.1, 0.32, field.canopy), TERRAIN.clumping);
           if (drng() > keep) continue;
           let total = 0, pick = null;
+          const tall = this._grove(wx, wz);
           for (const name of kinds) {
-            const w = suitability(FOLIAGE[name], field, relief, slope, 100) * FOLIAGE[name].weight;
+            const w = suitability(FOLIAGE[name], field, relief, slope, 100) * weightOf(name, tall);
             total += w;
             if (w > 0 && drng() * total < w) pick = name;
           }
           if (!pick) continue;
           const kind = FOLIAGE[pick];
-          const height = lerp(kind.height[0], kind.height[1], drng() * drng() + 0.15) * grow;
+          const height = lerp(kind.height[0], kind.height[1], drng() * drng() + 0.15) * grow *
+            this._heightMul(wx, wz, tall);
           p.set(wx - origin.x, wy - origin.y - 0.2, wz - origin.z);
           this._groundColor(wx, wz, wy, 1, smp.d, this._color);
           const gk = TREES.groundTint;

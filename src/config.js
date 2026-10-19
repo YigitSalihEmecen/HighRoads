@@ -230,7 +230,7 @@ export const TREES = {
     barkSize: 256,
     impostorHeight: 192,
     /** Size against `foliage.js` heights, which were drawn for the legacy trees. */
-    scale: 2.08,
+    scale: 2.5,
     /**
      * TreeGen level specs, nearest first (see tree_gen/src/lod.js). Its LOD0
      * (full, ~100k+ triangles) is never drawn in the game; these are its
@@ -273,7 +273,7 @@ export const TREES = {
 
   /** Geometries built per species at boot, and species drawn per chunk. */
   variants: 3,
-  picks: 6,
+  picks: 8,
 
   /** How far a single face's colour may stray from its palette, +/-. */
   faceJitter: 0.075,
@@ -321,11 +321,21 @@ export const TREES = {
 
   /** Crown spacing: two crowns may overlap by this much of their radii. */
   crownGap: 0.5,
-  spacingCell: 14,
+  /** Hash cell, metres: at least the widest crown pair × `crownGap`, or the 3×3 check misses. */
+  spacingCell: 24,
 
   /** Age structure inside a stand. */
   vigour: 0.42,
   saplings: 0.18,
+
+  /**
+   * Height by place (chunks.js:_grove). A slow field marks TALL GROVES —
+   * `window` against the mask's measured range (p05..p95 0.367..0.631): a
+   * fifth of the land touched, a sixteenth in full — where every tree grows up to `boost` taller
+   * and `grove` species (foliage.js) are favoured. A faster one drifts whole
+   * woods between `age` young and old, so the skyline steps wood to wood.
+   */
+  grove: { freq: 0.0014, window: [0.56, 0.63], boost: 1.5, ageFreq: 0.007, age: [0.78, 1.22] },
 
   /** Chance a placed tree gets a second stem from the same stool, touching. */
   coppice: 0.14,
@@ -1510,6 +1520,7 @@ export const WORLDS = {
   temperate: {
     label: 'Temperate',
     biomes: ['meadow', 'broadleaf', 'autumn', 'boreal', 'birchwood', 'savanna', 'mediterranean', 'alpine', 'wetland', 'blossom'],
+    grass: 1.8,
   },
   snow: {
     label: 'Snowy',
@@ -1526,6 +1537,7 @@ export const WORLDS = {
     ground: { contrastNear: 0.12, contrastFar: 0.1, sward: { kind: 'snow', tile: 4, depth: 0.07, contrast: 1, fade: [10, 34] } },
     grass: 0.14, grassCol: [[0.62, 0.52, 0.34], 0.85],
     bare: ['oak', 'maple', 'beech', 'birch', 'aspen', 'poplar', 'larch', 'willow', 'cherry', 'olive', 'acacia',
+      'elm', 'ancient', 'tupelo',
       'bramble', 'hazel', 'rosebush', 'fern', 'gorse', 'heather', 'lavender', 'reeds'],
     snow: 1,
     road: 'snow',

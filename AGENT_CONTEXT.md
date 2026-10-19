@@ -717,7 +717,7 @@ skeleton, so they mesh, LOD and bake exactly like a tree. One preset per
 the trees, fading at the variant's `fade` (`BUSHES.fade`) instead of
 `TREES.farFade`. Only with the TreeGen generator — legacy mode has no shrubs.
 
-**Species.** `treegen.js:TREEGEN_SPECIES` maps each of the 16 HighRoads species
+**Species.** `treegen.js:TREEGEN_SPECIES` maps each of the 24 HighRoads species
 (the same names `foliage.js` and `biomes.js` use — nothing about placement or
 biomes changed) to a TreeGen preset plus overrides; spruce, fir, larch, beech,
 poplar and olive are derived sets. Presets are generated at their OWN scale
@@ -758,9 +758,28 @@ yellow-green and blue-green, a 90 m cell hash turns `autumnShare` of broadleaf
 stands gold or copper; bark keeps 30 % of its instance tint (`windify`'s
 `bark`), or a gold wood had gold bark.
 
-Trees are drawn **×`TREES.treegen.scale` (1.6)** of the `foliage.js` heights,
+Trees are drawn **×`TREES.treegen.scale` (2.5)** of the `foliage.js` heights,
 applied in the scatter before the crown-spacing test, so stands thin out
-rather than interpenetrate.
+rather than interpenetrate. `TREES.spacingCell` (24 m) must stay at least the
+widest crown pair × `crownGap`, or the 3×3 spacing check misses neighbours.
+
+**TreeGen-only species** (no legacy form, so their `palettes` sit on the
+`TREEGEN_SPECIES` entry, as can `growth` — moss and brackets): `redwood` (the
+tall groves' giant), `elm` (space colonisation into a vase — `scKill` above
+~0.06 grows no leaves at all), `ancient` (a lone mossy veteran oak), `tupelo`,
+`twisted` (TreeGen's bonsai at full size: krummholz on alpine and dry crags),
+`baobab`, `palm` (fronds are level-1 leaves, so `downAngle[1]` is the droop),
+`saguaro`. Legacy mode simply never commits them (`commit` filters on the
+library). **A world grows only the trees one of its regions lists**
+(`treegen.js:worldTrees`): the biome floor in `suitability` (0.02) otherwise
+put saguaros in temperate birch woods, and it saves the boot those jobs.
+
+**Height by place** (`TREES.grove`, `chunks.js:_grove`/`_heightMul`): a slow
+field marks TALL GROVES (a fifth of the land touched, a sixteenth in full)
+where every tree is up to `boost` (1.5×) taller and species with a `grove`
+weight (`foliage.js`, redwood: 10) are favoured — in the chunk's picks, the
+stand seeds and every sample. A faster `age` field (0.78–1.22×) steps the
+skyline wood to wood. Both stretch the mask against its measured range.
 
 TreeGen's own LOD0 (100k–600k) is never drawn. The billboard is an **albedo +
 view-space normal atlas** (`kit.js:bakeImpostor`), so it is lit by the game's
@@ -1441,7 +1460,7 @@ scaled `relief`/`mix`/`soil`, so the sheet never shows the scaled values.
 | litter | `forest.js:litterMap`: every placed tree and shrub splatted straight down at 1.9× its crown into a second top-down map beside the canopy shadow map (same render, same refresh). Ground and road read it (`LITTER_GLSL`), so leaves lie round the woods and none on open land. A field-based guess (the canopy density) was tried first and read ~0.85 over open meadow — tree caps, not the field, decide where trees stand |
 | road | snow/sand: a DRIFT LAYER marched over the asphalt through the ground's own relief tile (`createRoadAssets({ cover })`): `fr_drift` is a warped, road-smeared mask (edges, rarely mid-lane, never the wheel paths; sand in slanted tongues), linearised about the pixel for the march (so it has NO fine octave: a 20 cm one made the linear guess invent snow over the ~0.4 m a grazing ray crosses, and drifts changed as the camera came up to them — the tile breaks the rim instead, sampled exactly), tapered at the rim; normal from its slope. The road surface is the drift's FLOOR, so the march starts where the ray crosses the drift's top plane, nearer the camera, and ends on the road (the turf is the other way up) — drifts keep their footprint at every angle. `probe/road.html?terrain=…` takes the ground tile too. `FR_COVER_LEAVES`: a 0.17 m lattice of lens leaves × the litter, a stain past 40 m |
 | trees | `bare` → TreeGen `leaves: 0`; `snow` → every TreeGen material whitens where the world normal looks up (`windify`); `fallLeaves` → `treegen.js:FALL_PALETTES` for deciduous species |
-| grass | density ×, `grassCol` pulls tufts toward straw |
+| grass | density × (temperate 1.8: roadside, wood and far tiers), `grassCol` pulls tufts toward straw |
 | air | `sky.js:applySky` × fog colour/density, × exposure, ground bounce, grade pair |
 
 `probe/render.mjs` takes `QUERY='terrain={"biome":"snow"}'`, `AUTO=1` (auto
