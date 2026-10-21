@@ -147,5 +147,5 @@ const jq = (q) => (jumps[Math.min(jumps.length - 1, Math.floor(jumps.length * q)
 console.log(`level-of-detail swaps: ${jumps.length}, worst vertex jump p50 ${jq(0.5)} / p95 ${jq(0.95)} / max ${jq(1)} mrad`);
 // Only where the ribbon is drawn (7 chunks, ~800 m) can ground stand over it.
 const bad = over.slice(0, 4).reduce((a, o) => a + o.bad, 0);
-// 14 is the measured baseline on highroads-01: the road turning back toward the car.
+// 14 is the measured baseline on tothehorizon-01: the road turning back toward the car.
 process.exitCode = bad || inView > 30 ? 1 : 0;

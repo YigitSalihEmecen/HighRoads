@@ -1,4 +1,4 @@
-# HIGHROADS — project context
+# TO THE HORIZON! — project context
 
 For an agent picking this up cold. Assumes you can read the code; gives the
 shape, the reasons behind decisions that look arbitrary, and the traps that have
@@ -713,7 +713,7 @@ or it is three lollipops on sticks.
 
 Every tree is grown by TreeGen (submodule `tree_gen/`, YigitSalihEmecen/Tree-Gen,
 its own site and repo): Weber & Penn parametric trees with generated bark and
-real leaves. HighRoads uses its library entry points — `lod.js:buildLods` (mesh
+real leaves. To The Horizon! uses its library entry points — `lod.js:buildLods` (mesh
 once, derive every level) and `kit.js:dressLevels` / `bakeImpostor` — and never
 edits it; changes go to Tree-Gen first, then the submodule pointer moves.
 
@@ -726,7 +726,7 @@ skeleton, so they mesh, LOD and bake exactly like a tree. One preset per
 the trees, fading at the variant's `fade` (`BUSHES.fade`) instead of
 `TREES.farFade`. Only with the TreeGen generator — legacy mode has no shrubs.
 
-**Species.** `treegen.js:TREEGEN_SPECIES` maps each of the 24 HighRoads species
+**Species.** `treegen.js:TREEGEN_SPECIES` maps each of the 24 To The Horizon! species
 (the same names `foliage.js` and `biomes.js` use — nothing about placement or
 biomes changed) to a TreeGen preset plus overrides; spruce, fir, larch, beech,
 poplar and olive are derived sets. Presets are generated at their OWN scale
@@ -1042,7 +1042,7 @@ removed along with the faceted shrubs: too low-poly next to the TreeGen canopy.
 
 ### 4.14b Road signs (`roadsign_gen/`, `env/signs.js`, `chunks.js:_buildSigns`)
 
-Roadsign-gen is TypeScript + Vite; HighRoads has no build step, so the
+Roadsign-gen is TypeScript + Vite; To The Horizon! has no build step, so the
 submodule ships **`lib/roadsign.js`** — its generator (`src/api/core.ts`, no
 exporters, no React) bundled to plain ESM with `three` bare. Change it in its
 own repo, `npm run build:lib`, commit the bundle, bump the pointer. Panel faces
@@ -1087,7 +1087,7 @@ clear ~6 m) and `overheadScale` grows and spreads the faces.
 No colliders, like the trees. Medium/low graphics: `lod` 2 (384 px faces),
 shorter `drawDistance`.
 
-Sign density was halved (15.7 → 8.2 per km on highroads-01): chevrons need
+Sign density was halved (15.7 → 8.2 per km on tothehorizon-01): chevrons need
 a sharper bend (1/280) and stand 45 m apart; a chunk's feature sign rolls at
 0.45. `probe/signs.mjs` wants 5–40 per km.
 
@@ -1134,7 +1134,7 @@ within `cityBlend + 50` m of a 5 × 5 grid over it, land varying < `cityRelief`,
 no lake — and clear of every other city's levelling (two adjacent slots
 overlapped once cities moved out, and the later levelled the earlier's streets
 2.9 m off). A roll with no room in four attempts is nothing: ~0.9 cities /
-10 km on `highroads-01`.
+10 km on `tothehorizon-01`.
 
 **The ground.** A city is a TERM in `TerrainField.sample`, applied to the
 natural surface right after the lake carve: under it the ground goes to one
@@ -1383,7 +1383,7 @@ fill, fog colour and density, grade (warm/cool vignette tint), cloud cover,
 star field, water reflection and whether headlights start on. `applySky(gfx,
 name, {water})` applies it — including `ATMOSPHERE.sunDir`, which the shadow
 camera reads. Chosen by `?sky=`, the Settings "Sky" button, or **K**; the choice
-is saved in `localStorage` (`highroads.sky`). At night the headlights are
+is saved in `localStorage` (`tothehorizon.sky`). At night the headlights are
 boosted ×24 (`vehicle.headlightBoost`) — real lamps against moonlight.
 
 The sky shader: stars on a cube-mapped hash lattice (no swimming at the cube
@@ -1493,7 +1493,7 @@ density, which is a look decision, not a free one.
 Every world knob a player may turn, in `TERRAIN` with its spec `TERRAIN_SPEC`
 (`settings.js:WorldSheet` is built from the spec: World / Road / Landscape /
 Ground tabs, plus the seed and the sky, which used to live in the mode screen
-and Settings › Graphics). The seed goes in the URL on Apply. Saved to `highroads.terrain` and
+and Settings › Graphics). The seed goes in the URL on Apply. Saved to `tothehorizon.terrain` and
 applied by `applyTerrain` after `applyGraphics`, before anything builds; Apply
 reloads, like the graphics level. `?terrain={"lanes":1}` overrides it for one
 load (a world's settings as a link; the probes' A/B — `vista.mjs QUERY=`).
@@ -1533,7 +1533,7 @@ scaled `relief`/`mix`/`soil`, so the sheet never shows the scaled values.
 
 `probe/render.mjs` takes `QUERY='terrain={"biome":"snow"}'`, `AUTO=1` (auto
 drive, stays on the road) and `PRE='js'` (on the title, before its shot).
-Node probes: `--localstorage-file=f.json` with `highroads.terrain` set.
+Node probes: `--localstorage-file=f.json` with `tothehorizon.terrain` set.
 
 ## 5. The config contract
 

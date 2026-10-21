@@ -1225,7 +1225,7 @@ export class ChunkManager {
     // Where the ground sits in its landscape (topographic position): a crest
     // is exposed, thin-soiled and dry; a hollow gathers water and soil.
     const tpi = this._tpi(x, z);
-    // Quartiles are ±3.5 m, the 5th/95th percentiles ±15 m (seed highroads-01).
+    // Quartiles are ±3.5 m, the 5th/95th percentiles ±15 m (seed tothehorizon-01).
     const ridge = smoothstep(2, 12, tpi), hollow = smoothstep(-2, -12, tpi);
     // Aspect: a face turned to the sun dries out, one turned away stays cool.
     // sin(slope) × cos(angle to the sun), so flat ground is neither.

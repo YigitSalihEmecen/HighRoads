@@ -224,7 +224,7 @@ export const SKY_PRESETS = {
 };
 export const SKY_NAMES = Object.keys(SKY_PRESETS);
 
-const KEY = 'highroads.sky';
+const KEY = 'tothehorizon.sky';
 /** The saved / URL-chosen preset name. URL wins. */
 export function chosenSky() {
   try {

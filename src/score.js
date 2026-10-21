@@ -86,7 +86,7 @@ export class ScoreRun {
   // take the game down with it.
   static loadBest() {
     try {
-      return Number(localStorage.getItem('highroads.best')) || 0;
+      return Number(localStorage.getItem('tothehorizon.best')) || 0;
     } catch {
       return 0;
     }
@@ -94,7 +94,7 @@ export class ScoreRun {
 
   static saveBest(value) {
     try {
-      localStorage.setItem('highroads.best', String(Math.round(value)));
+      localStorage.setItem('tothehorizon.best', String(Math.round(value)));
     } catch {
       /* nothing worth doing */
     }

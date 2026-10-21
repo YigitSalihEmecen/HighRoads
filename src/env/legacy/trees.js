@@ -415,7 +415,7 @@ export function foliageMaterial(fadeOut, fadeIn, opts = {}) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vSway;');
   };
-  material.customProgramCacheKey = () => 'highroads-foliage';
+  material.customProgramCacheKey = () => 'tothehorizon-foliage';
 
   return { material, uniforms };
 }

@@ -667,7 +667,7 @@ export function createRoadAssets({ anisotropy = 1, cover: ground = null } = {}) 
         `);
     };
     // Its own key — sharing ground's would hand this material ground's program.
-    material.customProgramCacheKey = () => 'highroads-road-' + cover;
+    material.customProgramCacheKey = () => 'tothehorizon-road-' + cover;
   }
 
   return {

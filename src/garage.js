@@ -142,8 +142,8 @@ function signTexture() {
     g.fillStyle = '#ffffff';
     g.shadowColor = 'rgba(255,140,80,0.9)';
     g.shadowBlur = 30;
-    g.fillText('HIGHROADS', 40, 170);
-    const w = g.measureText('HIGHROADS').width;
+    g.fillText('TO THE HORIZON!', 40, 170);
+    const w = g.measureText('TO THE HORIZON!').width;
     g.shadowBlur = 0;
     g.fillStyle = '#ff6b2c';
     g.fillRect(48, 300, w * 0.55, 16);

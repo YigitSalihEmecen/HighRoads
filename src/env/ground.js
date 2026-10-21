@@ -1123,7 +1123,7 @@ export function createGroundAssets({ anisotropy = 1 } = {}) {
         `)
         .replace('#include <lights_fragment_end>', CANOPY_GLSL.apply('fr_wpos'));
     };
-    material.customProgramCacheKey = () => `highroads-ground-${sward ? 1 : 0}${verge ? 1 : 0}${tint ? 1 : 0}${leaves ? 1 : 0}`;
+    material.customProgramCacheKey = () => `tothehorizon-ground-${sward ? 1 : 0}${verge ? 1 : 0}${tint ? 1 : 0}${leaves ? 1 : 0}`;
   }
 
   return {

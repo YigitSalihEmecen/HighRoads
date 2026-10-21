@@ -146,7 +146,7 @@ function catalogue() {
   // that come out as roadside stacks, and a few overhead ones re-spanned.
   let verge = 0, over = 0;
   for (let i = 0; i < 400 && (verge < SIGNS.seededVerge || over < SIGNS.seededOverhead); i++) {
-    const a = generateSignAssemblyFromSeed(`HIGHROADS-${i}`);
+    const a = generateSignAssemblyFromSeed(`TOTHEHORIZON-${i}`);
     a.structure.showRoadBase = false;
     const t = a.structure.structureType;
     if ((t === 'dual-post' || t === 'route-tree') && verge < SIGNS.seededVerge) {

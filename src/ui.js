@@ -90,7 +90,7 @@ const FINISHES = [
   ['Gloss', 0.1, 0.22], ['Metallic', 0.62, 0.3], ['Pearl', 0.35, 0.14], ['Satin', 0.2, 0.52], ['Matte', 0.0, 0.78],
 ];
 
-const SAVE_KEY = 'highroads.saved';
+const SAVE_KEY = 'tothehorizon.saved';
 function loadSaved() {
   try { return JSON.parse(localStorage.getItem(SAVE_KEY) || '[]'); } catch { return []; }
 }
@@ -191,8 +191,8 @@ export class UI {
 
   _buildWordmark() {
     const h = $('wordmark');
-    [...'HIGHROADS'].forEach((c, i) => {
-      const s = el('span', i >= 4 ? 'hl' : '', c);
+    [...'TO THE HORIZON!'].forEach((c, i) => {
+      const s = el('span', i >= 7 ? 'hl' : '', c === ' ' ? '\u00A0' : c);
       s.style.setProperty('--c', i);
       h.appendChild(s);
     });

@@ -17,8 +17,8 @@ const TILT_DEAD = 2.0;
 const TILT_EXPO = 1.6;
 /** A sample older than this is stale: the sensor stopped, so let go of the car. */
 const TILT_TIMEOUT = 0.5;
-const STORE_KEY = 'highroads.tilt';
-const INVERT_KEY = 'highroads.tiltInvert';
+const STORE_KEY = 'tothehorizon.tilt';
+const INVERT_KEY = 'tothehorizon.tiltInvert';
 
 /** Own object: it owns a listener, a permission state and a calibration. */
 export class TiltSteering {

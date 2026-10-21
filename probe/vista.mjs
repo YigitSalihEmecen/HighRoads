@@ -18,7 +18,7 @@ const CHROME = process.env.CHROME ||
 const PORT = Number(process.env.PORT || 8141);
 const CDP = Number(process.env.CDP_PORT || 9403);
 
-const seed = process.argv[2] || 'highroads-01';
+const seed = process.argv[2] || 'tothehorizon-01';
 const atS = Number(process.argv[3] || 600);
 const sky = process.argv[4] || '';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -136,7 +136,7 @@ if (!booted) {
 console.log('  booted: ' + (await js(`document.getElementById('boot').textContent`)));
 await sleep(2500);
 
-await js(`(async()=>{const g=window.__highroads;
+await js(`(async()=>{const g=window.__tothehorizon;
   try{ g.powertrain.start(g.car()).catch(()=>{}); }catch(e){}
   g.startRun();
   g.path.ensureLength(${atS} + 2500);
@@ -145,7 +145,7 @@ await js(`(async()=>{const g=window.__highroads;
   g.cam.update = () => {};
 })()`);
 await sleep(9000);   // let streaming catch up at SwiftShader speed
-console.log('  state: ' + await js(`(()=>{const g=window.__highroads, v=g.vehicle;
+console.log('  state: ' + await js(`(()=>{const g=window.__tothehorizon, v=g.vehicle;
   const lv = v.body ? v.body.linvel() : {x:0,y:0,z:0};
   return 'car ' + [v.pos.x, v.pos.y, v.pos.z].map(n=>n.toFixed(1)).join(',') + ' vel ' + [lv.x,lv.y,lv.z].map(n=>n.toFixed(1)).join(',') +
     ' tiles ' + g.chunks.tiles.tiles.size + ' road y ' + g.path.frameAt(${atS}).pos.y.toFixed(1);})()`));
@@ -164,7 +164,7 @@ const views = process.env.VIEWS ? JSON.parse(process.env.VIEWS) : [
   ['far',      [0, 0, 360], [700, 0, 0]],
 ];
 for (const [name, a, b] of views) {
-  await js(`(()=>{const g=window.__highroads; const T=g.THREE||null;
+  await js(`(()=>{const g=window.__tothehorizon; const T=g.THREE||null;
     const f=g.path.frameAt(${atS});
     const tx=f.tan.x, tz=f.tan.z, l=Math.hypot(tx,tz)||1, fx=tx/l, fz=tz/l, rx=-fz, rz=fx;
     const P=(o)=>{const x=f.pos.x+fx*o[0]+rx*o[1], z=f.pos.z+fz*o[0]+rz*o[1]; return [x, Math.max(f.pos.y, g.chunks.field.height(x,z))+o[2], z];};
@@ -172,7 +172,7 @@ for (const [name, a, b] of views) {
     c.position.set(p[0],p[1],p[2]); c.far=Math.max(c.far, 4000); c.lookAt(q[0],q[1],q[2]); c.updateProjectionMatrix();
     g.chunks.update(${atS});})()`);
   await sleep(4500);
-  if (name === 'aerial') console.log('  cam: ' + await js(`(()=>{const g=window.__highroads, c=g.cam.camera;
+  if (name === 'aerial') console.log('  cam: ' + await js(`(()=>{const g=window.__tothehorizon, c=g.cam.camera;
     return [c.position.x,c.position.y,c.position.z].map(n=>n.toFixed(1)).join(',') + ' fwd ' + g.vehicle.forwardSpeed.toFixed(2) + ' fov ' + c.fov.toFixed(1) + ' parent ' + (c.parent && c.parent.type);})()`));
   await shot(name);
 }

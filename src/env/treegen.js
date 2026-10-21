@@ -1,7 +1,7 @@
 /**
  * env/treegen.js — the canopy, grown by TreeGen (`tree_gen/`, a submodule).
  *
- * Every HighRoads species is a TreeGen parameter set: its own preset where
+ * Every To The Horizon! species is a TreeGen parameter set: its own preset where
  * TreeGen has one, a derived set where it does not. Each variant is generated
  * once at boot, meshed at the levels in `TREES.treegen.lods` (TreeGen's
  * simplified bark, polygon leaves, leaf-cluster cards and a baked billboard)
@@ -303,7 +303,7 @@ function windify(material, uniforms, leafy, bark = false) {
         gl_Position = projectionMatrix * mvPosition;
       `);
   };
-  material.customProgramCacheKey = () => `highroads-treegen-${leafy ? 1 : 0}-${material.alphaTest > 0 ? 1 : 0}-${bark ? 1 : 0}-${SNOW}`;
+  material.customProgramCacheKey = () => `tothehorizon-treegen-${leafy ? 1 : 0}-${material.alphaTest > 0 ? 1 : 0}-${bark ? 1 : 0}-${SNOW}`;
 }
 
 /** Scale every part to unit height; returns the horizontal radius at that scale. */

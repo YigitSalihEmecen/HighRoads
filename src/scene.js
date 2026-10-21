@@ -324,7 +324,7 @@ export async function createScene(container) {
     }
     composer.setSize(window.innerWidth, window.innerHeight);
   } catch (err) {
-    console.warn('[highroads] post-processing unavailable, rendering direct.', err);
+    console.warn('[tothehorizon] post-processing unavailable, rendering direct.', err);
   }
 
   function resize() {

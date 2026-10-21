@@ -68,8 +68,8 @@ const IDLE_INPUT = { steer: 0, throttle: 0, brake: 0, handbrake: false };
 const RECOVER_MARGIN = 12;
 
 /** The car you drive, kept between sessions. */
-const BUILD_KEY = 'highroads.build';
-const MODE_KEY = 'highroads.mode';
+const BUILD_KEY = 'tothehorizon.build';
+const MODE_KEY = 'tothehorizon.mode';
 
 function storedBuild() {
   try {
@@ -154,7 +154,7 @@ export async function boot() {
     game.applyBuild();
   } catch (err) {
     // A build saved by an older generator can fail to rebuild; start fresh.
-    console.warn('[highroads] stored car unusable, generating a new one:', err && err.message);
+    console.warn('[tothehorizon] stored car unusable, generating a new one:', err && err.message);
     game.setBuild(firstBuild());
     game.applyBuild();
   }
@@ -204,7 +204,7 @@ export async function boot() {
   window.addEventListener('resize', () => game.refreshTitleFraming());
   startBtn.addEventListener('click', begin);
 
-  window.__highroads = game;
+  window.__tothehorizon = game;
   return game;
 }
 
@@ -535,7 +535,7 @@ class Game {
       if (engineId) this.powertrain.setEngine(engineId);
       else this.powertrain.setCar(this.car());
     } catch (err) {
-      console.warn('[highroads] engine preview unavailable:', err && err.message);
+      console.warn('[tothehorizon] engine preview unavailable:', err && err.message);
       return;
     }
     this.previewing = true;

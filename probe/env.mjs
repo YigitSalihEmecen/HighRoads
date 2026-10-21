@@ -11,7 +11,7 @@ import { createTerrain } from '../src/noise.js';
 import { RoadPath } from '../src/path.js';
 import { ChunkManager } from '../src/chunks.js';
 
-const seed = process.argv[2] || 'highroads-01';
+const seed = process.argv[2] || 'tothehorizon-01';
 let bad = 0;
 const check = (ok, label, detail) => {
   if (!ok) bad++;

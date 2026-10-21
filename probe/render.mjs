@@ -16,7 +16,7 @@ const CHROME = process.env.CHROME ||
 const PORT = Number(process.env.PORT || 8141);
 const CDP = Number(process.env.CDP_PORT || 9403);
 
-const seed = process.argv[2] || 'highroads-01';
+const seed = process.argv[2] || 'tothehorizon-01';
 const driveFor = Number(process.argv[3] || 25);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -151,13 +151,13 @@ await js(`document.getElementById('start').click()`);
  * 1.35 s flight.
  */
 for (let i = 0; i < 120; i++) {
-  if (await js(`!!(window.__highroads && window.__highroads.cam.flyingIn)`)) break;
+  if (await js(`!!(window.__tothehorizon && window.__tothehorizon.cam.flyingIn)`)) break;
   await sleep(50);
 }
 await sleep(450);
 await shot('game-flyin');
 await sleep(3000);
-await js(`(async()=>{const g=window.__highroads;
+await js(`(async()=>{const g=window.__tothehorizon;
   if(!g.active){ try{ await g.powertrain.start(g.car()); }catch(e){} g.startRun(); }
   ${process.env.AUTO ? 'g.autodrive.engage();' : 'g.input.touch.throttle=1;'} })()`);
 
@@ -168,7 +168,7 @@ await js(`(async()=>{const g=window.__highroads;
  */
 const jumpTo = Number(process.argv[4] || 0);
 if (jumpTo > 0) {
-  await js(`(()=>{const g=window.__highroads;
+  await js(`(()=>{const g=window.__tothehorizon;
     g.path.ensureLength(${jumpTo} + 2000);
     g.chunks.preload(${jumpTo});
     g.respawn(${jumpTo});
@@ -177,11 +177,11 @@ if (jumpTo > 0) {
 }
 
 if (process.env.CAM) {
-  await js(`(()=>{const c=window.__highroads.cam;
+  await js(`(()=>{const c=window.__tothehorizon.cam;
     for(let i=0;i<8&&c.cycle()!==${JSON.stringify(process.env.CAM)};i++);})()`);
 }
 
-const rig = `(()=>{const g=window.__highroads, c=g.cam, v=g.vehicle;
+const rig = `(()=>{const g=window.__tothehorizon, c=g.cam, v=g.vehicle;
   const d=c.camera.position.distanceTo(v.renderPos);
   return \`title=\${c.title} flyingIn=\${c.flyingIn} introT=\${c.introT.toFixed(2)} \` +
     \`fov=\${c.camera.fov.toFixed(1)} cam-to-car=\${d.toFixed(2)}m mode=\${c.mode}\`;})()`;
@@ -190,7 +190,7 @@ console.log('  rig: ' + await js(rig));
 const step = Math.max(4, Math.round(driveFor / 3));
 for (let i = 0; i < 3; i++) {
   await sleep(step * 1000);
-  console.log('  ' + await js(`(()=>{const g=window.__highroads;
+  console.log('  ' + await js(`(()=>{const g=window.__tothehorizon;
     return \`\${Math.round(Math.abs(g.vehicle.forwardSpeed)*3.6)} km/h, s=\${Math.round(g.carS)}, \` +
       \`\${g.chunks.chunks.size} chunks, grass \${[...g.chunks.chunks.values()]
         .filter(c=>c.grass).reduce((a,c)=>a+(c.grass.userData.total??c.grass.count),0).toLocaleString()} tufts\`;})()`));
@@ -208,7 +208,7 @@ for (let i = 0; i < 3; i++) {
 if (process.env.SKID === '1') {
   // A standing start, not a handbrake turn: throttle plus handbrake nearly
   // cancels and the friction circle never clamps, so no slip is reported.
-  await js(`(()=>{const g=window.__highroads;
+  await js(`(()=>{const g=window.__tothehorizon;
     g.input.touch.handbrake=0; g.respawn(g.carS);
     // Brake first: the launch controller regulates on ROAD SPEED, so a car
     // already rolling is one it believes has launched and never revs up.
@@ -226,7 +226,7 @@ if (process.env.SKID === '1') {
       g.__peak.marks = Math.max(g.__peak.marks, m);
     }, 60);})()`);
   await sleep(6500);
-  console.log('  ' + await js(`(()=>{const g=window.__highroads; clearInterval(g.__watch);
+  console.log('  ' + await js(`(()=>{const g=window.__tothehorizon; clearInterval(g.__watch);
     return \`peak slip \${g.__peak.slip.toFixed(2)}, puffs \${g.__peak.puffs}, \` +
       \`mark quads \${g.__peak.marks}  (now \${Math.round(Math.abs(g.vehicle.forwardSpeed)*3.6)} km/h, \` +
       \`\${Math.round(g.powertrain.rpm)} rpm, gear \${g.powertrain.gearLabel()}, \` +
@@ -246,16 +246,16 @@ for (let i = 0; i < Number(process.env.SHOTS || 0); i++) {
 
 // The pause menu, over a real frame of the road rather than the flat backdrop
 // `probe/uishot.mjs` stands in for the scene.
-await js(`window.__highroads.setPaused(true)`);
+await js(`window.__tothehorizon.setPaused(true)`);
 await sleep(700);
 await shot('game-pause');
-console.log('  ' + await js(`(()=>{const g=window.__highroads;
+console.log('  ' + await js(`(()=>{const g=window.__tothehorizon;
   return \`paused=\${g.paused}, body.paused=\${document.body.classList.contains('paused')}, \` +
     \`audio=\${g.powertrain.sim ? g.powertrain.sim.ctx.state : 'none'}\`;})()`));
-await js(`window.__highroads.setPaused(false)`);
+await js(`window.__tothehorizon.setPaused(false)`);
 await sleep(500);
 
-const errs = await js(`(()=>{const g=window.__highroads;
+const errs = await js(`(()=>{const g=window.__tothehorizon;
   return [g.vehicle.pos.y, g.chunks.chunks.size].join(',');})()`);
 console.log(`  final: y=${errs.split(',')[0]}, chunks=${errs.split(',')[1]}`);
 

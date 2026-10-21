@@ -22,7 +22,7 @@ const CHROME = process.env.CHROME ||
 const PORT = Number(process.env.PORT || 8141);
 const CDP = Number(process.env.CDP_PORT || 9403);
 
-const seed = process.argv[2] || 'highroads-01';
+const seed = process.argv[2] || 'tothehorizon-01';
 const driveFor = Number(process.argv[3] || 25);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -129,7 +129,7 @@ for (let i = 0; i < 240; i++) {
 }
 await js(`document.getElementById('start').click()`);
 await sleep(4000);
-await js(`(async()=>{const g=window.__highroads;
+await js(`(async()=>{const g=window.__tothehorizon;
   if(!g.active){ try{ await g.powertrain.start(g.car()); }catch(e){} g.startRun(); }
   g.input.touch.throttle=1; })()`);
 if (process.env.EVAL) await js(process.env.EVAL);
@@ -137,7 +137,7 @@ await sleep(3000);
 await js(`(async()=>{ window.__perfMod = await import('/src/perf.js'); window.__perfMod.PERF.reset(); })()`);
 const heap0 = await js(`performance.memory ? performance.memory.usedJSHeapSize : 0`);
 await sleep(driveFor * 1000);
-const rep = await js(`(()=>{const g=window.__highroads; const r=window.__perfMod.PERF.report();
+const rep = await js(`(()=>{const g=window.__tothehorizon; const r=window.__perfMod.PERF.report();
   r.kmh=Math.round(Math.abs(g.vehicle.forwardSpeed)*3.6); r.s=Math.round(g.carS);
   const i=g.gfx.renderer.info; r.geometries=i.memory.geometries; r.textures=i.memory.textures;
   r.programs=(i.programs||[]).length; r.chunks=g.chunks.chunks.size; r.tiles=g.chunks.tiles.tiles.size;

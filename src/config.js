@@ -6,7 +6,7 @@
  */
 
 export const WORLD = {
-  seed: 'highroads-01',
+  seed: 'tothehorizon-01',
 
   /** Gravity, m/s². Slightly over Earth. */
   gravity: -16.0,
@@ -1343,7 +1343,7 @@ export const BRIDGES = {
  */
 export const GRAPHICS_LEVELS = ['high', 'medium', 'low'];
 
-const GRAPHICS_KEY = 'highroads.graphics';
+const GRAPHICS_KEY = 'tothehorizon.graphics';
 
 export function graphicsLevel() {
   // Wrapped, not `typeof`-guarded: Node's `localStorage` global throws unless
@@ -1473,7 +1473,7 @@ applyGraphics();
  * level — the library is built at boot); `?trees=legacy|treegen` overrides it
  * for one load. Same try/catch as graphicsLevel: Node's storage throws.
  */
-const TREES_KEY = 'highroads.trees';
+const TREES_KEY = 'tothehorizon.trees';
 export const TREE_GENERATORS = ['treegen', 'legacy'];
 
 export function setTreeGenerator(g) {
@@ -1646,7 +1646,7 @@ export const WORLDS = {
 /** The world biome in force this load (`TERRAIN.biome`), set by `applyTerrain`. */
 export let WORLD_BIOME = WORLDS.temperate;
 
-const TERRAIN_KEY = 'highroads.terrain';
+const TERRAIN_KEY = 'tothehorizon.terrain';
 const TERRAIN_DEFAULTS = JSON.parse(JSON.stringify(TERRAIN));
 const pathGet = (o, k) => k.split('.').reduce((a, p) => (a == null ? a : a[p]), o);
 const pathSet = (o, k, v) => {

@@ -1,10 +1,10 @@
-# HighRoads
+# To The Horizon!
 
 An infinite procedural driving experience in the browser built with **Three.js**, **Rapier3D physics (WASM)**, and a physically modelled **engine and drivetrain simulator**.
 
 No build step, no bundlers, no dependencies — pure modern ES modules running statically in the browser.
 
-### [Play HighRoads in your Browser](https://yigitsalihemecen.github.io/HighRoads/)
+### [Play To The Horizon! in your Browser](https://yigitsalihemecen.github.io/HighRoads/)
 
 ---
 

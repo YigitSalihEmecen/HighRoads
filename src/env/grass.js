@@ -305,7 +305,7 @@ function grassMaterial(map, fadeOut, fadeIn) {
         diffuseColor.rgb = mix( fr_body, fr_head, smoothstep( 0.35, 0.75, fr_t.g ) );
       `);
   };
-  material.customProgramCacheKey = () => 'highroads-grass-atlas';
+  material.customProgramCacheKey = () => 'tothehorizon-grass-atlas';
 
   return { material, uniforms };
 }
